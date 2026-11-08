@@ -1,11 +1,12 @@
-"""FastAPI application exposing the provider register."""
+"""FastAPI application exposing the provider register and the support catalogue price limits."""
 
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 
-from ndis.api.dependencies import list_providers_use_case
-from ndis.api.schemas import ProviderOut, ProviderPageOut
+from ndis.api.dependencies import get_price_limit_use_case, list_providers_use_case
+from ndis.api.schemas import PriceLimitOut, ProviderOut, ProviderPageOut
+from ndis.application.catalogue import GetPriceLimit, PriceLimitQuery, UnknownSupportItemError
 from ndis.application.providers import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -20,6 +21,7 @@ def create_app() -> FastAPI:
     # Registered by call rather than decorator so the handler is a plain module-level
     # function that tests import and reference by name (scripts/check_no_stubs.py).
     app.get("/providers", response_model=ProviderPageOut)(list_providers)
+    app.get("/price-limits", response_model=PriceLimitOut)(get_price_limit)
     return app
 
 
@@ -53,6 +55,22 @@ def list_providers(
         limit=page.limit,
         offset=page.offset,
     )
+
+
+def get_price_limit(
+    use_case: Annotated[GetPriceLimit, Depends(get_price_limit_use_case)],
+    item: str,
+    state: str,
+    remoteness: str | None = None,
+) -> PriceLimitOut:
+    """Deterministic 2026-27 price limit of one support item; remoteness defaults to national."""
+    try:
+        result = use_case(PriceLimitQuery(item=item, state=state, remoteness=remoteness))
+    except InvalidQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except UnknownSupportItemError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PriceLimitOut.from_result(result)
 
 
 app = create_app()

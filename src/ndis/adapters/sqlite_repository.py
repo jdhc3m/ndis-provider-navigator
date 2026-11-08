@@ -1,7 +1,9 @@
-"""SQLAlchemy 2 / SQLite implementation of the ProviderRepository port."""
+"""SQLAlchemy 2 / SQLite implementations of the ProviderRepository and SupportItemRepository
+ports; both share one metadata so a single ``data/ndis.db`` holds the register and catalogue."""
 
 from collections.abc import Iterable, Sequence
 from datetime import date
+from decimal import Decimal
 from itertools import batched
 from pathlib import Path
 from typing import Any
@@ -25,7 +27,14 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from ndis.application.providers import Page, ProviderQuery
-from ndis.domain.entities import AddressParts, Outlet, Provider, RegistrationGroup
+from ndis.domain.entities import (
+    AddressParts,
+    Outlet,
+    PriceLimits,
+    Provider,
+    RegistrationGroup,
+    SupportItem,
+)
 
 INSERT_BATCH_SIZE = 1000
 
@@ -89,6 +98,28 @@ class OutletRow(Base):
         Index("ix_outlets_state", "state"),
         Index("ix_outlets_postcode", "postcode"),
     )
+
+
+class SupportItemRow(Base):
+    """Support catalogue row. Prices are stored as the exact decimal text (``"82.57"``) so
+    SQLite never coerces them to floating point; they are only ever read back as Decimal."""
+
+    __tablename__ = "support_items"
+
+    item_number: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    registration_group_number: Mapped[str] = mapped_column(String(4))
+    registration_group_name: Mapped[str] = mapped_column(String)
+    unit: Mapped[str] = mapped_column(String)
+    quotable: Mapped[bool] = mapped_column(Boolean)
+    legacy: Mapped[bool] = mapped_column(Boolean)
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
+    national: Mapped[str | None] = mapped_column(String)
+    remote: Mapped[str | None] = mapped_column(String)
+    very_remote: Mapped[str | None] = mapped_column(String)
+
+    __table_args__ = (Index("ix_support_items_group", "registration_group_number"),)
 
 
 def create_sqlite_engine(path: Path) -> Engine:
@@ -216,3 +247,66 @@ def _apply_filters(statement: Select[Any], query: ProviderQuery) -> Select[Any]:
     if query.brisbane_area is not None:
         statement = statement.where(ProviderRow.brisbane_area.is_(query.brisbane_area))
     return statement
+
+
+def _money_text(amount: Decimal | None) -> str | None:
+    return None if amount is None else str(amount)
+
+
+def _money(text: str | None) -> Decimal | None:
+    return None if text is None else Decimal(text)
+
+
+def _support_item_values(item: SupportItem) -> dict[str, object]:
+    return {
+        "item_number": item.item_number,
+        "name": item.name,
+        "registration_group_number": item.registration_group_number,
+        "registration_group_name": item.registration_group_name,
+        "unit": item.unit,
+        "quotable": item.quotable,
+        "legacy": item.legacy,
+        "start_date": item.start_date,
+        "end_date": item.end_date,
+        "national": _money_text(item.limits.national),
+        "remote": _money_text(item.limits.remote),
+        "very_remote": _money_text(item.limits.very_remote),
+    }
+
+
+def _to_support_item(row: SupportItemRow) -> SupportItem:
+    return SupportItem(
+        item_number=row.item_number,
+        name=row.name,
+        registration_group_number=row.registration_group_number,
+        registration_group_name=row.registration_group_name,
+        unit=row.unit,
+        quotable=row.quotable,
+        start_date=row.start_date,
+        end_date=row.end_date,
+        limits=PriceLimits(
+            national=_money(row.national),
+            remote=_money(row.remote),
+            very_remote=_money(row.very_remote),
+        ),
+        legacy=row.legacy,
+    )
+
+
+class SqlAlchemySupportItemRepository:
+    """Stores the support catalogue in SQLite, one row per support item number."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        Base.metadata.create_all(engine)
+
+    def replace_all(self, items: Iterable[SupportItem]) -> None:
+        with Session(self._engine) as session, session.begin():
+            session.execute(delete(SupportItemRow))
+            for batch in batched(items, INSERT_BATCH_SIZE):
+                session.execute(insert(SupportItemRow), [_support_item_values(i) for i in batch])
+
+    def get(self, item_number: str) -> SupportItem | None:
+        with Session(self._engine) as session:
+            row = session.get(SupportItemRow, item_number)
+            return None if row is None else _to_support_item(row)
