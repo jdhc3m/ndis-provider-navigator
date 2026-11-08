@@ -40,6 +40,10 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
 
 - Ticket 00 — repo, tooling, CI, protections (issue #1, PR #16). Note:
   `docs/learning/00-repo-tooling.md`.
+- Ticket 01 — register ingestion (issue #2, PR #19). Note:
+  `docs/learning/01-register-ingestion.md`. The verified full register copy is
+  kept outside the repo; `scripts/fetch_public_data.py` refuses truncated
+  downloads (size > 30 MB and > 25,000 distinct ABNs required).
 
 ## In progress
 
@@ -51,4 +55,4 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
 
 ## Next
 
-- Ticket 01 — register ingestion (issue #2).
+- Ticket 02 — support catalogue and price limits (issue #3).
