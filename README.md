@@ -15,6 +15,7 @@ uv run python scripts/check_no_stubs.py
 uv run python scripts/check_private_data.py --tracked
 ```
 
+Requires uv ≥ 0.13.7, the version CI pins; older uv cannot read the lockfile.
 `uv.lock` is always resolved against PyPI by the CI `quality` job, which uploads
 it as the `uv-lock` artifact and fails when the committed file differs. If your
 machine resolves through a package mirror, do not commit the lock it writes:
