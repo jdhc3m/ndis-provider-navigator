@@ -38,12 +38,12 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
 
 ## Done
 
-- None merged yet.
+- Ticket 00 — repo, tooling, CI, protections (issue #1, PR #16). Note:
+  `docs/learning/00-repo-tooling.md`.
 
 ## In progress
 
-- Ticket 00 — repo, tooling, CI, protections (issue #1): PR open. The learning
-  note `docs/learning/00-repo-tooling.md` is written after merge.
+- None.
 
 ## Blocked
 
