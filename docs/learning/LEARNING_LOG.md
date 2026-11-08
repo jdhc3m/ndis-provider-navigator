@@ -1,3 +1,5 @@
 # Learning log
 
-Notes and PR links are appended after each ticket is merged. No tickets merged yet.
+One line per merged ticket: date, ticket, note, PR.
+
+- 2026-11-08 — 00 Repo, tooling, CI, protections — [note](00-repo-tooling.md) — [PR #16](https://github.com/jdhc3m/ndis-provider-navigator/pull/16)
