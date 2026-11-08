@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: private-data
+        name: Block staged private data
+        entry: uv run python scripts/check_private_data.py
+        language: system
+        pass_filenames: false
+        always_run: true

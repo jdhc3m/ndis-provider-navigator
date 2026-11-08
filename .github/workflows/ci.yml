@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.13.7'
+          enable-cache: true
+          python-version: '3.12'
+      # The committed uv.lock is always resolved here against PyPI. Developer
+      # machines may resolve through a package mirror whose URLs must never be
+      # committed, so CI regenerates the lock, publishes it as an artifact and
+      # fails if the committed one differs. Download `uv-lock` and commit it.
+      - run: uv lock
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: uv-lock
+          path: uv.lock
+      - name: Committed uv.lock must match the PyPI resolution
+        run: git add --intent-to-add uv.lock && git diff --exit-code -- uv.lock
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run lint-imports
+      - run: uv run pytest -m 'not eval'
+      - run: uv run python scripts/check_no_stubs.py
+      - run: uv run python scripts/check_private_data.py --tracked
+      - name: Model evaluation gate
+        shell: bash
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          EMBED_MODEL: ${{ vars.EMBED_MODEL }}
+        run: |
+          if ! find evals -name 'test_*.py' -print -quit | grep -q .; then
+            echo '::notice::Model evals unavailable: no evaluation suite exists yet (ticket 08).'
+          elif [ -z "$LLM_API_KEY" ]; then
+            echo '::notice::Model evals skipped: LLM_API_KEY secret is not configured.'
+          else
+            uv run pytest -m eval --no-cov
+          fi

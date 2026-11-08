@@ -1,0 +1,70 @@
+[project]
+name = "ndis-provider-navigator"
+version = "0.1.0"
+description = "Grounded NDIS provider search and deterministic pricing for Brisbane"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "pydantic>=2,<3",
+    "sqlalchemy>=2,<3",
+    "streamlit>=1.40,<2",
+    "uvicorn>=0.34,<1",
+]
+
+[dependency-groups]
+dev = [
+    "import-linter>=2,<3",
+    "mypy>=1.15,<2",
+    "pre-commit>=4,<5",
+    "pytest>=8,<10",
+    "pytest-cov>=6,<8",
+    "ruff>=0.11,<1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.18,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "ndis"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/ndis/domain", "src/ndis/application"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "evals"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers --cov=ndis.domain --cov=ndis.application --cov-report=term-missing --cov-fail-under=80"
+markers = ["eval: model-backed evaluation requiring a personal API key"]
+
+[tool.coverage.run]
+branch = true
+source = ["ndis.domain", "ndis.application"]
+
+[tool.importlinter]
+root_package = "ndis"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Outer layers depend inward"
+type = "layers"
+layers = ["ndis.api : ndis.ui : ndis.adapters", "ndis.application", "ndis.domain"]
+
+[[tool.importlinter.contracts]]
+name = "Domain and application have no external dependencies"
+type = "forbidden"
+source_modules = ["ndis.domain", "ndis.application"]
+forbidden_modules = [
+    "fastapi", "pydantic", "sqlalchemy", "httpx", "langfuse", "openai",
+    "streamlit", "sqlite_vec", "chromadb", "trafilatura", "pymupdf",
+]
