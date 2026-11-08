@@ -16,21 +16,26 @@ def check_file(path: Path, root: Path, references: set[str]) -> list[str]:
     except SyntaxError as exc:
         return errors + [f"{relative}:{exc.lineno}: {exc.msg}"]
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Name) and node.id == "NotImplementedError"
-        ) or (
+        if (isinstance(node, ast.Name) and node.id == "NotImplementedError") or (
             isinstance(node, ast.Attribute) and node.attr == "NotImplementedError"
         ):
             errors.append(f"{relative}:{node.lineno}: unimplemented exception")
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         body = list(node.body)
-        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
             body = body[1:]
         if not body or all(isinstance(statement, ast.Pass) for statement in body):
             errors.append(f"{relative}:{node.lineno}: empty function {node.name}")
         if relative.parts[:3] == ("src", "ndis", "api") and node.name not in references:
-            errors.append(f"{relative}:{node.lineno}: API function {node.name} has no test reference")
+            errors.append(
+                f"{relative}:{node.lineno}: API function {node.name} has no test reference"
+            )
     return errors
 
 

@@ -50,10 +50,11 @@ The existing parent-directory exports must stay outside this repository.
 ## Delivery harness
 
 One issue, worktree, branch and squash-merged PR per ticket. CI must be green and
-an independent review must approve before merge. `main` requires branch protection
-with the `quality` check, one approving review and no administrator bypass.
-See [resume state](docs/harness/STATE.md) for external blockers and next actions.
-Learning notes will be added after each merge under `docs/learning/`.
+an independent Reviewer agent must post `APPROVE` as a PR comment before merge.
+`main` is protected with the required `quality` status check; no GitHub approving
+review is required because the project has a single account.
+See [resume state](docs/harness/STATE.md) for progress and next actions.
+Learning notes are added after each merge under `docs/learning/`.
 
 ## Not built yet
 
