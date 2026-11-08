@@ -102,7 +102,9 @@ the cell and rejects anything that is not whole cents, so no rounding ever happe
 Limits are stored in SQLite as decimal text (`"82.57"`) and returned by the API as
 strings. `GET /price-limits?item=01_002_0107_1_1&state=QLD` returns the national limit
 with all three tiers; `remoteness=remote|very_remote` selects a tier; an unknown item is
-404, an invalid state or remoteness is 422.
+404, an invalid state or remoteness is 422. Item numbers are matched exactly and
+case-sensitively after trimming whitespace, because the catalogue contains the mixed-case
+item number `Bereavement` alongside the usual `01_002_0107_1_1` form.
 
 ## Architecture
 

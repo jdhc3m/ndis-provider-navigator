@@ -254,10 +254,10 @@ CURRENT_ROWS: list[CatalogueRow] = [
     # Current Support Items row 756
     catalogue_row("15_056_0128_1_3", "Therapy - Other Professional - Direct Service", "0128",
                   "Therapeutic Supports", "H", "No", 20260701, 99991231, 156.16, 218.62, 234.24),
-    # Not priced and not quotable (Type blank), as for the SIL items in the real sheet
+    # Current Support Items SIL item: not priced and not quotable, Type "Priced Supports"
     catalogue_row("01_821_0115_1_1", "Assistance in Supported Independent Living - Weekly", "0115",
                   "Assistance With Daily Life Tasks In A Group Or Shared Living Arrangement",
-                  "WK", "No", 20260701, 99991231, None, None, None, kind=None),
+                  "WK", "No", 20260701, 99991231, None, None, None, kind="Priced Supports"),
 ]  # fmt: skip
 
 LEGACY_ROWS: list[CatalogueRow] = [

@@ -68,5 +68,5 @@ type = "forbidden"
 source_modules = ["ndis.domain", "ndis.application"]
 forbidden_modules = [
     "fastapi", "pydantic", "sqlalchemy", "httpx", "langfuse", "openai",
-    "streamlit", "sqlite_vec", "chromadb", "trafilatura", "pymupdf",
+    "streamlit", "sqlite_vec", "chromadb", "trafilatura", "pymupdf", "openpyxl",
 ]
