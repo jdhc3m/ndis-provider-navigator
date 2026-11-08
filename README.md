@@ -1,8 +1,9 @@
 # NDIS Provider Navigator
 
 A portfolio project for grounded NDIS provider discovery and deterministic pricing
-in Brisbane. **This repository currently contains tooling only, not a working
-provider navigator.** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Streamlit and uv.
+in Brisbane. **This repository currently contains tooling and register ingestion only,
+not a working provider navigator.** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2,
+Streamlit and uv.
 
 ## Development
 
@@ -28,6 +29,20 @@ a visible notice when the suite or a usable model/key is unavailable. No LLM key
 is required for tickets 00–04. Personal model configuration belongs in
 `~/.config/ndis/.env` (see `.env.example`); environment-file loading is not built yet.
 Never use workplace credentials.
+
+## Register ingestion
+
+```sh
+uv run python scripts/fetch_public_data.py --only register   # -> data/public/register.csv
+uv run python scripts/load_register.py                        # -> data/ndis.db, logs counts
+uv run uvicorn ndis.api.app:app                               # GET /providers?state=&postcode=&group=&status=&brisbane_area=&limit=&offset=
+```
+
+The fetch script rejects (and deletes) a download that is not over 30 MB with more
+than 25,000 distinct ABNs, which catches the truncated file the Commission's server
+returns to non-browser user agents. The loader streams the CSV, stores one provider per
+ABN and one outlet per row nationally, and flags `brisbane_area` when a head office or
+outlet postcode is in 4000–4207 or 4300–4305. `NDIS_DB_PATH` overrides the database path.
 
 ## Architecture
 
@@ -66,8 +81,8 @@ Learning notes are added after each merge under `docs/learning/`.
 
 ## Not built yet
 
-Register and catalogue ingestion; provider and pricing endpoints; entity
-resolution; polite website fetching; evidence-backed extraction; rule retrieval;
-intent parsing and refusal guards; measured model evaluations; tracing; Streamlit;
-geographic ranking; and the fresh-clone demo. No provider, service, pricing or rule
-answer should be considered available at this stage.
+Catalogue ingestion; pricing endpoints; entity resolution; polite website fetching;
+evidence-backed extraction; rule retrieval; intent parsing and refusal guards; measured
+model evaluations; tracing; Streamlit; geographic ranking; and the fresh-clone demo.
+No service, pricing or rule answer should be considered available at this stage; the
+provider endpoint lists register facts only.
