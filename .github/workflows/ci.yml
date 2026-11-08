@@ -37,7 +37,7 @@ jobs:
           if ! find evals -name 'test_*.py' -print -quit | grep -q .; then
             echo '::notice::Model evals unavailable: no evaluation suite exists yet (ticket 08).'
           elif [ -z "$LLM_API_KEY" ]; then
-            echo '::notice::Model evals skipped: no cached model or personal LLM_API_KEY configured.'
+            echo '::notice::Model evals skipped: LLM_API_KEY secret is not configured.'
           else
-            uv run pytest -m eval
+            uv run pytest -m eval --no-cov
           fi

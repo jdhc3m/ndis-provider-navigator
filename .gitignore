@@ -19,10 +19,7 @@ data/private/
 *.db-shm
 *.db-wal
 *.sqlite*
-*.csv
-*.xlsx
-*.pdf
-google-maps-scraper-kit/
-.foreman*
-.runner.log
+/*.csv
+/*.xlsx
+/*.pdf
 .worktrees/

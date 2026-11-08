@@ -58,7 +58,7 @@ include_external_packages = true
 [[tool.importlinter.contracts]]
 name = "Outer layers depend inward"
 type = "layers"
-layers = ["ndis.api | ndis.ui | ndis.adapters", "ndis.application", "ndis.domain"]
+layers = ["ndis.api : ndis.ui : ndis.adapters", "ndis.application", "ndis.domain"]
 
 [[tool.importlinter.contracts]]
 name = "Domain and application have no external dependencies"
