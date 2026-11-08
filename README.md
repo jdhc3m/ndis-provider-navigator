@@ -1,9 +1,9 @@
 # NDIS Provider Navigator
 
 A portfolio project for grounded NDIS provider discovery and deterministic pricing
-in Brisbane. **This repository currently contains tooling and register ingestion only,
-not a working provider navigator.** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2,
-Streamlit and uv.
+in Brisbane. **This repository currently contains tooling, register ingestion and
+catalogue price limits only, not a working provider navigator.** Python 3.12, FastAPI,
+Pydantic v2, SQLAlchemy 2, Streamlit and uv.
 
 ## Development
 
@@ -46,6 +46,66 @@ register); it stores one provider per ABN and one outlet per row nationally, and
 `brisbane_area` when a head office or outlet postcode is in 4000–4207 or 4300–4305.
 `NDIS_DB_PATH` overrides the database path.
 
+## Support catalogue and price limits
+
+```sh
+uv run python scripts/fetch_public_data.py --only catalogue  # -> data/public/support_catalogue.xlsx
+uv run python scripts/load_catalogue.py                       # -> data/ndis.db (support_items), logs counts
+uv run uvicorn ndis.api.app:app                               # GET /price-limits?item=&state=&remoteness=
+```
+
+**Source.** "NDIS Support Catalogue 2026-27" (XLSX), linked from the NDIA page
+<https://www.ndis.gov.au/providers/pricing-and-payments/pricing/what-support-catalogue>
+(reached from the Pricing Arrangements page) as
+<https://www.ndis.gov.au/media/8038/download?attachment>. The server names the file
+`NDIS-Support-Catalogue-2026-27 v1_1.xlsx` (128,678 bytes); the workbook's core
+properties carry no title or version, only a last-modified stamp of 2026-07-02T04:45:32Z.
+Every row has a start date of 1–3 July 2026. The ndis.gov.au server answers only
+browser-like user agents, so the fetch script sends one; it never relaxes TLS or proxy
+settings. The XLSX is downloaded under the ignored `data/public/` and never committed. No
+LLM is involved anywhere in this path.
+
+**Verification.** The download is written to `.part` and kept only if it is over 100 KB and
+contains more than 900 distinct support item numbers whose start date falls in 2026-27, so
+an HTML error page, a truncated workbook or an older catalogue is deleted instead of kept.
+The loader additionally refuses to write when fewer than 95% of rows parse.
+
+**Sheets and columns.** Both sheets, `Current Support Items` (976 rows) and
+`Legacy Support Items` (41 rows, items that end during 2026-27), share one header. The
+columns used are:
+
+| Column header | Field |
+| --- | --- |
+| `Support Item Number` | `item_number` (primary key) |
+| `Support Item Name` | `name` |
+| `Registration Group Number` | `registration_group_number` (text, keeps the leading zero) |
+| `Registration Group Name` | `registration_group_name` |
+| `Unit` | `unit` (`H`, `E`, `D`, `WK`, `MON`, `YR`) |
+| `Quote` | `quotable` (`Yes`/`No`) |
+| `Start date` | `start_date` (`YYYYMMDD`; must fall in 2026-27) |
+| `End Date` | `end_date` (`99991231` → `null`, open-ended) |
+| `National` | `limits.national` |
+| `Remote` | `limits.remote` |
+| `Very Remote` | `limits.very_remote` |
+
+Support category, claim-type flags (`Non-Face-to-Face Support Provision`, `Provider
+Travel`, …) and `Type` are not loaded. The sheet is read in order and the first row for an
+item number wins, so a current item shadows a legacy duplicate (none exist in v1.1).
+
+**Prices.** The 2026-27 catalogue publishes one `National` limit plus `Remote` and
+`Very Remote` tiers; unlike earlier catalogues it has no per-state columns, so every
+state shares the national figure. `price_limit(item, state, remoteness)` in `domain/`
+still validates the state and returns the tier's `Decimal`, or `None` for quotable and
+unpriced items (SIL weekly items, for example). Excel stores the prices as doubles
+(`271.58999999999997` for 271.59); the parser takes Python's shortest round-trip text of
+the cell and rejects anything that is not whole cents, so no rounding ever happens.
+Limits are stored in SQLite as decimal text (`"82.57"`) and returned by the API as
+strings. `GET /price-limits?item=01_002_0107_1_1&state=QLD` returns the national limit
+with all three tiers; `remoteness=remote|very_remote` selects a tier; an unknown item is
+404, an invalid state or remoteness is 422. Item numbers are matched exactly and
+case-sensitively after trimming whitespace, because the catalogue contains the mixed-case
+item number `Bereavement` alongside the usual `01_002_0107_1_1` form.
+
 ## Architecture
 
 - `src/ndis/domain/`: pure entities and rules, no frameworks.
@@ -83,8 +143,8 @@ Learning notes are added after each merge under `docs/learning/`.
 
 ## Not built yet
 
-Catalogue ingestion; pricing endpoints; entity resolution; polite website fetching;
-evidence-backed extraction; rule retrieval; intent parsing and refusal guards; measured
-model evaluations; tracing; Streamlit; geographic ranking; and the fresh-clone demo.
-No service, pricing or rule answer should be considered available at this stage; the
-provider endpoint lists register facts only.
+Pricing Arrangements PDF rule retrieval; entity resolution; polite website fetching;
+evidence-backed extraction; intent parsing and refusal guards; measured model
+evaluations; tracing; Streamlit; geographic ranking; and the fresh-clone demo. No service
+or rule answer should be considered available at this stage; the provider endpoint lists
+register facts only and the price-limit endpoint returns catalogue limits only.

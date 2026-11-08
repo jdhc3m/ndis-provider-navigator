@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115,<1",
+    "openpyxl>=3.1,<4",
     "pydantic>=2,<3",
     "sqlalchemy>=2,<3",
     "streamlit>=1.40,<2",
@@ -67,5 +68,5 @@ type = "forbidden"
 source_modules = ["ndis.domain", "ndis.application"]
 forbidden_modules = [
     "fastapi", "pydantic", "sqlalchemy", "httpx", "langfuse", "openai",
-    "streamlit", "sqlite_vec", "chromadb", "trafilatura", "pymupdf",
+    "streamlit", "sqlite_vec", "chromadb", "trafilatura", "pymupdf", "openpyxl",
 ]

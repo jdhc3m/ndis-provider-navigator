@@ -6,12 +6,16 @@ import pytest
 
 from scripts import fetch_public_data
 from scripts.fetch_public_data import (
+    CATALOGUE_MIN_BYTES,
+    CATALOGUE_MIN_ITEMS,
     REGISTER_MIN_ABNS,
     REGISTER_MIN_BYTES,
+    fetch_catalogue,
     fetch_register,
+    verify_catalogue,
     verify_register,
 )
-from tests.conftest import GOOD_ROWS, write_register
+from tests.conftest import CURRENT_ROWS, GOOD_ROWS, LEGACY_ROWS, write_catalogue, write_register
 
 
 def test_small_fixture_is_rejected_for_size_and_abn_count(register_csv: Path) -> None:
@@ -82,10 +86,93 @@ def test_fetch_register_keeps_verified_download(
     assert [p.name for p in (tmp_path / "public").iterdir()] == ["register.csv"]
 
 
+def test_small_catalogue_is_rejected_for_size_and_item_count(catalogue_xlsx: Path) -> None:
+    problems = verify_catalogue(catalogue_xlsx)
+    assert len(problems) == 2
+    assert f"exceeds {CATALOGUE_MIN_BYTES} bytes" in problems[0]
+    assert f"a full catalogue exceeds {CATALOGUE_MIN_ITEMS}" in problems[1]
+
+
+def test_catalogue_thresholds_are_strict_greater_than(catalogue_xlsx: Path) -> None:
+    size = catalogue_xlsx.stat().st_size
+    items = len(CURRENT_ROWS) + len(LEGACY_ROWS)
+    assert verify_catalogue(catalogue_xlsx, min_bytes=size - 1, min_items=items - 1) == []
+    assert f"{items} distinct" in verify_catalogue(catalogue_xlsx, min_bytes=0, min_items=items)[0]
+    assert f"{size} bytes" in verify_catalogue(catalogue_xlsx, min_bytes=size, min_items=0)[0]
+
+
+def test_older_catalogue_counts_no_items(tmp_path: Path) -> None:
+    old_year = [dict(row, **{"Start date": 20250701}) for row in CURRENT_ROWS + LEGACY_ROWS]
+    path = write_catalogue(tmp_path / "old.xlsx", old_year, [])
+    assert "0 distinct 2026-27 support items" in verify_catalogue(path, min_bytes=0, min_items=0)[0]
+
+
+def test_non_workbook_catalogue_is_rejected(tmp_path: Path) -> None:
+    junk = tmp_path / "junk.part"
+    junk.write_text("<html>blocked</html>\n", encoding="utf-8")
+    problems = verify_catalogue(junk, min_bytes=0, min_items=0)
+    assert any("not a support catalogue workbook" in problem for problem in problems)
+
+
+def test_fetch_catalogue_deletes_truncated_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, Path]] = []
+
+    def fake_download(url: str, destination: Path) -> int:
+        calls.append((url, destination))
+        destination.parent.mkdir(parents=True)
+        write_catalogue(destination, CURRENT_ROWS, LEGACY_ROWS)
+        return destination.stat().st_size
+
+    monkeypatch.setattr(fetch_public_data, "download", fake_download)
+    with pytest.raises(SystemExit, match="catalogue download rejected and deleted"):
+        fetch_catalogue(tmp_path / "public")
+    expected = (fetch_public_data.CATALOGUE_URL, tmp_path / "public" / "support_catalogue.part")
+    assert calls == [expected]
+    assert list((tmp_path / "public").iterdir()) == []
+
+
+def test_fetch_catalogue_removes_partial_file_when_download_breaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_download(url: str, destination: Path) -> int:
+        destination.parent.mkdir(parents=True)
+        destination.write_text("half a file", encoding="utf-8")
+        raise ConnectionResetError("dropped")
+
+    monkeypatch.setattr(fetch_public_data, "download", broken_download)
+    with pytest.raises(ConnectionResetError):
+        fetch_catalogue(tmp_path / "public")
+    assert list((tmp_path / "public").iterdir()) == []
+
+
+def test_fetch_catalogue_keeps_verified_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_download(url: str, destination: Path) -> int:
+        destination.parent.mkdir(parents=True)
+        write_catalogue(destination, CURRENT_ROWS, LEGACY_ROWS)
+        return destination.stat().st_size
+
+    monkeypatch.setattr(fetch_public_data, "download", fake_download)
+    monkeypatch.setattr(fetch_public_data, "CATALOGUE_MIN_BYTES", 0)
+    monkeypatch.setattr(fetch_public_data, "CATALOGUE_MIN_ITEMS", 1)
+    assert fetch_catalogue(tmp_path / "public") == tmp_path / "public" / "support_catalogue.xlsx"
+    assert [p.name for p in (tmp_path / "public").iterdir()] == ["support_catalogue.xlsx"]
+
+
 def test_main_selects_datasets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fetched: list[str] = []
     monkeypatch.setitem(fetch_public_data.DATASETS, "register", lambda: fetched.append("register"))
+    monkeypatch.setitem(
+        fetch_public_data.DATASETS, "catalogue", lambda: fetched.append("catalogue")
+    )
     assert fetch_public_data.main(["--only", "register"]) == 0
     assert fetched == ["register"]
+    assert fetch_public_data.main(["--only", "catalogue"]) == 0
+    assert fetched == ["register", "catalogue"]
+    assert fetch_public_data.main([]) == 0
+    assert fetched == ["register", "catalogue", "catalogue", "register"]
     with pytest.raises(SystemExit):
         fetch_public_data.main(["--only", "nonexistent"])

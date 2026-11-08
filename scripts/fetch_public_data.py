@@ -14,6 +14,7 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
+from ndis.adapters.catalogue_xlsx import CatalogueFormatError, count_distinct_items
 from ndis.adapters.register_csv import RegisterFormatError, count_distinct_abns
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,15 @@ REGISTER_URL = (
 REGISTER_MIN_BYTES = 30 * 1024 * 1024
 REGISTER_MIN_ABNS = 25_000
 
+# "NDIS Support Catalogue 2026-27" (XLSX), the only catalogue download linked from
+# https://www.ndis.gov.au/providers/pricing-and-payments/pricing/what-support-catalogue
+# (the Pricing Arrangements page links to that page). The server names the file
+# ``NDIS-Support-Catalogue-2026-27 v1_1.xlsx``; the media id changes with each new version,
+# so update this constant and the README when a later 2026-27 release is published.
+CATALOGUE_URL = "https://www.ndis.gov.au/media/8038/download?attachment"
+CATALOGUE_MIN_BYTES = 100 * 1024
+CATALOGUE_MIN_ITEMS = 900
+
 logger = logging.getLogger("fetch_public_data")
 
 
@@ -37,6 +47,9 @@ def download(url: str, destination: Path) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as out:
+        filename = response.headers.get("Content-Disposition")
+        if filename:
+            logger.info("server names the file: %s", filename)
         shutil.copyfileobj(response, out, length=1024 * 1024)
     return destination.stat().st_size
 
@@ -78,7 +91,50 @@ def fetch_register(public_dir: Path = PUBLIC_DIR) -> Path:
     return destination
 
 
-DATASETS: dict[str, Callable[[], Path]] = {"register": fetch_register}
+def verify_catalogue(
+    path: Path, min_bytes: int = CATALOGUE_MIN_BYTES, min_items: int = CATALOGUE_MIN_ITEMS
+) -> list[str]:
+    """Return the reasons ``path`` is not a complete 2026-27 catalogue download (empty = OK).
+
+    Only rows whose start date falls in 2026-27 count as items, so an HTML error page, a
+    truncated workbook and an older catalogue are all rejected.
+    """
+    problems: list[str] = []
+    size = path.stat().st_size
+    if size <= min_bytes:
+        problems.append(f"file is {size} bytes; a full catalogue exceeds {min_bytes} bytes")
+    try:
+        items = count_distinct_items(path)
+    except CatalogueFormatError as exc:
+        return problems + [f"file is not a support catalogue workbook: {exc}"]
+    if items <= min_items:
+        problems.append(
+            f"file has {items} distinct 2026-27 support items; a full catalogue exceeds {min_items}"
+        )
+    return problems
+
+
+def fetch_catalogue(public_dir: Path = PUBLIC_DIR) -> Path:
+    """Download the NDIS Support Catalogue 2026-27 workbook and verify it is complete."""
+    destination = public_dir / "support_catalogue.xlsx"
+    partial = destination.with_suffix(".part")
+    logger.info("downloading %s -> %s", CATALOGUE_URL, partial)
+    try:
+        size = download(CATALOGUE_URL, partial)
+        logger.info("downloaded %d bytes", size)
+        problems = verify_catalogue(partial, CATALOGUE_MIN_BYTES, CATALOGUE_MIN_ITEMS)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    if problems:
+        partial.unlink(missing_ok=True)
+        raise SystemExit("catalogue download rejected and deleted:\n  " + "\n  ".join(problems))
+    partial.replace(destination)
+    logger.info("catalogue verified: %s", destination)
+    return destination
+
+
+DATASETS: dict[str, Callable[[], Path]] = {"catalogue": fetch_catalogue, "register": fetch_register}
 
 
 def main(argv: list[str] | None = None) -> int:

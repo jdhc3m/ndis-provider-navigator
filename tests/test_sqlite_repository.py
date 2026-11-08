@@ -1,13 +1,18 @@
-"""SQLAlchemy SQLite repository: filters, pagination and idempotent replace."""
+"""SQLAlchemy SQLite repositories: filters, pagination, exact money round-trip, full refresh."""
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
-from ndis.adapters.sqlite_repository import SqlAlchemyProviderRepository, create_sqlite_engine
+from ndis.adapters.sqlite_repository import (
+    SqlAlchemyProviderRepository,
+    SqlAlchemySupportItemRepository,
+    create_sqlite_engine,
+)
 from ndis.application.providers import ProviderQuery
-from tests.conftest import SEED_OUTLETS, SEED_PROVIDERS
+from tests.conftest import SEED_OUTLETS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS
 
 
 def abns(repository: SqlAlchemyProviderRepository, query: ProviderQuery) -> list[str]:
@@ -20,6 +25,7 @@ def test_tables_and_indexes_exist(seeded_repository: SqlAlchemyProviderRepositor
         "providers",
         "outlets",
         "provider_registration_groups",
+        "support_items",
     }
     assert {index["name"] for index in inspector.get_indexes("outlets")} >= {
         "ix_outlets_postcode",
@@ -77,3 +83,45 @@ def test_replace_all_is_a_full_refresh(db_path: Path) -> None:
     assert abns(repository, ProviderQuery(postcode="4000")) == []
     reopened = SqlAlchemyProviderRepository(create_sqlite_engine(db_path))
     assert reopened.find(ProviderQuery()).total == 1
+
+
+def test_support_items_round_trip_exact_decimals(
+    seeded_support_items: SqlAlchemySupportItemRepository,
+) -> None:
+    for seed in SEED_SUPPORT_ITEMS:
+        assert seeded_support_items.get(seed.item_number) == seed
+    stored = seeded_support_items.get("01_002_0107_1_1")
+    assert stored is not None
+    assert isinstance(stored.limits.national, Decimal)
+    assert str(stored.limits.remote) == "115.60"
+    assert seeded_support_items.get("does_not_exist") is None
+    assert seeded_support_items.get("01_002_0107_1_1 ") is None
+
+
+def test_support_item_prices_are_stored_as_text(
+    seeded_support_items: SqlAlchemySupportItemRepository,
+) -> None:
+    with seeded_support_items._engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT item_number, national, typeof(national), remote, very_remote, end_date "
+                "FROM support_items ORDER BY item_number"
+            )
+        ).all()
+    assert [tuple(row) for row in rows] == [
+        ("01_002_0107_1_1", "82.57", "text", "115.60", "123.86", None),
+        ("01_003_0107_1_1", None, "null", None, None, None),
+        ("01_045_0115_1_1", "708.75", "text", "992.25", "1063.13", "2027-06-30"),
+    ]
+
+
+def test_support_items_share_the_register_database(
+    seeded_repository: SqlAlchemyProviderRepository, db_path: Path
+) -> None:
+    catalogue = SqlAlchemySupportItemRepository(seeded_repository._engine)
+    catalogue.replace_all(SEED_SUPPORT_ITEMS)
+    catalogue.replace_all(SEED_SUPPORT_ITEMS[:1])
+    assert catalogue.get("01_045_0115_1_1") is None
+    reopened = SqlAlchemySupportItemRepository(create_sqlite_engine(db_path))
+    assert reopened.get("01_002_0107_1_1") == SEED_SUPPORT_ITEMS[0]
+    assert seeded_repository.find(ProviderQuery()).total == len(SEED_PROVIDERS)
