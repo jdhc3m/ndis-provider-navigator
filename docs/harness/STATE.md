@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-08 (Australia/Brisbane).
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 02 merged; third Foreman thread starts at ticket 03.
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -33,6 +33,17 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
   step, then `gh run download <run-id> -n uv-lock -D /tmp/uvlock`,
   `git update-index --no-skip-worktree uv.lock`, copy it in, commit
   `chore: lock dependencies against PyPI`, re-set skip-worktree, push.
+- Harness loop that worked for tickets 01 and 02: one fresh Builder subagent
+  with the issue text, AC, AGENTS.md, gate command and the lock rule (never
+  commit `uv.lock`; new deps must also go into the import-linter denylist); one
+  fresh Reviewer subagent given the worktree, issue and AC — not the builder's
+  summary — told to verify by running probes in a `/tmp` copy; relay must-fix
+  items verbatim back to the same Builder; re-review; then push, PR with
+  `--body-file`, Reviewer record as a PR comment, lock commit from the
+  `uv-lock` artifact, squash-merge, docs PR for the note. Each ticket took two
+  review rounds; the Reviewer found a real defect both times.
+- Write PR/comment bodies to files under `.amp/in/` and pass `--body-file`;
+  heredocs with apostrophes inside `$(...)` break.
 - `pytest -m eval` runs with `--no-cov` in CI: the coverage gate applies to the
   unit/integration run, not the eval subset. Ticket 08 owns the eval gate design.
 
@@ -44,6 +55,11 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
   `docs/learning/01-register-ingestion.md`. The verified full register copy is
   kept outside the repo; `scripts/fetch_public_data.py` refuses truncated
   downloads (size > 30 MB and > 25,000 distinct ABNs required).
+- Ticket 02 — support catalogue and price limits (issue #3, PR #21). Note:
+  `docs/learning/02-support-catalogue.md`. The 2026-27 catalogue (v1.1) has no
+  per-state price columns, only National/Remote/Very Remote; `state=` is
+  validated and returns the national tier. Documented in README; do not
+  "fix" this by inventing state prices.
 
 ## In progress
 
@@ -55,4 +71,12 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
 
 ## Next
 
-- Ticket 02 — support catalogue and price limits (issue #3).
+- Ticket 03 — private data bootstrap and entity resolution (issue #4). Needs
+  `~/NDIS/ndis.db` copied to `data/private/maps_brisbane.db` (ignored) and the
+  verified full register at `~/.amp/in/ndis/register_full.csv` (or re-fetch
+  with `scripts/fetch_public_data.py --only register`). Likely new runtime
+  dependency `rapidfuzz`: add it to the import-linter `forbidden_modules`
+  list in `pyproject.toml` as well (the contract is a denylist).
+- Ticket 04 (website fetcher) can run on this Mac. Ticket 05 onward needs an
+  LLM key and a machine that can reach the API; stop and tell the owner before
+  starting 05.
