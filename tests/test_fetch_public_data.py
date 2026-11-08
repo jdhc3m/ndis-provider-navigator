@@ -49,8 +49,22 @@ def test_fetch_register_deletes_truncated_download(
     monkeypatch.setattr(fetch_public_data, "download", fake_download)
     with pytest.raises(SystemExit, match="rejected and deleted"):
         fetch_register(tmp_path / "public")
-    assert calls == [(fetch_public_data.REGISTER_URL, tmp_path / "public" / "register.csv")]
-    assert not (tmp_path / "public" / "register.csv").exists()
+    assert calls == [(fetch_public_data.REGISTER_URL, tmp_path / "public" / "register.part")]
+    assert list((tmp_path / "public").iterdir()) == []
+
+
+def test_fetch_register_removes_partial_file_when_download_breaks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_download(url: str, destination: Path) -> int:
+        destination.parent.mkdir(parents=True)
+        destination.write_text("half a file", encoding="utf-8")
+        raise ConnectionResetError("dropped")
+
+    monkeypatch.setattr(fetch_public_data, "download", broken_download)
+    with pytest.raises(ConnectionResetError):
+        fetch_register(tmp_path / "public")
+    assert list((tmp_path / "public").iterdir()) == []
 
 
 def test_fetch_register_keeps_verified_download(
@@ -65,7 +79,7 @@ def test_fetch_register_keeps_verified_download(
     monkeypatch.setattr(fetch_public_data, "REGISTER_MIN_BYTES", 0)
     monkeypatch.setattr(fetch_public_data, "REGISTER_MIN_ABNS", 1)
     assert fetch_register(tmp_path / "public") == tmp_path / "public" / "register.csv"
-    assert (tmp_path / "public" / "register.csv").exists()
+    assert [p.name for p in (tmp_path / "public").iterdir()] == ["register.csv"]
 
 
 def test_main_selects_datasets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

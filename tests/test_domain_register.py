@@ -1,6 +1,7 @@
 """Pure register parsing rules on awkward real-format rows."""
 
 import csv
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -9,13 +10,14 @@ from ndis.domain.entities import AddressParts, Outlet, RegistrationGroup
 from ndis.domain.register import (
     RegisterRowError,
     is_brisbane_postcode,
+    merge_provider_rows,
     parse_address_tail,
     parse_register_date,
     parse_register_row,
     split_registration_groups,
     website_domain,
 )
-from tests.conftest import BAD_ROWS, GOOD_ROWS, REGISTER_HEADER
+from tests.conftest import BAD_ROWS, GOOD_ROWS, REGISTER_HEADER, REREGISTERED_ROWS
 
 
 def rows(lines: list[str]) -> list[dict[str, str]]:
@@ -180,3 +182,35 @@ def test_legal_name_falls_back_to_business_name() -> None:
     line = GOOD_ROWS[4].replace('"PARRAMATTA PLAN MANAGERS PTY LTD"', '""')
     provider, _ = parse_register_row(rows([line])[0])
     assert provider.legal_name == "Parramatta Plan Managers"
+
+
+def test_merge_prefers_approved_row_over_earlier_revoked_row() -> None:
+    revoked, _ = parse_register_row(rows(REREGISTERED_ROWS)[0])
+    approved, _ = parse_register_row(rows(REREGISTERED_ROWS)[1])
+    merged = merge_provider_rows(revoked, approved)
+    assert merged.registration_status == "Approved"
+    assert merged.registration_expires_on == date(2029, 2, 1)
+    assert merged.business_name == "Phoenix Supports Australia"
+    assert merged.head_office == AddressParts("MILTON", "QLD", "4064")
+    assert len(merged.registration_groups) == 2
+    # Order of arrival does not matter.
+    assert merge_provider_rows(approved, revoked) == merged
+
+
+def test_merge_keeps_first_row_on_ties_and_ors_brisbane_flag() -> None:
+    first, _ = parse_register_row(rows(GOOD_ROWS)[4])
+    second, _ = parse_register_row(rows(GOOD_ROWS)[5])
+    assert first.brisbane_area is False and second.brisbane_area is True
+    assert merge_provider_rows(first, second) == replace(first, brisbane_area=True)
+    assert merge_provider_rows(second, first) is second
+
+
+def test_merge_prefers_later_expiry_among_same_status() -> None:
+    older, _ = parse_register_row(rows(GOOD_ROWS)[0])
+    newer = replace(older, registration_expires_on=date(2030, 1, 1), legal_name="NEWER")
+    assert merge_provider_rows(older, newer) is newer
+    assert merge_provider_rows(newer, older) is newer
+    revoked_later = replace(
+        older, registration_status="Revoked", registration_expires_on=date(2031, 1, 1)
+    )
+    assert merge_provider_rows(revoked_later, older) is older

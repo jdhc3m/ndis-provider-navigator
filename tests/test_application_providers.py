@@ -50,6 +50,16 @@ def test_blank_filters_become_none() -> None:
     assert normalise_query(ProviderQuery(status="Revoked", brisbane_area=False)).status == "Revoked"
 
 
+@pytest.mark.parametrize("status", ["approved", "APPROVED", " Approved ", "revoked"])
+def test_status_is_canonicalised_case_insensitively(status: str) -> None:
+    assert normalise_query(ProviderQuery(status=status)).status == status.strip().capitalize()
+
+
+def test_unknown_status_is_rejected() -> None:
+    with pytest.raises(InvalidQueryError, match="status must be one of"):
+        normalise_query(ProviderQuery(status="Pending"))
+
+
 @pytest.mark.parametrize(
     "query",
     [

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ndis.domain.entities import Outlet, Provider
+from ndis.domain.register import REGISTRATION_STATUSES
 
 MAX_PAGE_SIZE = 200
 DEFAULT_PAGE_SIZE = 20
@@ -15,8 +16,8 @@ class ProviderQuery:
     """Filters and pagination for listing providers.
 
     ``state`` and ``postcode`` match the head office or any outlet of the provider;
-    ``group`` matches a registration group name exactly; ``status`` matches the
-    registration status; ``brisbane_area`` filters on the provider flag.
+    ``group`` matches a registration group name exactly; ``status`` is one of the register's
+    statuses (matched case-insensitively); ``brisbane_area`` filters on the provider flag.
     """
 
     state: str | None = None
@@ -63,11 +64,17 @@ def normalise_query(query: ProviderQuery) -> ProviderQuery:
     postcode = query.postcode.strip() if query.postcode else None
     if postcode is not None and not (postcode.isdigit() and len(postcode) == 4):
         raise InvalidQueryError("postcode must be four digits")
+    status = query.status.strip() if query.status and query.status.strip() else None
+    if status is not None:
+        known = {value.lower(): value for value in REGISTRATION_STATUSES}
+        if status.lower() not in known:
+            raise InvalidQueryError(f"status must be one of {sorted(REGISTRATION_STATUSES)}")
+        status = known[status.lower()]
     return ProviderQuery(
         state=query.state.strip().upper() if query.state and query.state.strip() else None,
         postcode=postcode,
         group=query.group.strip() if query.group and query.group.strip() else None,
-        status=query.status.strip() if query.status and query.status.strip() else None,
+        status=status,
         brisbane_area=query.brisbane_area,
         limit=query.limit,
         offset=query.offset,

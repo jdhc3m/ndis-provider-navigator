@@ -70,6 +70,7 @@ def test_list_providers_default_page(client: TestClient) -> None:
         ({"postcode": "4000"}, ["10000000002", "10000000005"]),
         ({"group": "Plan Management"}, ["10000000002", "10000000005"]),
         ({"status": "Revoked"}, ["10000000004"]),
+        ({"status": "approved", "state": "NSW"}, ["10000000003"]),
         ({"brisbane_area": "false"}, ["10000000003"]),
         ({"state": "QLD", "status": "Approved", "group": "Therapeutic Supports"},
          ["10000000001", "10000000005"]),
@@ -92,7 +93,14 @@ def test_list_providers_pagination(client: TestClient) -> None:
 
 @pytest.mark.parametrize(
     "params",
-    [{"limit": 0}, {"limit": 1000}, {"offset": -1}, {"postcode": "abc"}, {"brisbane_area": "x"}],
+    [
+        {"limit": 0},
+        {"limit": 1000},
+        {"offset": -1},
+        {"postcode": "abc"},
+        {"brisbane_area": "x"},
+        {"status": "Pending"},
+    ],
 )
 def test_list_providers_rejects_bad_parameters(client: TestClient, params: dict[str, str]) -> None:
     assert client.get("/providers", params=params).status_code == 422

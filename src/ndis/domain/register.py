@@ -1,6 +1,7 @@
 """Pure parsing rules for rows of the NDIS Commission provider register CSV."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date, datetime
 from urllib.parse import urlsplit
 
@@ -103,6 +104,24 @@ def split_registration_groups(groups: str) -> tuple[RegistrationGroup, ...]:
 def parse_register_date(value: str) -> date:
     """Parse ``10 November 2028`` into a date."""
     return datetime.strptime(value.strip(), "%d %B %Y").date()
+
+
+def merge_provider_rows(existing: Provider, candidate: Provider) -> Provider:
+    """Combine two register rows for the same ABN into one Provider.
+
+    The provider-level fields come from the row with the current registration: an
+    ``Approved`` row beats a ``Revoked`` one, then the later expiry date wins, otherwise the
+    existing row is kept. ``brisbane_area`` is true if either row is in the Brisbane area.
+    """
+    brisbane_area = existing.brisbane_area or candidate.brisbane_area
+
+    def rank(provider: Provider) -> tuple[bool, date]:
+        return (provider.registration_status == "Approved", provider.registration_expires_on)
+
+    preferred = candidate if rank(candidate) > rank(existing) else existing
+    if preferred.brisbane_area == brisbane_area:
+        return preferred
+    return replace(preferred, brisbane_area=brisbane_area)
 
 
 def _blank_to_none(value: str | None) -> str | None:

@@ -4,12 +4,18 @@ import csv
 import logging
 from collections import Counter
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ndis.application.providers import ProviderRepository
 from ndis.domain.entities import Outlet, Provider
-from ndis.domain.register import COLUMN_ABN, REGISTER_COLUMNS, RegisterRowError, parse_register_row
+from ndis.domain.register import (
+    COLUMN_ABN,
+    REGISTER_COLUMNS,
+    RegisterRowError,
+    merge_provider_rows,
+    parse_register_row,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +79,13 @@ class LoadReport:
 
 
 def parse_register(path: Path) -> tuple[dict[str, Provider], list[Outlet], LoadReport]:
-    """Stream the file, aggregate one Provider per ABN and one Outlet per row.
+    """Read the file row by row, aggregate one Provider per ABN and one Outlet per row.
 
-    Provider-level fields come from the first row seen for an ABN; the Brisbane flag is
-    true when any row for that ABN has a head office or outlet in the Brisbane ranges.
+    When an ABN appears on several rows, provider-level fields come from the row with the
+    current registration: an ``Approved`` row beats a ``Revoked`` one, then the later expiry
+    wins, otherwise the first row seen is kept (see ``merge_provider_rows``). The Brisbane
+    flag is true when any row for that ABN has a head office or outlet in the Brisbane
+    ranges. Parsed providers and outlets are held in memory until the single atomic write.
     """
     providers: dict[str, Provider] = {}
     outlets: list[Outlet] = []
@@ -93,10 +102,9 @@ def parse_register(path: Path) -> tuple[dict[str, Provider], list[Outlet], LoadR
         if provider.brisbane_area:
             report.brisbane_rows += 1
         existing = providers.get(provider.abn)
-        if existing is None:
-            providers[provider.abn] = provider
-        elif provider.brisbane_area and not existing.brisbane_area:
-            providers[provider.abn] = replace(existing, brisbane_area=True)
+        providers[provider.abn] = (
+            provider if existing is None else merge_provider_rows(existing, provider)
+        )
         outlets.append(outlet)
     report.brisbane_providers = sum(1 for provider in providers.values() if provider.brisbane_area)
     return providers, outlets, report

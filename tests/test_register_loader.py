@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Iterable
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,23 @@ def test_load_register_persists_and_logs(
     page = repository.find(ProviderQuery(brisbane_area=True))
     assert sorted(p.abn for p in page.items) == ["11222333444", "55666777888", "99888777666"]
     assert repository.find(ProviderQuery(postcode="4006")).items[0].abn == "99888777666"
+
+
+def test_reregistered_abn_is_stored_as_approved(
+    register_csv_reregistered: Path, db_path: Path
+) -> None:
+    providers, outlets, report = parse_register(register_csv_reregistered)
+    assert report.input_rows == 8 and len(providers) == 6 and len(outlets) == 8
+    phoenix = providers["22333444555"]
+    assert phoenix.registration_status == "Approved"
+    assert phoenix.registration_expires_on == date(2029, 2, 1)
+    assert phoenix.brisbane_area is True
+    repository = SqlAlchemyProviderRepository(create_sqlite_engine(db_path))
+    load_register(register_csv_reregistered, repository)
+    stored = repository.find(ProviderQuery(postcode="4066")).items
+    assert [(p.abn, p.registration_status) for p in stored] == [("22333444555", "Approved")]
+    assert stored[0].registration_expires_on == date(2029, 2, 1)
+    assert repository.find(ProviderQuery(status="Revoked")).total == 1
 
 
 class RecordingRepository:

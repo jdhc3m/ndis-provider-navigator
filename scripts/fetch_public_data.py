@@ -1,8 +1,9 @@
 """Download public source data into the ignored ``data/public/`` directory.
 
 Each dataset has one ``fetch_<name>`` function; ``--only`` selects a subset. Downloads
-are verified after writing and deleted when they fail verification, so a truncated
-file never masquerades as the real thing.
+go to a ``.part`` file that is verified and only then renamed into place, and deleted
+when the download or verification fails, so a truncated file never masquerades as the
+real thing.
 """
 
 import argparse
@@ -60,13 +61,19 @@ def verify_register(
 def fetch_register(public_dir: Path = PUBLIC_DIR) -> Path:
     """Download the NDIS Commission provider register and verify it is complete."""
     destination = public_dir / "register.csv"
-    logger.info("downloading %s -> %s", REGISTER_URL, destination)
-    size = download(REGISTER_URL, destination)
-    logger.info("downloaded %d bytes", size)
-    problems = verify_register(destination, REGISTER_MIN_BYTES, REGISTER_MIN_ABNS)
+    partial = destination.with_suffix(".part")
+    logger.info("downloading %s -> %s", REGISTER_URL, partial)
+    try:
+        size = download(REGISTER_URL, partial)
+        logger.info("downloaded %d bytes", size)
+        problems = verify_register(partial, REGISTER_MIN_BYTES, REGISTER_MIN_ABNS)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     if problems:
-        destination.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
         raise SystemExit("register download rejected and deleted:\n  " + "\n  ".join(problems))
+    partial.replace(destination)
     logger.info("register verified: %s", destination)
     return destination
 

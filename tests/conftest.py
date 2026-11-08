@@ -45,6 +45,18 @@ GOOD_ROWS = [
     '"Brisbane office","Level 3, 100 Brunswick St, FORTITUDE VALLEY, QLD, 4006, AU",136186',
 ]
 
+# The same ABN with a Revoked row listed before its current Approved registration, as
+# happens for a handful of real ABNs; the Approved row must win.
+REREGISTERED_ROWS = [
+    '"Phoenix Supports","PHOENIX SUPPORTS PTY LTD",22333444555,"TOOWONG, QLD, 4066, AU",'
+    'https://phoenixsupports.com.au,Revoked,"01 February 2021","Household Tasks","",'
+    '"Phoenix old office","1 Old St, TOOWONG, QLD, 4066, AU",""',
+    '"Phoenix Supports Australia","PHOENIX SUPPORTS PTY LTD",22333444555,'
+    '"MILTON, QLD, 4064, AU",https://phoenixsupports.com.au,Approved,"01 February 2029",'
+    '"Household Tasks; Participate Community","","Phoenix Milton",'
+    '"2 New St, MILTON, QLD, 4064, AU",+61733335555',
+]
+
 BAD_ROWS = [
     # ABN is not 11 digits.
     '"Bad ABN Co","BAD ABN CO",12345,"CARDIFF, NSW, 2285, AU",,Approved,"10 November 2028",'
@@ -68,6 +80,11 @@ def register_csv(tmp_path: Path) -> Path:
 @pytest.fixture
 def register_csv_with_bad_rows(tmp_path: Path) -> Path:
     return write_register(tmp_path / "register_bad.csv", GOOD_ROWS + BAD_ROWS)
+
+
+@pytest.fixture
+def register_csv_reregistered(tmp_path: Path) -> Path:
+    return write_register(tmp_path / "register_rereg.csv", GOOD_ROWS + REREGISTERED_ROWS)
 
 
 def make_provider(

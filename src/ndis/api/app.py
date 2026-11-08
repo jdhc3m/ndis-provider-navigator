@@ -17,6 +17,8 @@ from ndis.application.providers import (
 
 def create_app() -> FastAPI:
     app = FastAPI(title="NDIS Provider Navigator", version="0.1.0")
+    # Registered by call rather than decorator so the handler is a plain module-level
+    # function that tests import and reference by name (scripts/check_no_stubs.py).
     app.get("/providers", response_model=ProviderPageOut)(list_providers)
     return app
 

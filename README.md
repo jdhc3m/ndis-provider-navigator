@@ -40,9 +40,11 @@ uv run uvicorn ndis.api.app:app                               # GET /providers?s
 
 The fetch script rejects (and deletes) a download that is not over 30 MB with more
 than 25,000 distinct ABNs, which catches the truncated file the Commission's server
-returns to non-browser user agents. The loader streams the CSV, stores one provider per
-ABN and one outlet per row nationally, and flags `brisbane_area` when a head office or
-outlet postcode is in 4000–4207 or 4300–4305. `NDIS_DB_PATH` overrides the database path.
+returns to non-browser user agents. The loader reads the CSV row by row and holds the
+parsed providers/outlets in memory before one atomic write (~85 MB peak for the full
+register); it stores one provider per ABN and one outlet per row nationally, and flags
+`brisbane_area` when a head office or outlet postcode is in 4000–4207 or 4300–4305.
+`NDIS_DB_PATH` overrides the database path.
 
 ## Architecture
 
