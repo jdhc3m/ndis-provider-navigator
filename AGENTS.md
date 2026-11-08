@@ -1,0 +1,13 @@
+# ndis-provider-navigator
+
+Python 3.12, uv, FastAPI, Pydantic v2, SQLAlchemy 2, Streamlit. Run everything with `uv run`.
+
+Layers (enforced by import-linter): domain -> application -> adapters/api/ui. `domain` imports nothing from frameworks; `application` imports only `domain`. New external dependency: justify it in the PR body.
+
+Before you finish any change run: `uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest`. Evals: `uv run pytest -m eval`.
+
+Never commit anything under `data/private/`. Never put model/vendor names outside `config.py` and env. Never make an LLM output trusted without a deterministic check in `domain`.
+
+Tests: pytest, fixtures in `tests/conftest.py`, LLM calls mocked via the `LLMClient` port; integration tests use a temp SQLite file. Evals live in `evals/` and are marked `@pytest.mark.eval`.
+
+Commits: Conventional Commits. One ticket per branch `ticket/NN-slug`.
