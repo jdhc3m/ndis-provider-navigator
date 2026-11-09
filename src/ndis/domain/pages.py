@@ -22,9 +22,9 @@ class FetchStatus(StrEnum):
     EMPTY = "empty"
     ROBOTS_DISALLOWED = "robots_disallowed"
     ROBOTS_UNAVAILABLE = "robots_unavailable"
+    CRAWL_DELAY_TOO_LONG = "crawl_delay_too_long"
     TIMEOUT = "timeout"
     HTTP_ERROR = "http_error"
-    DNS_ERROR = "dns_error"
     CONNECTION_ERROR = "connection_error"
     TOO_LARGE = "too_large"
 
@@ -98,6 +98,8 @@ class PageMeta:
 
 
 REQUEST_INTERVAL_SECONDS = 1.0
+MAX_CRAWL_DELAY_SECONDS = 30.0
+HTML_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 TRACKING_PARAMETERS = frozenset({"gclid", "fbclid", "msclkid", "mc_cid", "mc_eid"})
 TRACKING_PREFIX = "utm_"
 TEXT_PATH_HASH_LENGTH = 16
@@ -123,7 +125,11 @@ def normalise_url(url: str | None) -> str | None:
     if website_domain(candidate) is None:
         return None
     host = (parts.hostname or "").lower().rstrip(".")
-    netloc = host if parts.port is None else f"{host}:{parts.port}"
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    netloc = host if port is None else f"{host}:{port}"
     kept = [
         (key, value)
         for key, value in parse_qsl(parts.query, keep_blank_values=True)
@@ -152,11 +158,30 @@ def should_fetch(has_cached_ok: bool, refresh: bool) -> bool:
 
 
 def is_transient(status: FetchStatus, http_status: int | None) -> bool:
-    """True for failures worth one retry: a timeout, a dropped connection or a 5xx answer.
-    Robots decisions, DNS failures, 4xx answers and oversize pages will not change."""
+    """True for failures worth one retry: a timeout, a failed or dropped connection or a 5xx
+    answer. Robots decisions, 4xx answers and oversize pages will not change."""
     if status in {FetchStatus.TIMEOUT, FetchStatus.CONNECTION_ERROR}:
         return True
     return status is FetchStatus.HTTP_ERROR and http_status is not None and http_status >= 500
+
+
+def request_interval(interval: float, crawl_delay: float | None) -> float | None:
+    """The gap to keep between requests to a host: our own ``interval`` or the site's
+    ``Crawl-delay`` when longer; ``None`` when the site asks for more than
+    ``MAX_CRAWL_DELAY_SECONDS``, which means it does not want to be crawled by us at all."""
+    if crawl_delay is None:
+        return interval
+    if crawl_delay > MAX_CRAWL_DELAY_SECONDS:
+        return None
+    return max(interval, crawl_delay)
+
+
+def is_html_content_type(content_type: str | None) -> bool:
+    """True for HTML and XHTML media types; a missing header is taken as HTML, anything
+    else (PDF, images, JSON, plain text) holds nothing the extractor should see."""
+    if content_type is None or not content_type.strip():
+        return True
+    return content_type.split(";", 1)[0].strip().lower() in HTML_CONTENT_TYPES
 
 
 def pacing_delay(last_request_at: float | None, now: float, interval: float) -> float:

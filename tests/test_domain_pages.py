@@ -1,4 +1,5 @@
-"""Pure page-collection rules: URL choice, fetch policy, retry class, pacing, hashing."""
+"""Pure page-collection rules: URL choice, fetch policy, retry class, pacing, crawl-delay
+cap, media types, hashing."""
 
 import hashlib
 
@@ -6,14 +7,17 @@ import pytest
 
 from ndis.domain.entity_resolution import MatchStatus
 from ndis.domain.pages import (
+    MAX_CRAWL_DELAY_SECONDS,
     REQUEST_INTERVAL_SECONDS,
     FetchStatus,
     ProviderSite,
     choose_website,
+    is_html_content_type,
     is_transient,
     normalise_text,
     normalise_url,
     pacing_delay,
+    request_interval,
     should_fetch,
     text_hash,
     text_path,
@@ -32,6 +36,7 @@ from ndis.domain.pages import (
             "https://acme.com.au/?page=2",
         ),
         ("https://acme.com.au:8443/x", "https://acme.com.au:8443/x"),
+        ("https://acme.com.au:abc/", None),
         ("https://www. centralcoastneurorehab.com.au", None),
         ("https://18 mitchell street", None),
         ("https://eagle care disability services", None),
@@ -106,13 +111,48 @@ def test_should_fetch(has_cached_ok: bool, refresh: bool, expected: bool) -> Non
         (FetchStatus.HTTP_ERROR, None, False),
         (FetchStatus.ROBOTS_DISALLOWED, None, False),
         (FetchStatus.ROBOTS_UNAVAILABLE, None, False),
-        (FetchStatus.DNS_ERROR, None, False),
+        (FetchStatus.CRAWL_DELAY_TOO_LONG, None, False),
         (FetchStatus.TOO_LARGE, 200, False),
+        (FetchStatus.EMPTY, 200, False),
         (FetchStatus.OK, 200, False),
     ],
 )
 def test_is_transient(status: FetchStatus, http_status: int | None, transient: bool) -> None:
     assert is_transient(status, http_status) is transient
+
+
+@pytest.mark.parametrize(
+    ("crawl_delay", "expected"),
+    [
+        (None, 1.0),
+        (0.5, 1.0),
+        (4.0, 4.0),
+        (MAX_CRAWL_DELAY_SECONDS, MAX_CRAWL_DELAY_SECONDS),
+        (MAX_CRAWL_DELAY_SECONDS + 1, None),
+    ],
+)
+def test_request_interval_honours_crawl_delay_up_to_the_cap(
+    crawl_delay: float | None, expected: float | None
+) -> None:
+    assert request_interval(1.0, crawl_delay) == expected
+
+
+@pytest.mark.parametrize(
+    ("content_type", "html"),
+    [
+        ("text/html; charset=utf-8", True),
+        ("TEXT/HTML", True),
+        ("application/xhtml+xml", True),
+        (None, True),
+        ("", True),
+        ("application/pdf", False),
+        ("text/plain", False),
+        ("image/png", False),
+        ("application/json; charset=utf-8", False),
+    ],
+)
+def test_is_html_content_type(content_type: str | None, html: bool) -> None:
+    assert is_html_content_type(content_type) is html
 
 
 def test_pacing_delay_keeps_one_interval_between_requests() -> None:

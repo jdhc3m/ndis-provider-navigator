@@ -490,6 +490,11 @@ class FilePageStore:
             )
             return frozenset(keys)
 
+    def stored_pages(self) -> frozenset[tuple[str, str]]:
+        with Session(self._engine) as session:
+            rows = session.execute(select(PageMetaRow.provider_key, PageMetaRow.url))
+            return frozenset((key, url) for key, url in rows)
+
     def all(self) -> tuple[PageMeta, ...]:
         """Every stored row ordered by provider key then URL."""
         with Session(self._engine) as session:

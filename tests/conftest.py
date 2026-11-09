@@ -513,10 +513,13 @@ class LocalSite:
     """A real HTTP server on localhost that records every request it receives.
 
     ``robots`` is served at ``/robots.txt`` with ``robots_status`` after ``robots_delay``
-    seconds (``None`` → 404). Paths: ``/page`` and ``/other`` return small HTML documents,
-    ``/slow`` sleeps for ``slow_seconds`` before answering, ``/500`` answers 500, ``/404``
-    answers 404, ``/big`` streams ``big_bytes`` of body and ``/private/secret`` is what a
-    ``Disallow: /private`` rule should keep us away from.
+    seconds (``None`` → 404; ``robots_redirect_to`` set → 302 there instead). Paths:
+    ``/page`` and ``/other`` return small HTML documents, ``/slow`` sleeps for
+    ``slow_seconds`` before answering, ``/500`` answers 500, ``/404`` answers 404, ``/big``
+    streams ``big_bytes`` of body, ``/pdf`` answers with a PDF media type, ``/drop`` closes
+    the connection without answering, ``/redirect`` answers 302 to ``redirect_to`` (``None``
+    → 302 without ``Location``), ``/loop`` redirects to itself and ``/private/secret`` is
+    what a ``Disallow: /private`` rule should keep us away from.
     """
 
     def __init__(self) -> None:
@@ -525,6 +528,8 @@ class LocalSite:
         self.robots_delay = 0.0
         self.slow_seconds = 2.0
         self.big_bytes = 4096
+        self.redirect_to: str | None = "/page"
+        self.robots_redirect_to: str | None = None
         self.requests: list[tuple[str, float, str | None]] = []
         site = self
 
@@ -542,6 +547,8 @@ class LocalSite:
             def _answer(self) -> None:
                 if self.path == "/robots.txt":
                     time.sleep(site.robots_delay)
+                    if site.robots_redirect_to is not None:
+                        return self._redirect(site.robots_redirect_to)
                     if site.robots is None:
                         return self._send(404, b"nothing here")
                     body = site.robots.encode("utf-8")
@@ -555,9 +562,23 @@ class LocalSite:
                     return self._send(404, b"not here")
                 if self.path == "/big":
                     return self._send(200, b"<html><body>" + b"x" * site.big_bytes)
+                if self.path == "/pdf":
+                    return self._send(200, b"%PDF-1.4 not html", "application/pdf")
+                if self.path == "/drop":
+                    self.close_connection = True
+                    return self.connection.close()
+                if self.path in {"/redirect", "/loop"}:
+                    return self._redirect("/loop" if self.path == "/loop" else site.redirect_to)
                 name = self.path.strip("/") or "page"
                 body = PAGE_HTML.replace(b"{name}", name.encode("utf-8"))
                 return self._send(200, body)
+
+            def _redirect(self, target: str | None) -> None:
+                self.send_response(302)
+                if target is not None:
+                    self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def _send(self, status: int, body: bytes, content_type: str = "text/html") -> None:
                 self.send_response(status)

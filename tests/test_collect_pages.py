@@ -69,7 +69,8 @@ def test_script_seeds_the_crawl_and_fetches_the_gap_live(
         assert run(maps_export, db_path, pages_dir) == 0
     assert (
         "collected 3 providers, 2 with a website; seeded 3 pages for 2 providers "
-        "(ok=2, empty=1); skipped 1 already cached; fetched 1 live (ok=1); planned 0"
+        "(ok=2, empty=1), 0 crawl pages already stored; skipped 1 already cached; "
+        "fetched 1 live (ok=1); planned 0; 0 over the limit"
     ) in caplog.text
     assert local_site.paths() == ["/robots.txt", "/page"]
 
@@ -91,15 +92,18 @@ def test_script_seeds_the_crawl_and_fetches_the_gap_live(
     assert text_hash(live_text) == live.text_hash
     assert len(list(pages_dir.iterdir())) == 3
 
-    # A second run finds everything cached and makes no request.
+    # A second run seeds nothing new, finds everything cached and makes no request.
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="collect_pages"):
         assert run(maps_export, db_path, pages_dir) == 0
-    assert "skipped 2 already cached; fetched 0 live (); planned 0" in caplog.text
+    assert (
+        "seeded 0 pages for 0 providers (), 3 crawl pages already stored; "
+        "skipped 2 already cached; fetched 0 live (); planned 0"
+    ) in caplog.text
     assert local_site.paths() == ["/robots.txt", "/page"]
 
 
-def test_dry_run_lists_the_gap_without_requests_and_refresh_includes_cached(
+def test_dry_run_writes_nothing_and_refresh_includes_cached(
     tmp_path: Path,
     maps_export: Path,
     seeded_repository: SqlAlchemyProviderRepository,
@@ -114,6 +118,7 @@ def test_dry_run_lists_the_gap_without_requests_and_refresh_includes_cached(
         assert run(maps_export, db_path, pages_dir, "--dry-run") == 0
     assert f"would fetch {live_url}" in caplog.text
     assert "would fetch https://www.10000000001.example.com.au/" not in caplog.text
+    assert "seeded 3 pages for 2 providers (ok=2, empty=1)" in caplog.text
     assert "fetched 0 live (); planned 1" in caplog.text
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="collect_pages"):
@@ -121,8 +126,9 @@ def test_dry_run_lists_the_gap_without_requests_and_refresh_includes_cached(
     assert "would fetch https://www.10000000001.example.com.au/" in caplog.text
     assert f"would fetch {live_url}" not in caplog.text
     assert local_site.requests == []
-    # Seeding from the crawl still happens on a dry run (it is local); only live text is absent.
-    assert len(list(pages_dir.iterdir())) == 2
+    # A dry run writes nothing: no text files and no page_meta rows, seeded or live.
+    assert not pages_dir.exists()
+    assert FilePageStore(create_sqlite_engine(db_path), pages_dir).all() == ()
 
 
 def test_missing_inputs_stop_with_a_message(

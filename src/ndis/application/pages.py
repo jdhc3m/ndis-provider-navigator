@@ -66,19 +66,27 @@ class PageStore(Protocol):
         """Provider keys that already have at least one ``ok`` page stored."""
         ...
 
+    def stored_pages(self) -> frozenset[tuple[str, str]]:
+        """Every ``(provider_key, url)`` pair that already has a metadata row."""
+        ...
+
 
 @dataclass(frozen=True)
 class CollectionResult:
-    """Counts the script logs and the learning note records; ``planned`` lists the URLs a
-    dry run would have fetched."""
+    """Counts the script logs and the learning note records. ``seeded_pages`` counts crawl
+    rows stored this run (or that a dry run would store) and ``seeded_skipped`` the crawl
+    rows whose ``(provider_key, url)`` the store already held; ``planned`` lists the URLs a
+    dry run would have fetched and ``over_limit`` the fetches ``limit`` left for later."""
 
     providers: int
     with_website: int
     seeded_pages: Mapping[FetchStatus, int]
     seeded_providers: int
+    seeded_skipped: int
     skipped_cached: int
     fetched: Mapping[FetchStatus, int]
     planned: tuple[str, ...] = field(default=())
+    over_limit: int = 0
 
     def summary(self) -> str:
         """One log line with every count."""
@@ -87,9 +95,10 @@ class CollectionResult:
         return (
             f"{self.providers} providers, {self.with_website} with a website; "
             f"seeded {sum(self.seeded_pages.values())} pages for {self.seeded_providers} "
-            f"providers ({seeded}); skipped {self.skipped_cached} already cached; "
+            f"providers ({seeded}), {self.seeded_skipped} crawl pages already stored; "
+            f"skipped {self.skipped_cached} already cached; "
             f"fetched {sum(self.fetched.values())} live ({fetched}); "
-            f"planned {len(self.planned)}"
+            f"planned {len(self.planned)}; {self.over_limit} over the limit"
         )
 
 
@@ -102,9 +111,11 @@ class CollectPages:
 
     Providers are the ``provider_links`` rows the matcher did not call ``not_a_provider``,
     keyed by ABN when linked and by place id otherwise. Seeding stores every ``ok`` crawl
-    page of those providers (as ``empty`` when its text is blank). A live fetch then goes to
-    the chosen website of each provider that has no ``ok`` page stored, or of every provider
-    with ``refresh``; ``limit`` caps the live fetches and ``dry_run`` only lists them.
+    page of those providers (as ``empty`` when its text is blank) whose ``(provider_key,
+    url)`` the store does not hold yet, so a crawl row never overwrites a later live result.
+    A live fetch then goes to the chosen website of each provider that has no ``ok`` page
+    stored, or of every provider with ``refresh``; ``limit`` caps the live fetches and
+    ``dry_run`` writes nothing and only counts the seeding and lists the fetches.
     """
 
     def __init__(
@@ -138,17 +149,27 @@ class CollectPages:
 
         seeded: Counter[FetchStatus] = Counter()
         seeded_providers: set[str] = set()
+        seeded_skipped = 0
+        stored = set(self._store.stored_pages())
+        cached_ok = set(self._store.providers_with_ok_pages())
         for page in self._cached.ok_pages():
             key = key_of_place.get(page.place_id)
             if key is None:
                 continue
-            seeded[self._seed(page, key)] += 1
+            if (key, page.url) in stored:
+                seeded_skipped += 1
+                continue
+            stored.add((key, page.url))
+            status = self._seed(page, key, dry_run)
+            seeded[status] += 1
             seeded_providers.add(key)
+            if status is FetchStatus.OK:
+                cached_ok.add(key)
 
-        cached_ok = self._store.providers_with_ok_pages()
         fetched: Counter[FetchStatus] = Counter()
         planned: list[str] = []
         skipped_cached = 0
+        over_limit = 0
         for key, url in websites.items():
             if url is None:
                 continue
@@ -156,7 +177,8 @@ class CollectPages:
                 skipped_cached += 1
                 continue
             if limit is not None and len(planned) + sum(fetched.values()) >= limit:
-                break
+                over_limit += 1
+                continue
             if dry_run:
                 planned.append(url)
                 continue
@@ -167,14 +189,18 @@ class CollectPages:
             with_website=sum(url is not None for url in websites.values()),
             seeded_pages={status: seeded[status] for status in FetchStatus if seeded[status]},
             seeded_providers=len(seeded_providers),
+            seeded_skipped=seeded_skipped,
             skipped_cached=skipped_cached,
             fetched={status: fetched[status] for status in FetchStatus if fetched[status]},
             planned=tuple(planned),
+            over_limit=over_limit,
         )
 
-    def _seed(self, page: CachedPage, key: str) -> FetchStatus:
+    def _seed(self, page: CachedPage, key: str, dry_run: bool) -> FetchStatus:
         text = normalise_text(page.text)
         status = FetchStatus.OK if text else FetchStatus.EMPTY
+        if dry_run:
+            return status
         self._store.save(
             PageMeta(
                 url=page.url,

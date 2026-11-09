@@ -140,8 +140,10 @@ place id otherwise) the script picks one website, the register's `Website` colum
 the Maps URL second, after normalising both (scheme added, host lower-cased, fragment and
 `utm_*`/`gclid` parameters dropped, mangled values such as `https://188 George Street`
 rejected). It first seeds the cache from the `ok` rows of the private Maps crawl's `pages`
-table (blank text is stored as `empty`), then fetches live only for providers with no `ok`
-page stored, or for all of them with `--refresh`. Cleaned text is written to
+table (blank text is stored as `empty`), skipping any `(provider_key, url)` the database
+already holds so a crawl row never overwrites a later live result, then fetches live only
+for providers with no `ok` page stored, or for all of them with `--refresh`. `--dry-run`
+writes nothing: it counts the seeding and lists the fetches. Cleaned text is written to
 `data/private/pages/<sha256(url)[:16]>.txt` (ignored by Git); the `page_meta` table in
 `data/ndis.db` holds only `url`, `provider_key`, `fetched_at`, `status`, `text_hash`,
 `source` (`maps_crawl` or `live`), `text_path` and `title`.
@@ -149,12 +151,15 @@ page stored, or for all of them with `--refresh`. Cleaned text is written to
 The fetcher sends `User-Agent: ndis-provider-navigator/0.1 (+repo URL)`, reads `robots.txt`
 once per host (a 4xx means no rules; a 5xx, timeout or dropped connection means the rules are
 unknown and the site is recorded `robots_unavailable`, not fetched), keeps requests to one
-host at least 1 s apart (or the site's `Crawl-delay` if longer), times out after 10 s,
-abandons bodies over 2 MB as `too_large`, and retries exactly once on a timeout, dropped
-connection or 5xx, never on 4xx, DNS failure or a robots decision. `trafilatura` strips
-navigation, footers and comments. Statuses: `ok`, `empty`, `robots_disallowed`,
-`robots_unavailable`, `timeout`, `http_error`, `dns_error`, `connection_error`, `too_large`.
-No LLM is involved; nothing from the pages is published.
+host at least 1 s apart (or the site's `Crawl-delay` if longer; over 30 s the site is
+recorded `crawl_delay_too_long` and left alone), times out after 10 s, abandons bodies over
+2 MB as `too_large`, records non-HTML answers as `empty` without reading them, and retries
+exactly once on a timeout, failed or dropped connection or 5xx, never on 4xx or a robots
+decision. Redirects are followed by hand for up to 5 hops, each hop through the robots check
+and pacing of its own host. `trafilatura` strips navigation, footers and comments. Statuses:
+`ok`, `empty`, `robots_disallowed`, `robots_unavailable`, `crawl_delay_too_long`, `timeout`,
+`http_error`, `connection_error`, `too_large`. No LLM is involved; nothing from the pages is
+published.
 
 ## Architecture
 

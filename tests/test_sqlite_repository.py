@@ -287,3 +287,6 @@ def test_page_store_upserts_by_provider_and_url(db_path: Path, tmp_path: Path) -
     store.save(other, None)
     assert store.all() == (later, other)
     assert store.providers_with_ok_pages() == frozenset({"k"})
+    assert store.stored_pages() == frozenset(
+        {("k", "https://alpha.example/"), ("other", "https://alpha.example/")}
+    )

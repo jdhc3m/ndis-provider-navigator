@@ -4,9 +4,10 @@ crawl, then politely fetch the websites of providers that have no cached page.
 Usage: ``uv run python scripts/collect_pages.py [--maps PATH] [--db PATH] [--pages-dir PATH]
 [--refresh] [--limit N] [--dry-run]``. Run ``scripts/resolve_entities.py`` first so
 ``provider_links`` exists. Page text goes under the ignored ``data/private/pages/``; only
-``page_meta`` (url, fetched_at, status, text_hash) lands in the database. ``--refresh``
-fetches every provider's website again, ``--limit`` caps the live fetches and ``--dry-run``
-lists them without making a request.
+``page_meta`` (url, fetched_at, status, text_hash) lands in the database. Crawl pages the
+database already holds are not seeded again, so live results survive later runs.
+``--refresh`` fetches every provider's website again, ``--limit`` caps the live fetches and
+``--dry-run`` writes nothing: it counts what seeding would store and lists the fetches.
 """
 
 import argparse
@@ -41,7 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--refresh", action="store_true", help="fetch cached providers again")
     parser.add_argument("--limit", type=int, default=None, help="cap on live fetches")
-    parser.add_argument("--dry-run", action="store_true", help="list live fetches, make none")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="write nothing; count the seeding and list the live fetches",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if not args.maps.is_file():
