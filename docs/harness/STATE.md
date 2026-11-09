@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 08 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", completed and verified the same day).
+Updated: 2026-11-10 (Australia/Brisbane), after ticket 09 merged. Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); ticket 09 ran on the corporate Mac.
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -158,6 +158,38 @@ updated. Facts the Builder of ticket 09 needs:
   pending ~300-provider extraction run (≈ $1.34 est.) is still to do — pace
   it after the daily quota resets.
 
+- Ticket 09 — web front end in React/TypeScript (issue #10, PR #39, squash
+  `69da8b5`). Note: `docs/learning/09-web-frontend.md`. `web/` (React 19,
+  TS strict, Vite, Tailwind v4, pnpm) single page over `POST /ask` + new
+  `GET /meta`; `AskOut.steps` recorded inside `Ask.__call__` (injectable
+  clock, cost from prices injected by the composition root); FastAPI mounts
+  `web/dist` at `/` when present (`WEB_DIST_DIR`), CORS from `CORS_ORIGINS`
+  (default localhost:5173 + 127.0.0.1:5173); `src/ndis/ui/` and `streamlit`
+  removed, layers now `api : adapters -> application -> domain`;
+  `scripts/export_openapi.py` + `web/src/api/schema.d.ts` via
+  openapi-typescript, diffed in CI; CI `web` job added and made a required
+  check (contexts `["quality","web"]`). Measured: 667 passed / 6 skipped,
+  coverage ≈95%; 16 Vitest tests; bundle 247 kB (76 kB gzip); CI `web` 50 s.
+  Fixture-only screenshots in `docs/screenshots/`. Review: 0 must-fix.
+  Follow-ups (not ticketed): `evals/test_extraction.py` creates an empty
+  `data/ndis.db` as a side effect (since ticket 08) which un-skips the golden
+  suite on a later data-less run; `rule_answer` step carries no tokens/cost
+  (table says "Total (priced steps)"); `web/pnpm-workspace.yaml` has
+  point-in-time `minimumReleaseAgeExclude` pins for `@typescript-eslint/*`;
+  textarea border contrast 1.23:1 vs WCAG 1.4.11. NOT verified here: live
+  `POST /ask` through the page (Gemini blocked, no `data/rule_index.db`) —
+  check once on the second machine with `pnpm --dir web build` then
+  `uv run uvicorn ndis.api.app:app --port 8000`.
+  Foreman lessons: Task subagents failed with "Model is not supported:
+  anthropic/claude-fable-5-2" although the main thread runs it — fixed by
+  pinning `mode_model_overrides` ultra→`anthropic/claude-fable-5-1` (effort
+  high); do NOT symlink `data/` into a worktree (`tests/test_collect_pages.py`
+  runs `git check-ignore`, which fails across the symlink) — point
+  `NDIS_DB_PATH` at the canonical checkout's `data/ndis.db` instead; after a
+  dependency change on the Mac do the lock dance (push → `quality` fails →
+  `gh run download <id> -n uv-lock` → commit `chore: lock dependencies
+  against PyPI`).
+
 ## In progress
 
 - None.
@@ -239,17 +271,18 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- Ticket 08 — evals as a CI gate, tracing, cost (issue #9), on this machine.
-  `evals/thresholds.yaml` (filter accuracy ≥ 0.85, rule hit@3 ≥ 0.7,
-  extraction precision ≥ 0.8 on labelled rows, refusal recall = 1.0);
-  `pytest -m eval --no-cov` fails below thresholds. Langfuse `@observe` on
-  every LLM call with token/latency capture; `reports/cost.md` with cost and
-  p95 per endpoint over the golden set. One deliberate prompt-degrading
-  commit on a scratch branch to show CI red (link the run in the note). 20
-  judge verdicts hand-label template with 10 agent-labelled; agreement
-  reported. The eval gate design is this ticket's to own — it may restructure
-  how `pytest -m eval` is wired in CI.
-- Ticket 09 (React front end) after that; it needs the `ui-ux-pro-max` skill
-  (installed at `~/.agents/skills/`) and removes `streamlit` + `ndis.ui` —
-  here that means just commit the updated `uv.lock` (no skip-worktree dance;
-  `uv lock` works directly against PyPI on this machine).
+- Ticket 10 — geo ranking (issue #11). Postcode→centroid table from a
+  public Australian postcode CSV fetched by `scripts/fetch_public_data.py`
+  (not committed; document source and licence); pure `haversine` in
+  `domain`; distance and `max_km` filter in provider results; Maps-matched
+  providers (ticket 03) use their exact `latitude`/`longitude`, register-only
+  providers use the centroid, and the response labels which was used. The
+  issue's "Files to touch" still says `src/ndis/ui/` — that is now `web/`:
+  fill the card's "Distance: not available yet" slot
+  (`web/src/components/ProviderCard.tsx`) with the measured value and source
+  label; the Builder loads `ui-ux-pro-max` and follows
+  `web/design-system/MASTER.md`; regenerate `web/src/api/schema.d.ts` after
+  the schema change (the `web` CI job diffs it) and run `pnpm --dir web check`.
+- Ticket 11 — README and demo (issue #12) after that. Needs the second
+  machine for the live `/ask` walkthrough (see ticket 09 NOT-verified item).
+- Ticket 12 — stretch (issue #13), only if time remains.
