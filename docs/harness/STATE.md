@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 04 merged. Stopped before ticket 05. The owner has since put `LLM_API_KEY` on a second machine that can reach the Gemini API; ticket 05 onward runs there (see "Machine handoff").
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 04 merged. Stopped before ticket 05. The owner has since put `LLM_API_KEY` on a second machine that can reach the Gemini API; ticket 05 onward runs there (see "Machine handoff", which was re-verified on that machine the same day — still blocked on the API key and the private-data copy before ticket 05 can start).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -110,7 +110,9 @@ updated. Facts the Builder of ticket 09 needs:
 
 ## Blocked
 
-- Nothing, provided the next Foreman runs on the second machine (below).
+- Ticket 05 start is blocked on the second machine (below) until the owner
+  supplies a valid `LLM_API_KEY` plus the missing env vars, the brief, and the
+  private-data copy — see the re-verification block in "Machine handoff".
   On the corporate Mac, tickets 05–08, the eval gate and the live demo stay
   blocked: Zscaler returns a 403 block page for
   `https://generativelanguage.googleapis.com/` regardless of the key.
@@ -147,6 +149,41 @@ missing, ask the owner for:
 Free-tier Gemini limits are per minute and per day; ticket 05's Builder should
 pace or chunk the ~300-provider extraction run and cache results so a rerun
 does not repeat calls.
+
+### Re-verified 2026-11-09 on the second machine
+
+Green:
+
+- The machine reaches `https://generativelanguage.googleapis.com/` directly
+  (real API error payloads, no Zscaler 403 page) — it is the right machine for
+  tickets 05–08.
+- `gh` is logged in as `jdhc3m` and `github.com` is the only configured host,
+  so the `GH_HOST=github.com` workaround is not needed here.
+- Repo cloned, tree clean, `main` up to date at `~/ndis-provider-navigator`
+  (not the `~/NDIS/ndis-provider-navigator` path the brief uses; accepted for
+  now, but `HARNESS_PROMPT.md` and the Maps export should still land in
+  `~/NDIS/`).
+- `uv sync` and `uv lock --check` pass against PyPI directly (exit 0), so the
+  skip-worktree lock dance is not needed on this machine; re-run
+  `uv lock --check` after any dependency change before trusting it again.
+- Board: ticket 05 = issue #6 is next, no open PRs;
+  `git log --all -- data/private` is empty.
+
+Still missing before the Builder can be briefed:
+
+- `LLM_API_KEY` in `~/.config/ndis/.env` is malformed — pasted with markup
+  around it (55 chars, begins with `<`, contains a quote; the API replies
+  "Please pass a valid API key"). Re-paste the bare key and add
+  `LLM_BASE_URL`, `LLM_MODEL`, `EMBED_MODEL` from `.env.example` (only the key
+  line exists). Re-prove reachability with a real list-models request.
+- `~/NDIS/HARNESS_PROMPT.md` is absent (copy from the Mac; it must be read
+  before resuming).
+- `data/private/` is absent (no `maps_brisbane.db`, no `pages/`). Copy the
+  complete ignored `data/` directory from the Mac (register, catalogue,
+  `provider_links`, `page_meta`, 1916 seeded + 50 live pages) — ticket 05
+  needs the Maps `provider_services` baseline and the page text.
+- For ticket 09 later: the `ui-ux-pro-max` skill is not installed on this
+  machine yet.
 
 ## Next
 
