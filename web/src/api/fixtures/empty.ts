@@ -1,0 +1,66 @@
+import type { AskOut } from '../client'
+
+/** Valid filters that match nobody on the register. */
+export const EMPTY: AskOut = {
+  question: 'Which approved providers are in postcode 4999?',
+  refused: false,
+  reason: null,
+  explanation: null,
+  intent: {
+    provider_filters: {
+      state: 'QLD',
+      postcode: '4999',
+      group: null,
+      status: 'Approved',
+      brisbane_area: null,
+    },
+    price_query: null,
+    rule_question: null,
+    decision_request: false,
+    parse_rejections: [],
+  },
+  providers: [],
+  provider_total: 0,
+  price: null,
+  price_error: null,
+  rule: null,
+  caveat: null,
+  steps: [
+    {
+      kind: 'intent_parse',
+      input_summary: 'question (62 chars)',
+      output_summary: 'provider_filters',
+      ms: 702,
+      input_tokens: 548,
+      output_tokens: 44,
+      cost_usd: 0.000274,
+    },
+    {
+      kind: 'provider_filter',
+      input_summary: 'state=QLD postcode=4999 status=Approved',
+      output_summary: '0 of 0 matching providers',
+      ms: 38,
+      input_tokens: null,
+      output_tokens: null,
+      cost_usd: null,
+    },
+    {
+      kind: 'evidence',
+      input_summary: '0 providers',
+      output_summary: '0 verified mentions for 0 providers',
+      ms: 0,
+      input_tokens: null,
+      output_tokens: null,
+      cost_usd: null,
+    },
+    {
+      kind: 'guard',
+      input_summary: '0 entries, caveat absent',
+      output_summary: 'valid',
+      ms: 0,
+      input_tokens: null,
+      output_tokens: null,
+      cost_usd: null,
+    },
+  ],
+}

@@ -15,6 +15,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy && uv run lint-imports && uv run pytest
 uv run python scripts/check_no_stubs.py
 uv run python scripts/check_private_data.py --tracked
+pnpm --dir web check   # when web/ changed: typecheck, lint, format, test, build
 ```
 
 Requires uv ≥ 0.13.7, the version CI pins; older uv cannot read the lockfile.
@@ -30,6 +31,45 @@ a visible notice when the suite or a usable model/key is unavailable. No LLM key
 is required for tickets 00–04. Personal model configuration belongs in
 `~/.config/ndis/.env` (see `.env.example`); environment-file loading is not built yet.
 Never use workplace credentials.
+
+## Web front end
+
+`web/` is the page over `POST /ask`: React 19, TypeScript strict, Vite, Tailwind v4,
+built and checked with pnpm. Design decisions follow `web/design-system/MASTER.md`
+(generated with the `ui-ux-pro-max` skill); the tokens it defines live in
+`web/src/styles/tokens.css`, and every component colour references a token. The page
+hard-codes no model, vendor or data date: the header reads them from `GET /meta`.
+
+Prerequisites: Node 22 and pnpm 11 (Corepack picks the version from the
+`packageManager` field).
+
+```sh
+pnpm --dir web install
+
+# Develop against the API (two terminals). The dev server runs on :5173, which the
+# API allows through CORS; use CORS_ORIGINS=http://localhost:5175 (comma-separated)
+# if yours runs elsewhere.
+NDIS_DB_PATH=data/ndis.db uv run uvicorn ndis.api.app:app --port 8000
+pnpm --dir web dev
+
+# Without a model endpoint: fixtures for the answer, refusal, empty and error states.
+VITE_MOCK_API=1 pnpm --dir web dev        # then open /?mock=answer|refusal|empty|error
+
+# Build and serve from FastAPI: the bundle in web/dist is mounted at / after the
+# API routes (WEB_DIST_DIR overrides the location), so http://localhost:8000/ is the page.
+pnpm --dir web build
+uv run uvicorn ndis.api.app:app --port 8000
+
+# Regenerate the typed client after an API change. openapi.json is ignored; the
+# committed artefact is web/src/api/schema.d.ts, and CI fails if it is stale.
+uv run python scripts/export_openapi.py openapi.json && pnpm --dir web gen:schema
+
+pnpm --dir web check                     # typecheck + lint + format:check + test + build
+```
+
+`web/.env.development` points the dev server at `http://localhost:8000`; a production
+build uses the same origin it is served from. Screenshots of the fixture-backed states
+are under `docs/screenshots/`.
 
 ## Register ingestion
 
@@ -238,7 +278,7 @@ Learning notes are added after each merge under `docs/learning/`.
 ## Not built yet
 
 Pricing Arrangements PDF rule retrieval; evidence-backed extraction; intent parsing and
-refusal guards; measured model evaluations; tracing; the web front end; geographic ranking;
-and the fresh-clone demo. No service or rule answer should be considered available at this
-stage; the provider endpoint lists register facts only and the price-limit endpoint returns
-catalogue limits only.
+refusal guards; measured model evaluations; tracing; geographic ranking (the page shows
+"distance: not available yet" until then); and the fresh-clone demo. No service or rule
+answer should be considered available at this stage; the provider endpoint lists register
+facts only and the price-limit endpoint returns catalogue limits only.

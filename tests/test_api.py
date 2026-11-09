@@ -218,5 +218,6 @@ def test_get_price_limit_rejects_bad_parameters(
 
 
 def test_endpoints_are_the_registered_handlers() -> None:
-    names = {getattr(route, "endpoint", None).__name__ for route in create_app().routes}
+    # The static mount of a built web/dist has no endpoint; only handler routes count.
+    names = {route.endpoint.__name__ for route in create_app().routes if hasattr(route, "endpoint")}
     assert {list_providers.__name__, get_price_limit.__name__} <= names

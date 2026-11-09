@@ -1,6 +1,7 @@
 """Composition root: environment-driven wiring of adapters into use cases."""
 
 import os
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -33,10 +34,21 @@ from ndis.config import (
     rule_index_path,
     rule_similarity_threshold,
     rule_top_k,
+    token_price,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DB_PATH_ENV = "NDIS_DB_PATH"
 DEFAULT_DB_PATH = Path("data/ndis.db")
+REGISTER_CSV_ENV = "REGISTER_CSV_PATH"
+# Relative to the database file's directory: the register download lives in
+# ``data/public/`` next to ``data/ndis.db`` wherever ``NDIS_DB_PATH`` points.
+REGISTER_CSV_RELATIVE = Path("public/register.csv")
+WEB_DIST_ENV = "WEB_DIST_DIR"
+DEFAULT_WEB_DIST = REPO_ROOT / "web" / "dist"
+CORS_ORIGINS_ENV = "CORS_ORIGINS"
+# The Vite dev server's origins; the built page is same-origin and needs no CORS.
+DEFAULT_CORS_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
 RULE_INDEX_PATH_ENV = "RULE_INDEX_PATH"
 # Token budget for one question: one embedding call plus one judge call over a handful
 # of 600-token chunks never comes near this.
@@ -52,6 +64,40 @@ DEFAULT_PAGES_DIR = Path("data/private/pages")
 def database_path() -> Path:
     """SQLite file from ``NDIS_DB_PATH``, defaulting to ``data/ndis.db``."""
     return Path(os.environ.get(DB_PATH_ENV) or DEFAULT_DB_PATH)
+
+
+def register_csv_path() -> Path:
+    """The register download from ``REGISTER_CSV_PATH``, defaulting to
+    ``public/register.csv`` beside the database file (``data/public/register.csv`` for
+    the default database path)."""
+    return Path(os.environ.get(REGISTER_CSV_ENV) or database_path().parent / REGISTER_CSV_RELATIVE)
+
+
+def register_snapshot_date() -> date | None:
+    """The day the register snapshot was downloaded: the modification date of the register
+    CSV (in the server's local time, the time the download happened in), or ``None`` when
+    the file is absent. The database file is deliberately not a fallback: SQLite rewrites
+    its mtime on every write, so after later ingestion steps it only says when the
+    database was last touched, not when the register was taken."""
+    path = register_csv_path()
+    if not path.is_file():
+        return None
+    return datetime.fromtimestamp(path.stat().st_mtime).astimezone().date()
+
+
+def cors_origins() -> tuple[str, ...]:
+    """Browser origins allowed to call the API: the comma-separated ``CORS_ORIGINS``
+    (for a dev server on another port), defaulting to the Vite dev server's."""
+    raw = os.environ.get(CORS_ORIGINS_ENV)
+    if not raw:
+        return DEFAULT_CORS_ORIGINS
+    return tuple(origin.strip() for origin in raw.split(",") if origin.strip())
+
+
+def web_dist_dir() -> Path:
+    """The built front end from ``WEB_DIST_DIR``, defaulting to ``web/dist`` under the
+    repository root (resolved from this file, never from the working directory)."""
+    return Path(os.environ.get(WEB_DIST_ENV) or DEFAULT_WEB_DIST)
 
 
 @lru_cache(maxsize=8)
@@ -208,6 +254,7 @@ def ask_use_case(
         catalogue,
         rule_answerer_for(rule_store_maybe()),
         evidence,
+        token_prices=token_price(llm_model()),
     )
 
 

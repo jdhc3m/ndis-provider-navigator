@@ -13,7 +13,6 @@ dependencies = [
     "rapidfuzz>=3.14,<4",
     "sqlite-vec>=0.1,<0.2",
     "sqlalchemy>=2,<3",
-    "streamlit>=1.40,<2",
     "trafilatura>=2.3,<3",
     "uvicorn>=0.34,<1",
     "langfuse>=5.2.0",
@@ -66,7 +65,7 @@ include_external_packages = true
 [[tool.importlinter.contracts]]
 name = "Outer layers depend inward"
 type = "layers"
-layers = ["ndis.api : ndis.ui : ndis.adapters", "ndis.application", "ndis.domain"]
+layers = ["ndis.api : ndis.adapters", "ndis.application", "ndis.domain"]
 
 [[tool.importlinter.contracts]]
 name = "Domain and application have no external dependencies"
@@ -74,5 +73,5 @@ type = "forbidden"
 source_modules = ["ndis.domain", "ndis.application"]
 forbidden_modules = [
     "fastapi", "pydantic", "sqlalchemy", "httpx", "langfuse", "openai",
-    "streamlit", "sqlite_vec", "chromadb", "trafilatura", "pymupdf", "openpyxl", "rapidfuzz",
+    "sqlite_vec", "chromadb", "trafilatura", "pymupdf", "openpyxl", "rapidfuzz",
 ]
