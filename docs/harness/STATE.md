@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 03 merged; this Foreman thread continues with ticket 04.
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 04 merged. Stopped before ticket 05: it needs the LLM key and a machine that can reach the Gemini API (see Blocked).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -94,19 +94,44 @@ updated. Facts the Builder of ticket 09 needs:
   If a local `data/ndis.db` predates this ticket, `provider_links` must be
   dropped once before re-running (the table gained a `candidates` column).
 
+- Ticket 04 — website fetcher (issue #5, PR #26). Note:
+  `docs/learning/04-website-fetcher.md`. `scripts/collect_pages.py` seeds from
+  the Maps `pages` table once, then fetches live only for providers with no
+  cached `ok` page (`--dry-run` writes nothing). Locally 288/334 providers are
+  covered from the crawl; 46 were fetched live through the corporate proxy and
+  mostly failed (403 proxy block pages, TLS failures on robots.txt), so a run
+  from an unfiltered network will retry exactly those 46 automatically. Page
+  text lives only under `data/private/pages/`; `page_meta` holds url,
+  fetched_at, status, source, text_hash, text_path, title.
+
 ## In progress
-
-- Ticket 04 — website fetcher (issue #5): next.
-
-## Blocked
 
 - None.
 
+## Blocked
+
+- Ticket 05 (and 06, 07, 08, the eval gate and the live demo) need
+  `LLM_API_KEY` in `~/.config/ndis/.env` and a machine that can reach
+  `https://generativelanguage.googleapis.com/`. This Mac cannot (Zscaler 403),
+  and the key does not exist yet. The owner decides where those tickets run.
+  Whatever machine runs them needs: the repo clone, `uv sync`, the register
+  (`scripts/fetch_public_data.py --only register` then `scripts/load_register.py`),
+  the catalogue (`--only catalogue` then `scripts/load_catalogue.py`), a copy of
+  `~/NDIS/ndis.db` at `data/private/maps_brisbane.db`, then
+  `scripts/resolve_entities.py` and `scripts/collect_pages.py` to rebuild
+  `provider_links`, `page_meta` and `data/private/pages/` (or copy the
+  ignored `data/` directory from this Mac). Tickets 09 (front end) and 10
+  (geo ranking) do not need the LLM and can run here meanwhile.
+
 ## Next
 
-- Ticket 04 (website fetcher) can run on this Mac; seed from the `pages` table
-  of `data/private/maps_brisbane.db` first, live fetch only for the gaps.
-  Likely new dependencies `httpx` (already a dev dep) and `trafilatura`
-  (already on the import-linter denylist).
-- Ticket 05 onward needs an LLM key and a machine that can reach the API;
-  stop and tell the owner before starting 05.
+- Ticket 05 — service extraction (issue #6), once the owner provides the key
+  and the machine. The regex baseline is `provider_services` in the Maps DB;
+  page text for extraction is under `data/private/pages/` keyed through
+  `page_meta.provider_key` (ABN when linked, else Maps place id).
+- If the owner prefers to keep going on this Mac first: ticket 10 (geo
+  ranking; `provider_links` already carries Maps latitude/longitude) and
+  ticket 09 (React front end; reread HARNESS_PROMPT.md §2, §5 ticket 09 and
+  issue #10, and tell the Builder to load the `ui-ux-pro-max` skill first)
+  are LLM-free, but the brief orders tickets by number, so this is the
+  owner's call, not the Foreman's.
