@@ -53,3 +53,42 @@ jobs:
           if grep -q '^SKIPPED' /tmp/eval-gate.txt; then
             echo '::notice::Data-backed eval suites skipped in CI: they need data/ (the register snapshot, the rule index, the private extraction and embedding caches), which is never committed. Their thresholds stay enforced on machines with the data; the intent-accuracy suite runs here from the committed capture.'
           fi
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm version comes from the `packageManager` field in web/package.json.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm test
+      # The committed TypeScript schema must match what the FastAPI app exports, so a
+      # backend contract change that the page does not handle fails here, next to the
+      # typecheck that consumes it. Needs the Python app, hence uv in this job too.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.13.7'
+          enable-cache: true
+          python-version: '3.12'
+      - run: uv sync --locked
+        working-directory: .
+      - name: Generated API schema must match the committed one
+        working-directory: .
+        run: |
+          uv run python scripts/export_openapi.py openapi.json
+          pnpm --dir web gen:schema
+          git diff --exit-code -- web/src/api/schema.d.ts
+      - run: pnpm build
