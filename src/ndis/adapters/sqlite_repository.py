@@ -185,6 +185,35 @@ class PageMetaRow(Base):
     __table_args__ = (Index("ix_page_meta_status", "status"),)
 
 
+class ServiceClaimRow(Base):
+    """Public-safe projection of one accepted extraction claim: which service was claimed
+    from which page of which provider, with the model's confidence. The evidence quote
+    itself is page text and stays in the private extraction cache."""
+
+    __tablename__ = "service_claims"
+
+    provider_key: Mapped[str] = mapped_column(String, primary_key=True)
+    url: Mapped[str] = mapped_column(String, primary_key=True)
+    service: Mapped[str] = mapped_column(String, primary_key=True)
+    confidence: Mapped[float] = mapped_column(Float)
+
+    __table_args__ = (Index("ix_service_claims_service", "service"),)
+
+
+class ProviderAttributeRow(Base):
+    """Public-safe provider-level facts from extraction: who a provider serves and how it
+    delivers. Booleans are ``None`` when no page stated them."""
+
+    __tablename__ = "provider_attributes"
+
+    provider_key: Mapped[str] = mapped_column(String, primary_key=True)
+    telehealth: Mapped[bool | None] = mapped_column(Boolean)
+    home_visits: Mapped[bool | None] = mapped_column(Boolean)
+    age_groups: Mapped[str] = mapped_column(String)
+    languages: Mapped[str] = mapped_column(String)
+    extracted_at: Mapped[str] = mapped_column(String)
+
+
 def create_sqlite_engine(path: Path) -> Engine:
     """Create an engine for the SQLite file at ``path``, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)

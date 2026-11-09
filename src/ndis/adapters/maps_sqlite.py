@@ -102,6 +102,24 @@ class SqliteMapsPageSource:
         )
 
 
+class SqliteRegexBaseline:
+    """``BaselineSource`` over the crawl's regex hits: every place's hit slugs, read-only."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def baseline(self) -> dict[str, frozenset[str]]:
+        rows = _read_rows(
+            self._path,
+            "select ps.place_id, s.slug from provider_services ps "
+            "join services s on s.id = ps.service_id order by ps.place_id, s.slug",
+        )
+        slugs: dict[str, set[str]] = {}
+        for place_id, slug in rows:
+            slugs.setdefault(str(place_id), set()).add(str(slug))
+        return {place_id: frozenset(hits) for place_id, hits in slugs.items()}
+
+
 def _parse_fetched_at(value: str) -> datetime:
     """The crawl stamps ISO-8601 with an offset; a stamp without one is taken as UTC."""
     parsed = datetime.fromisoformat(value.strip())
