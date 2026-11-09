@@ -7,3 +7,4 @@ One line per merged ticket: date, ticket, note, PR.
 - 2026-11-08 — 02 Support catalogue and price limits — [note](02-support-catalogue.md) — [PR #21](https://github.com/jdhc3m/ndis-provider-navigator/pull/21)
 - 2026-11-09 — 03 Private data bootstrap and entity resolution — [note](03-entity-resolution.md) — [PR #23](https://github.com/jdhc3m/ndis-provider-navigator/pull/23)
 - 2026-11-09 — 04 Website fetcher — [note](04-website-fetcher.md) — [PR #26](https://github.com/jdhc3m/ndis-provider-navigator/pull/26)
+- 2026-11-09 — 05 Service extraction with structured output — [note](05-service-extraction.md) — [PR #30](https://github.com/jdhc3m/ndis-provider-navigator/pull/30)
