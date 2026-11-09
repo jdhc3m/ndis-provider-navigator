@@ -13,7 +13,13 @@ from ndis.adapters.sqlite_repository import (
     create_sqlite_engine,
 )
 from ndis.application.providers import ProviderQuery
-from ndis.domain.entity_resolution import EntityMatch, MatchStatus, MatchStrategy, ProviderLink
+from ndis.domain.entity_resolution import (
+    Candidate,
+    EntityMatch,
+    MatchStatus,
+    MatchStrategy,
+    ProviderLink,
+)
 from tests.conftest import SEED_OUTLETS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS, make_place
 
 
@@ -121,15 +127,25 @@ def test_provider_links_round_trip(db_path: Path) -> None:
         make_place("place-a", "Nobody", category=None, postcode=None),
         EntityMatch("place-a", None, MatchStatus.UNREGISTERED, MatchStrategy.NONE, 0.4, None),
     )
-    repository.replace_all([linked, unmatched])
-    assert repository.all() == (unmatched, linked)
+    ambiguous = ProviderLink(
+        make_place("place-c", "Franchise", website="https://franchise.example"),
+        EntityMatch(
+            "place-c", None, MatchStatus.AMBIGUOUS, MatchStrategy.DOMAIN, 0.3, None,
+            (Candidate("10000000001", "Alpha Therapy"), Candidate("10000000002", "Beta Supports")),
+        ),
+    )  # fmt: skip
+    repository.replace_all([linked, unmatched, ambiguous])
+    assert repository.all() == (unmatched, linked, ambiguous)
     repository.replace_all([linked])
     assert SqlAlchemyProviderLinkRepository(create_sqlite_engine(db_path)).all() == (linked,)
     with engine.connect() as connection:
         row = connection.execute(
-            text("SELECT abn, match_status, strategy, latitude, longitude FROM provider_links")
+            text(
+                "SELECT abn, match_status, strategy, latitude, longitude, candidates "
+                "FROM provider_links"
+            )
         ).one()
-    assert tuple(row) == (alpha.abn, "registered", "domain", -27.48, 153.01)
+    assert tuple(row) == (alpha.abn, "registered", "domain", -27.48, 153.01, "[]")
 
 
 def test_support_items_round_trip_exact_decimals(

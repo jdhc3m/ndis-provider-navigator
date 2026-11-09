@@ -23,9 +23,11 @@ from ndis.adapters.sqlite_repository import (
 )
 from ndis.application.entity_resolution import ResolutionResult, ResolveEntities
 from ndis.domain.entity_resolution import (
+    CONFIDENCE_DOMAIN,
     CONFIDENCE_FUZZY_MAX,
     CONFIDENCE_FUZZY_MIN,
     FUZZY_THRESHOLD,
+    TIE_BREAK_PENALTY,
     MatchStatus,
     MatchStrategy,
     ProviderLink,
@@ -76,6 +78,13 @@ def _confidence_distribution(links: tuple[ProviderLink, ...]) -> str:
     return _table(("confidence", "places"), rows)
 
 
+def _candidate_count(links: tuple[ProviderLink, ...], domain: str) -> int:
+    return max(
+        (len(link.match.candidates) for link in links if link.place.website_domain == domain),
+        default=0,
+    )
+
+
 def render_report(result: ResolutionResult, maps: Path, db: Path, when: datetime) -> str:
     """Markdown report: counts per status and strategy, confidence bins, expected vs actual."""
     total = len(result.links)
@@ -87,6 +96,15 @@ def render_report(result: ResolutionResult, maps: Path, db: Path, when: datetime
         (label, expected, measured, f"{measured - expected:+d}")
         for (label, expected), measured in zip(EXPECTED, actual, strict=True)
     ]
+    crosstab = Counter((link.match.strategy, link.match.match_status) for link in result.links)
+    ambiguous_domain = crosstab[(MatchStrategy.DOMAIN, MatchStatus.AMBIGUOUS)]
+    ambiguous_name = crosstab[(MatchStrategy.NAME, MatchStatus.AMBIGUOUS)]
+    tie_broken = sum(
+        1
+        for link in result.links
+        if link.match.abn is not None
+        and link.match.confidence == round(CONFIDENCE_DOMAIN - TIE_BREAK_PENALTY, 3)
+    )
     status_rows: list[tuple[object, ...]] = [
         (status.value, by_status[status], f"{100 * by_status[status] / total:.1f}%")
         for status in MatchStatus
@@ -109,20 +127,32 @@ Git; this report contains counts only.
 {_table(("strategy", "places"), strategy_rows)}
 
 `domain` = Maps website host equals a register website host (scheme, `www.`, port, path and
-query stripped on both sides; shared hosts such as `facebook.com` carry no evidence).
-`name` = normalised Maps title, or its head before ` - ` / ` | ` / `:` / `(` decoration, equals
-a normalised register business or legal name. `fuzzy` = `rapidfuzz.fuzz.ratio` of the
-normalised title head against every normalised name of the Brisbane-area providers, best
-score ≥ {FUZZY_THRESHOLD:g}. `category` = the Google primary category is on
-the explicit non-provider list, applied only when neither exact rule hit. `none` = no rule hit.
+query stripped on both sides; shared hosts such as `facebook.com` or `*.wixsite.com` and bare
+suffixes such as `com.au` carry no evidence). `name` = normalised Maps title, or its head before
+` - ` / ` | ` / `:` / `(` decoration, equals a normalised register business or legal name.
+`fuzzy` = `rapidfuzz.fuzz.ratio` of the normalised title head against every normalised name of
+the Brisbane-area providers, best score ≥ {FUZZY_THRESHOLD:g}. `government` = the website is a
+`gov.au` host; `category` = the Google primary category is on the explicit non-provider list;
+both apply only when neither exact rule hit. `none` = no rule hit.
 
 ## Strategy × status
 
 {_crosstab(result.links)}
 
-When one key (a franchise domain such as `justbettercare.com`, or a common name) maps to several
-ABNs, candidates at the place's postcode win, then Brisbane-area candidates; if more than one ABN
-remains the place is `ambiguous`. A single `Revoked` register match is `revoked_or_banned`.
+When one key (a franchise domain such as `rightathome.com.au`, or a common name) maps to
+several ABNs, only two things may break the tie: a candidate whose normalised name equals the
+normalised title or title head (`Right at Home Brisbane South` → the franchisee of that name,
+`Care to Change` → `Care to Change Pty Ltd` rather than `Care to Change Disability Services`),
+then a candidate whose head office postcode equals the place's postcode. Being the only
+Brisbane-area franchisee does not: `Right at Home Brisbane West` and `Right at Home Australia`
+stay `ambiguous` with all {_candidate_count(result.links, "rightathome.com.au")} franchisees
+listed as candidates rather than being linked to Brisbane South. {tie_broken} places were
+linked after such a tie-break (confidence {CONFIDENCE_DOMAIN - TIE_BREAK_PENALTY:.2f}).
+A lone `name` hit whose only provider is neither at the place's postcode nor in the Brisbane
+area (`Disability Support Services` → a trade name in SA, `CPE Group` → WA) is `ambiguous` with
+that provider listed, not `registered`: a generic name alone is no evidence that the shopfront
+is that business. A `domain` hit to an interstate head office keeps full confidence. A single
+`Revoked` register match is `revoked_or_banned`.
 
 ## Confidence
 
@@ -147,36 +177,47 @@ such as `Global Disability Support Services` → `A1 Disability Support Services
 `token_set_ratio`, `partial_ratio` and `WRatio` were rejected because they score a register
 name that is merely contained in a title (`disability care` in `Brisbane Disability Care`) as
 100 or 90, which links unrelated businesses. Fuzzy runs only over the Brisbane-area subset and
-only after the category rule, and is never treated as registration evidence.
+only after the government and category rules, and is never treated as registration evidence.
 
 ## Expected vs measured
 
 {_table(("outcome", "expected (issue #4)", "measured", "difference"), expected_rows)}
 
 Issue #4 counted 214/415 places matching on website domain, 190/415 on normalised name and
-263/415 on either. This run matches {by_strategy[MatchStrategy.DOMAIN]} on domain (214 less the
-place whose website is a shared `facebook.com` host) and {by_strategy[MatchStrategy.NAME]} more
-on exact normalised name, so the exact rules link
-{by_strategy[MatchStrategy.DOMAIN] + by_strategy[MatchStrategy.NAME]} places rather than 263,
-and fuzzy adds {by_strategy[MatchStrategy.FUZZY]}. The gap to the issue's figure is the name rule:
-this normaliser only lower-cases, maps `&` to `and`, strips punctuation, a leading `the` and
-trailing legal suffixes, so a register name that differs by a generic word (`Amma's Care
-Services` vs `Amma's Care Support Services`, `Magnetic Health` vs `Magnetic Health Services`,
-`Your Voice Support Coordination` vs `Your Voice Pty Ltd`) is not an exact hit, and `fuzz.ratio`
-scores those pairs 77–89, below the threshold. The issue's looser comparison counted such pairs;
-the 80–92 band here holds 38 unregistered places of which only one (`Access Bridge Disability
-Services` → `Access Bridge Disability Support Services`, 89.2) looks like the same business, so
-lowering the threshold would buy one true link for dozens of false ones. Four more places are
-lost to register data rather than the matcher: `Allsports Physiotherapy`'s register website is
-`https://www.allsportsphysio.com.au or www.backinmotion.com.au`, which parses to no host.
-The remaining `unregistered` rows are dominated by support coordinators, SDA and respite
-operators, plan managers and allied-health clinics with their own domain and name that do not
-appear in the register at all; those are what the hand-check sample (`evals/er_sample.yaml`) is
-for, and `ambiguous` is kept separate so a shared franchise domain is never silently resolved.
-`not_a_provider` sits a little above the expected 40 even though a register hit beats the
-category rule (recruitment agencies, software companies and corporate offices that are
-registered count as `registered`), because the explicit list also covers the one-off
-categories (`Removalist`, `Labor union`, `Internet service provider`, …) in the export.
+263/415 on either. This run finds a domain candidate for {by_strategy[MatchStrategy.DOMAIN]}
+places (214 less the one on a shared `facebook.com` host) and a name candidate for
+{by_strategy[MatchStrategy.NAME]} more, so the exact rules find something for
+{by_strategy[MatchStrategy.DOMAIN] + by_strategy[MatchStrategy.NAME]} places rather than 263, and
+fuzzy adds {by_strategy[MatchStrategy.FUZZY]}. Of those, {ambiguous_domain} domain and
+{ambiguous_name} name hits end `ambiguous` rather than `registered`, which is deliberate: the
+domain ones are franchises and corporate groups whose shared website maps to several ABNs that
+neither the title nor the postcode can separate (and three providers registered twice under the
+same name), the name ones are generic names whose only register holder is interstate.
+Resolving them the other way would add {ambiguous_domain + ambiguous_name} links at the cost of
+the wrong-franchisee links the first version of this matcher made.
+
+The rest of the gap to the issue's figure is the name rule: this normaliser only lower-cases,
+maps `&` to `and`, strips punctuation, a leading `the` and trailing legal suffixes, so a register
+name that differs by a generic word (`Amma's Care Services` vs `Amma's Care Support Services`,
+`Magnetic Health` vs `Magnetic Health Services`, `Your Voice Support Coordination` vs `Your Voice
+Pty Ltd`) is not an exact hit, and `fuzz.ratio` scores those pairs 77–89, below the threshold.
+The issue's looser comparison counted such pairs; the 80–92 band here holds 37 unregistered
+places of which only one (`Access Bridge Disability Services` → `Access Bridge Disability
+Support Services`, 89.2) looks like the same business, so lowering the threshold would buy one
+true link for dozens of false ones. Four more places are lost to register data rather than the
+matcher: `Allsports Physiotherapy`'s register website is `https://www.allsportsphysio.com.au or
+www.backinmotion.com.au`, which parses to no host. The remaining `unregistered` rows are
+dominated by support coordinators, SDA and respite operators, plan managers and allied-health
+clinics with their own domain and name that do not appear in the register at all; those are
+what the hand-check sample (`evals/er_sample.yaml`) is for.
+
+`not_a_provider` sits above the expected 40 for two reasons: {by_strategy[MatchStrategy.GOVERNMENT]}
+places are government agencies on `gov.au` hosts (the NDIA's offices, Disability Services
+Queensland, the health ombudsman) that the issue's category-only rule would have left
+`unregistered`, and the explicit category list also covers the one-off categories
+(`Removalist`, `Labor union`, `Internet service provider`, …) in the export. A register hit
+still beats both rules, so registered recruitment agencies, software companies and councils
+count as `registered`.
 """
 
 

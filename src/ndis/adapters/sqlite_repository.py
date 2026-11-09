@@ -2,6 +2,7 @@
 ProviderLinkRepository ports; all share one metadata so a single ``data/ndis.db`` holds the
 register, the catalogue and the Maps-to-register links."""
 
+import json
 from collections.abc import Iterable, Sequence
 from datetime import date
 from decimal import Decimal
@@ -38,6 +39,7 @@ from ndis.domain.entities import (
     SupportItem,
 )
 from ndis.domain.entity_resolution import (
+    Candidate,
     EntityMatch,
     MapsPlace,
     MatchStatus,
@@ -134,7 +136,8 @@ class SupportItemRow(Base):
 
 class ProviderLinkRow(Base):
     """One resolved Maps place. ``abn`` is unset for ambiguous, unregistered and non-provider
-    rows; latitude/longitude are kept so later tickets can rank by exact coordinates."""
+    rows; ``candidates`` is a JSON list of ``[abn, name]`` pairs for ambiguous rows;
+    latitude/longitude are kept so later tickets can rank by exact coordinates."""
 
     __tablename__ = "provider_links"
 
@@ -152,6 +155,7 @@ class ProviderLinkRow(Base):
     strategy: Mapped[str] = mapped_column(String)
     confidence: Mapped[float] = mapped_column(Float)
     matched_name: Mapped[str | None] = mapped_column(String)
+    candidates: Mapped[str] = mapped_column(String)
 
     __table_args__ = (
         Index("ix_provider_links_abn", "abn"),
@@ -332,6 +336,7 @@ def _link_values(link: ProviderLink) -> dict[str, object]:
         "strategy": match.strategy.value,
         "confidence": match.confidence,
         "matched_name": match.matched_name,
+        "candidates": json.dumps([[c.abn, c.name] for c in match.candidates]),
     }
 
 
@@ -355,6 +360,7 @@ def _to_link(row: ProviderLinkRow) -> ProviderLink:
             strategy=MatchStrategy(row.strategy),
             confidence=row.confidence,
             matched_name=row.matched_name,
+            candidates=tuple(Candidate(abn, name) for abn, name in json.loads(row.candidates)),
         ),
     )
 

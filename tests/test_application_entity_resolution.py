@@ -82,6 +82,8 @@ PLACES = [
     make_place("p-category", "Hire Co", category="Recruitment Agency"),
     make_place("p-fuzzy", "Epsilon Nationa", website="https://eps.example"),
     make_place("p-none", "Nobody Known", website="https://nobody.example"),
+    make_place("p-gov", "Some Agency", website="https://www.agency.qld.gov.au/x"),
+    make_place("p-generic", "Nobody Either", website="https://facebook.com/nobody"),
 ]
 
 
@@ -102,36 +104,44 @@ def test_use_case_resolves_in_order_and_persists() -> None:
         EPSILON.abn,
     )
     assert by_place["p-none"].match_status is MatchStatus.UNREGISTERED
+    assert (by_place["p-gov"].match_status, by_place["p-gov"].strategy) == (
+        MatchStatus.NOT_A_PROVIDER,
+        MatchStrategy.GOVERNMENT,
+    )
+    assert by_place["p-generic"].match_status is MatchStatus.UNREGISTERED
 
     assert links.stored == list(result.links)
     assert result.by_status == {
         MatchStatus.REGISTERED: 3,
-        MatchStatus.UNREGISTERED: 1,
+        MatchStatus.UNREGISTERED: 2,
         MatchStatus.REVOKED_OR_BANNED: 1,
         MatchStatus.AMBIGUOUS: 0,
-        MatchStatus.NOT_A_PROVIDER: 1,
+        MatchStatus.NOT_A_PROVIDER: 2,
     }
     assert result.by_strategy == {
         MatchStrategy.DOMAIN: 1,
         MatchStrategy.NAME: 2,
         MatchStrategy.FUZZY: 1,
         MatchStrategy.CATEGORY: 1,
-        MatchStrategy.NONE: 1,
+        MatchStrategy.GOVERNMENT: 1,
+        MatchStrategy.NONE: 2,
     }
-    assert result.summary().startswith("6 places; status: ambiguous=0, not_a_provider=1")
+    assert result.summary().startswith("8 places; status: ambiguous=0, not_a_provider=2")
 
 
 def test_fuzzy_runs_only_when_needed_and_only_over_brisbane_names() -> None:
     providers, scorer = FakeProviders(list(SEED_PROVIDERS)), RecordingScorer()
     ResolveEntities(FakePlaces(PLACES), providers, FakeLinks(), scorer)()
     queries = {query for query, _ in scorer.compared}
-    assert queries == {"epsilon nationa", "nobody known"}
+    assert queries == {"epsilon nationa", "nobody known", "nobody either"}
     candidates = {candidate for _, candidate in scorer.compared}
     assert normalise_name(GAMMA.business_name) not in candidates
     assert candidates == {
         normalise_name(p.business_name) for p in SEED_PROVIDERS if p.brisbane_area
     }
-    # Domain lookups are skipped for places without a website; name lookups use the head too.
+    # Domain lookups are skipped for places without a website or on a shared host; name
+    # lookups use the head too.
     assert "10000000001.example.com.au" in providers.domain_lookups
+    assert "facebook.com" not in providers.domain_lookups
     assert "beta supports" in providers.name_lookups
     assert "beta supports ndis provider brisbane" in providers.name_lookups

@@ -16,12 +16,14 @@ from ndis.domain.entity_resolution import (
     CONFIDENCE_UNREGISTERED_WITH_WEBSITE,
     FUZZY_THRESHOLD,
     TIE_BREAK_PENALTY,
+    Candidate,
     EntityMatch,
     MatchStatus,
     MatchStrategy,
     best_fuzzy_candidates,
     fuzzy_confidence,
     is_generic_domain,
+    is_government_domain,
     is_provider_category,
     normalise_name,
     resolve_place,
@@ -98,24 +100,60 @@ def test_is_provider_category(category: str | None, expected: bool) -> None:
     assert is_provider_category(category) is expected
 
 
-def test_generic_domains_are_not_evidence() -> None:
-    assert is_generic_domain("facebook.com")
-    assert not is_generic_domain("huntercarers.org.au")
-    assert not is_generic_domain(None)
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("facebook.com", True),
+        ("acme-care.wixsite.com", True),
+        ("sites.google.com", True),
+        ("linktr.ee", True),
+        ("acme.business.site", True),
+        ("com.au", True),
+        ("org.au", True),
+        ("com", True),
+        ("huntercarers.org.au", False),
+        ("notfacebook.com", False),
+        ("google.com.au", False),
+        (None, False),
+    ],
+)
+def test_generic_domains_and_bare_suffixes_are_not_evidence(
+    domain: str | None, expected: bool
+) -> None:
+    assert is_generic_domain(domain) is expected
 
 
-def test_select_candidates_dedupes_and_tie_breaks_by_postcode_then_brisbane() -> None:
+@pytest.mark.parametrize(
+    ("domain", "expected"),
+    [
+        ("ndis.gov.au", True),
+        ("communities.qld.gov.au", True),
+        ("gov.au", True),
+        ("notgov.au", False),
+        ("ndis.gov.au.example.com", False),
+        (None, False),
+    ],
+)
+def test_government_domains(domain: str | None, expected: bool) -> None:
+    assert is_government_domain(domain) is expected
+
+
+def test_select_candidates_dedupes_and_tie_breaks_by_name_then_postcode() -> None:
     place = make_place("p", "Franchise", postcode="4000")
     assert select_candidates(place, [ALPHA, ALPHA]) == ((ALPHA,), False)
     # BETA is at 4000, so it wins over ALPHA (4101) on postcode.
     assert select_candidates(place, [ALPHA, BETA]) == ((BETA,), True)
-    # Neither matches 4000; GAMMA is outside Brisbane so ALPHA wins on the area flag.
+    # A candidate named like the listing beats one at the listing's postcode.
+    named = make_place("p", "Alpha Therapy - Brisbane CBD", postcode="4000")
+    assert select_candidates(named, [BETA, ALPHA]) == ((ALPHA,), True)
+    # Neither name nor postcode agrees: being in Brisbane does not break the tie.
     far = make_place("p", "Franchise", postcode="4999")
-    assert select_candidates(far, [GAMMA, ALPHA]) == ((ALPHA,), True)
-    # Two non-Brisbane candidates and no postcode hit: nothing to choose between.
-    interstate = replace(ALPHA, abn="10000000009", brisbane_area=False)
-    assert select_candidates(far, [GAMMA, interstate]) == ((GAMMA, interstate), True)
+    assert select_candidates(far, [GAMMA, ALPHA]) == ((GAMMA, ALPHA), True)
     assert select_candidates(far, []) == ((), False)
+    # A place without a postcode never "matches" a candidate without one.
+    blank = make_place("p", "Franchise", postcode=None)
+    no_postcode = replace(GAMMA, head_office=replace(GAMMA.head_office, postcode=None))
+    assert select_candidates(blank, [ALPHA, no_postcode]) == ((ALPHA, no_postcode), True)
 
 
 def test_domain_hit_is_registered_with_top_confidence() -> None:
@@ -156,12 +194,71 @@ def test_franchise_domain_resolved_by_postcode_costs_confidence() -> None:
     assert match.confidence == pytest.approx(CONFIDENCE_DOMAIN - TIE_BREAK_PENALTY)
 
 
-def test_equally_good_candidates_are_ambiguous() -> None:
+def test_equally_good_candidates_are_ambiguous_and_listed() -> None:
     place = make_place("p", "Franchise", website="https://franchise.example.com", postcode="4999")
     match = resolve_place(place, [ALPHA, BETA], [], no_fuzzy)
     assert match == EntityMatch(
-        "p", None, MatchStatus.AMBIGUOUS, MatchStrategy.DOMAIN, CONFIDENCE_AMBIGUOUS, None
+        "p",
+        None,
+        MatchStatus.AMBIGUOUS,
+        MatchStrategy.DOMAIN,
+        CONFIDENCE_AMBIGUOUS,
+        None,
+        (Candidate(ALPHA.abn, ALPHA.business_name), Candidate(BETA.abn, BETA.business_name)),
     )
+
+
+def test_franchise_domain_with_one_brisbane_franchisee_stays_ambiguous() -> None:
+    # One franchisee in Brisbane, one interstate, a title that names neither and a postcode
+    # that matches neither: the Brisbane one must not absorb the listing.
+    place = make_place(
+        "p", "Franchise Brisbane West", website="https://franchise.example.com", postcode="4064"
+    )
+    match = resolve_place(place, [GAMMA, ALPHA], [], no_fuzzy)
+    assert (match.match_status, match.abn) == (MatchStatus.AMBIGUOUS, None)
+    assert {c.abn for c in match.candidates} == {GAMMA.abn, ALPHA.abn}
+
+
+def test_franchise_domain_resolved_by_name_agreement() -> None:
+    # Same shared domain and no postcode help, but the title names one franchisee exactly.
+    place = make_place(
+        "p", "Gamma Care - NDIS Provider", website="https://franchise.example.com", postcode="4064"
+    )
+    match = resolve_place(place, [GAMMA, ALPHA], [], no_fuzzy)
+    assert (match.abn, match.strategy, match.match_status) == (
+        GAMMA.abn,
+        MatchStrategy.DOMAIN,
+        MatchStatus.REGISTERED,
+    )
+    assert match.confidence == pytest.approx(CONFIDENCE_DOMAIN - TIE_BREAK_PENALTY)
+
+
+def test_lone_name_hit_far_from_the_place_is_ambiguous_not_registered() -> None:
+    # GAMMA is the only "Gamma Care" in the register but sits in NSW; nothing ties it to a
+    # Brisbane shopfront, so it is listed as a candidate rather than linked.
+    match = resolve_place(make_place("p", "Gamma Care", postcode="4000"), [], [GAMMA], no_fuzzy)
+    assert match == EntityMatch(
+        "p",
+        None,
+        MatchStatus.AMBIGUOUS,
+        MatchStrategy.NAME,
+        CONFIDENCE_AMBIGUOUS,
+        None,
+        (Candidate(GAMMA.abn, GAMMA.business_name),),
+    )
+    # The same provider at the place's postcode, or a Brisbane-area one, is a full hit.
+    nearby = resolve_place(make_place("p", "Gamma Care", postcode="2150"), [], [GAMMA], no_fuzzy)
+    assert (nearby.match_status, nearby.confidence) == (MatchStatus.REGISTERED, CONFIDENCE_NAME)
+    local = resolve_place(make_place("p", "Alpha Therapy", postcode=None), [], [ALPHA], no_fuzzy)
+    assert (local.match_status, local.confidence) == (MatchStatus.REGISTERED, CONFIDENCE_NAME)
+
+
+def test_domain_hit_to_an_interstate_head_office_keeps_full_confidence() -> None:
+    place = make_place(
+        "p", "Gamma Care Brisbane", website="https://www.gamma.example", postcode="4000"
+    )
+    match = resolve_place(place, [GAMMA], [], no_fuzzy)
+    assert (match.match_status, match.confidence) == (MatchStatus.REGISTERED, CONFIDENCE_DOMAIN)
 
 
 def test_non_provider_category_without_register_hit() -> None:
@@ -185,6 +282,22 @@ def test_register_hit_beats_the_category_rule() -> None:
     )
     match = resolve_place(place, [ALPHA], [], no_fuzzy)
     assert match.match_status is MatchStatus.REGISTERED
+
+
+def test_government_domain_without_register_hit_is_not_a_provider() -> None:
+    place = make_place("p", "National Disability Insurance Scheme", website="https://ndis.gov.au")
+    match = resolve_place(place, [], [], no_fuzzy)
+    assert match == EntityMatch(
+        "p",
+        None,
+        MatchStatus.NOT_A_PROVIDER,
+        MatchStrategy.GOVERNMENT,
+        CONFIDENCE_NOT_A_PROVIDER,
+        None,
+    )
+    # A registered council or health department stays registered.
+    council = make_place("p", "Some Council", website="https://council.qld.gov.au")
+    assert resolve_place(council, [ALPHA], [], no_fuzzy).match_status is MatchStatus.REGISTERED
 
 
 @pytest.mark.parametrize(

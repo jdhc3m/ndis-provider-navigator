@@ -4,7 +4,9 @@ import random
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from ndis.domain.entity_resolution import MatchStatus, ProviderLink
+from ndis.domain.entity_resolution import MatchStatus, MatchStrategy, ProviderLink
+
+type Stratum = tuple[MatchStatus, MatchStrategy]
 
 VERDICT_CORRECT = "correct"
 VERDICT_INCORRECT = "incorrect"
@@ -60,31 +62,32 @@ def precision_from_verdicts(verdicts: Iterable[str | None]) -> PrecisionResult:
 def stratified_sample(
     links: Sequence[ProviderLink], size: int, seed: int
 ) -> tuple[ProviderLink, ...]:
-    """Draw ``size`` links deterministically with every present status represented.
+    """Draw ``size`` links deterministically with every present (status, strategy) represented.
 
-    Each status gets one row first, the rest are spread in proportion to the status counts
-    (largest remainders fill the gaps), and rows within a status are chosen by ``seed`` after
+    Each stratum gets one row first, so the least-trusted rules (fuzzy, a tie-broken domain)
+    always reach the hand-check; the rest are spread in proportion to the stratum sizes
+    (largest remainders fill the gaps), and rows within a stratum are chosen by ``seed`` after
     sorting by place id so the draw does not depend on input order.
     """
-    by_status: dict[MatchStatus, list[ProviderLink]] = {}
+    strata: dict[Stratum, list[ProviderLink]] = {}
     for link in sorted(links, key=lambda link: link.place.place_id):
-        by_status.setdefault(link.match.match_status, []).append(link)
-    if not by_status or size <= 0:
+        strata.setdefault((link.match.match_status, link.match.strategy), []).append(link)
+    if not strata or size <= 0:
         return ()
     size = min(size, len(links))
-    quotas = {status: min(1, len(rows)) for status, rows in by_status.items()}
+    quotas = {stratum: min(1, len(rows)) for stratum, rows in strata.items()}
     remaining = size - sum(quotas.values())
     if remaining > 0:
-        shares = {status: remaining * len(rows) / len(links) for status, rows in by_status.items()}
-        for status, share in shares.items():
-            quotas[status] = min(quotas[status] + int(share), len(by_status[status]))
-        leftovers = sorted(by_status, key=lambda status: (-(shares[status] % 1), status.value))
+        shares = {stratum: remaining * len(rows) / len(links) for stratum, rows in strata.items()}
+        for stratum, share in shares.items():
+            quotas[stratum] = min(quotas[stratum] + int(share), len(strata[stratum]))
+        leftovers = sorted(strata, key=lambda s: (-(shares[s] % 1), s[0].value, s[1].value))
         while sum(quotas.values()) < size:
-            for status in leftovers:
-                if quotas[status] < len(by_status[status]) and sum(quotas.values()) < size:
-                    quotas[status] += 1
+            for stratum in leftovers:
+                if quotas[stratum] < len(strata[stratum]) and sum(quotas.values()) < size:
+                    quotas[stratum] += 1
     rng = random.Random(seed)
     chosen: list[ProviderLink] = []
-    for status in sorted(by_status, key=lambda status: status.value):
-        chosen.extend(rng.sample(by_status[status], quotas[status]))
+    for stratum in sorted(strata, key=lambda s: (s[0].value, s[1].value)):
+        chosen.extend(rng.sample(strata[stratum], quotas[stratum]))
     return tuple(chosen)

@@ -14,9 +14,12 @@ from ndis.domain.entity_resolution import (
     MatchStatus,
     MatchStrategy,
     ProviderLink,
+    is_generic_domain,
+    name_keys,
     normalise_name,
     resolve_place,
     title_head,
+    title_keys,
 )
 
 
@@ -43,7 +46,9 @@ class ProviderLinkRepository(Protocol):
 class FuzzyScorer(Protocol):
     """Similarity of two normalised names on a 0–100 scale (100 is identical)."""
 
-    def score(self, query: str, candidate: str) -> float: ...
+    def score(self, query: str, candidate: str) -> float:
+        """Score ``candidate`` against ``query``; both are already normalised names."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -55,17 +60,10 @@ class ResolutionResult:
     by_strategy: Mapping[MatchStrategy, int]
 
     def summary(self) -> str:
+        """One log line: total places, then the counts per status and per strategy."""
         statuses = ", ".join(f"{s.value}={n}" for s, n in sorted(self.by_status.items()))
         strategies = ", ".join(f"{s.value}={n}" for s, n in sorted(self.by_strategy.items()))
         return f"{len(self.links)} places; status: {statuses}; strategy: {strategies}"
-
-
-def _name_keys(provider: Provider) -> frozenset[str]:
-    return frozenset(
-        key
-        for key in (normalise_name(provider.business_name), normalise_name(provider.legal_name))
-        if key
-    )
 
 
 class ResolveEntities:
@@ -92,7 +90,7 @@ class ResolveEntities:
 
     def __call__(self) -> ResolutionResult:
         brisbane = [
-            (provider, _name_keys(provider)) for provider in self._providers.brisbane_providers()
+            (provider, name_keys(provider)) for provider in self._providers.brisbane_providers()
         ]
         links: list[ProviderLink] = []
         for place in self._places.places():
@@ -110,13 +108,11 @@ class ResolveEntities:
         self, place: MapsPlace, brisbane: list[tuple[Provider, frozenset[str]]]
     ) -> EntityMatch:
         domain_candidates: tuple[Provider, ...] = ()
-        if place.website_domain:
+        if place.website_domain and not is_generic_domain(place.website_domain):
             domain_candidates = self._providers.find_by_website_domain(place.website_domain)
-        name_keys = {normalise_name(place.title), normalise_name(title_head(place.title))}
         name_candidates = tuple(
             provider
-            for key in sorted(name_keys)
-            if key
+            for key in sorted(title_keys(place.title))
             for provider in self._providers.find_by_normalised_name(key)
         )
         head = normalise_name(title_head(place.title))
