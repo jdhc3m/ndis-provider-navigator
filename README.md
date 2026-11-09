@@ -25,7 +25,7 @@ run `git update-index --skip-worktree uv.lock` in your checkout, and after a
 dependency change download the artifact from the failing run and commit that
 (`git update-index --no-skip-worktree uv.lock` first).
 
-Run `uv run pytest -m eval` once model-backed evaluation tests are added. CI gives
+Run `uv run pytest -m eval --no-cov` once model-backed evaluation tests are added (the 80% coverage gate applies to the unit/integration run only, matching CI). CI gives
 a visible notice when the suite or a usable model/key is unavailable. No LLM key
 is required for tickets 00–04. Personal model configuration belongs in
 `~/.config/ndis/.env` (see `.env.example`); environment-file loading is not built yet.
