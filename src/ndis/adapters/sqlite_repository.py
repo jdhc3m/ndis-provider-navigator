@@ -1,6 +1,8 @@
-"""SQLAlchemy 2 / SQLite implementations of the ProviderRepository and SupportItemRepository
-ports; both share one metadata so a single ``data/ndis.db`` holds the register and catalogue."""
+"""SQLAlchemy 2 / SQLite implementations of the ProviderRepository, SupportItemRepository and
+ProviderLinkRepository ports; all share one metadata so a single ``data/ndis.db`` holds the
+register, the catalogue and the Maps-to-register links."""
 
+import json
 from collections.abc import Iterable, Sequence
 from datetime import date
 from decimal import Decimal
@@ -12,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     Engine,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -34,6 +37,15 @@ from ndis.domain.entities import (
     Provider,
     RegistrationGroup,
     SupportItem,
+)
+from ndis.domain.entity_resolution import (
+    Candidate,
+    EntityMatch,
+    MapsPlace,
+    MatchStatus,
+    MatchStrategy,
+    ProviderLink,
+    normalise_name,
 )
 
 INSERT_BATCH_SIZE = 1000
@@ -122,6 +134,35 @@ class SupportItemRow(Base):
     __table_args__ = (Index("ix_support_items_group", "registration_group_number"),)
 
 
+class ProviderLinkRow(Base):
+    """One resolved Maps place. ``abn`` is unset for ambiguous, unregistered and non-provider
+    rows; ``candidates`` is a JSON list of ``[abn, name]`` pairs for ambiguous rows;
+    latitude/longitude are kept so later tickets can rank by exact coordinates."""
+
+    __tablename__ = "provider_links"
+
+    place_id: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String)
+    category: Mapped[str | None] = mapped_column(String)
+    website: Mapped[str | None] = mapped_column(String)
+    website_domain: Mapped[str | None] = mapped_column(String)
+    suburb: Mapped[str | None] = mapped_column(String)
+    postcode: Mapped[str | None] = mapped_column(String(4))
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
+    abn: Mapped[str | None] = mapped_column(String(11))
+    match_status: Mapped[str] = mapped_column(String)
+    strategy: Mapped[str] = mapped_column(String)
+    confidence: Mapped[float] = mapped_column(Float)
+    matched_name: Mapped[str | None] = mapped_column(String)
+    candidates: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        Index("ix_provider_links_abn", "abn"),
+        Index("ix_provider_links_status", "match_status"),
+    )
+
+
 def create_sqlite_engine(path: Path) -> Engine:
     """Create an engine for the SQLite file at ``path``, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,14 +217,37 @@ def _to_provider(row: ProviderRow, groups: Sequence[str]) -> Provider:
     )
 
 
+def _load_providers(
+    session: Session, statement: Select[tuple[ProviderRow]]
+) -> tuple[Provider, ...]:
+    """Materialise provider rows with their groups, keeping the statement's order."""
+    rows: Sequence[ProviderRow] = session.scalars(statement).all()
+    groups_by_abn: dict[str, list[str]] = {row.abn: [] for row in rows}
+    if rows:
+        group_rows = session.execute(
+            select(ProviderGroupRow.provider_abn, ProviderGroupRow.group_name)
+            .where(ProviderGroupRow.provider_abn.in_(list(groups_by_abn)))
+            .order_by(ProviderGroupRow.position)
+        )
+        for abn, name in group_rows:
+            groups_by_abn[abn].append(name)
+    return tuple(_to_provider(row, groups_by_abn[row.abn]) for row in rows)
+
+
 class SqlAlchemyProviderRepository:
-    """Stores providers, their registration groups and outlets in SQLite."""
+    """Stores providers, their registration groups and outlets in SQLite.
+
+    Normalised names are not stored: the name index is built in memory from every row's
+    business and legal name on first use and dropped again by ``replace_all``.
+    """
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        self._name_index: dict[str, list[str]] | None = None
         Base.metadata.create_all(engine)
 
     def replace_all(self, providers: Iterable[Provider], outlets: Iterable[Outlet]) -> None:
+        self._name_index = None
         with Session(self._engine) as session, session.begin():
             session.execute(delete(OutletRow))
             session.execute(delete(ProviderGroupRow))
@@ -204,22 +268,120 @@ class SqlAlchemyProviderRepository:
         statement = _apply_filters(select(ProviderRow), query)
         with Session(self._engine) as session:
             total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
-            rows: Sequence[ProviderRow] = session.scalars(
+            items = _load_providers(
+                session,
                 statement.order_by(ProviderRow.business_name, ProviderRow.abn)
                 .limit(query.limit)
-                .offset(query.offset)
-            ).all()
-            groups_by_abn: dict[str, list[str]] = {row.abn: [] for row in rows}
-            if rows:
-                group_rows = session.execute(
-                    select(ProviderGroupRow.provider_abn, ProviderGroupRow.group_name)
-                    .where(ProviderGroupRow.provider_abn.in_(list(groups_by_abn)))
-                    .order_by(ProviderGroupRow.position)
-                )
-                for abn, name in group_rows:
-                    groups_by_abn[abn].append(name)
-            items = tuple(_to_provider(row, groups_by_abn[row.abn]) for row in rows)
+                .offset(query.offset),
+            )
         return Page(items=items, total=total, limit=query.limit, offset=query.offset)
+
+    def find_by_website_domain(self, domain: str) -> tuple[Provider, ...]:
+        with Session(self._engine) as session:
+            return _load_providers(
+                session,
+                select(ProviderRow)
+                .where(ProviderRow.website_domain == domain)
+                .order_by(ProviderRow.abn),
+            )
+
+    def find_by_normalised_name(self, name: str) -> tuple[Provider, ...]:
+        if self._name_index is None:
+            self._name_index = self._build_name_index()
+        abns = self._name_index.get(name, [])
+        if not abns:
+            return ()
+        with Session(self._engine) as session:
+            return _load_providers(
+                session,
+                select(ProviderRow).where(ProviderRow.abn.in_(abns)).order_by(ProviderRow.abn),
+            )
+
+    def brisbane_providers(self) -> tuple[Provider, ...]:
+        with Session(self._engine) as session:
+            return _load_providers(
+                session,
+                select(ProviderRow)
+                .where(ProviderRow.brisbane_area.is_(True))
+                .order_by(ProviderRow.abn),
+            )
+
+    def _build_name_index(self) -> dict[str, list[str]]:
+        index: dict[str, list[str]] = {}
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(ProviderRow.abn, ProviderRow.business_name, ProviderRow.legal_name)
+            )
+            for abn, business_name, legal_name in rows:
+                for key in {normalise_name(business_name), normalise_name(legal_name)}:
+                    if key:
+                        index.setdefault(key, []).append(abn)
+        return index
+
+
+def _link_values(link: ProviderLink) -> dict[str, object]:
+    place, match = link.place, link.match
+    return {
+        "place_id": place.place_id,
+        "title": place.title,
+        "category": place.category,
+        "website": place.website,
+        "website_domain": place.website_domain,
+        "suburb": place.suburb,
+        "postcode": place.postcode,
+        "latitude": place.latitude,
+        "longitude": place.longitude,
+        "abn": match.abn,
+        "match_status": match.match_status.value,
+        "strategy": match.strategy.value,
+        "confidence": match.confidence,
+        "matched_name": match.matched_name,
+        "candidates": json.dumps([[c.abn, c.name] for c in match.candidates]),
+    }
+
+
+def _to_link(row: ProviderLinkRow) -> ProviderLink:
+    return ProviderLink(
+        place=MapsPlace(
+            place_id=row.place_id,
+            title=row.title,
+            category=row.category,
+            website=row.website,
+            website_domain=row.website_domain,
+            suburb=row.suburb,
+            postcode=row.postcode,
+            latitude=row.latitude,
+            longitude=row.longitude,
+        ),
+        match=EntityMatch(
+            place_id=row.place_id,
+            abn=row.abn,
+            match_status=MatchStatus(row.match_status),
+            strategy=MatchStrategy(row.strategy),
+            confidence=row.confidence,
+            matched_name=row.matched_name,
+            candidates=tuple(Candidate(abn, name) for abn, name in json.loads(row.candidates)),
+        ),
+    )
+
+
+class SqlAlchemyProviderLinkRepository:
+    """Stores the resolved Maps-to-register links in SQLite, one row per place id."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        Base.metadata.create_all(engine)
+
+    def replace_all(self, links: Iterable[ProviderLink]) -> None:
+        with Session(self._engine) as session, session.begin():
+            session.execute(delete(ProviderLinkRow))
+            for batch in batched(links, INSERT_BATCH_SIZE):
+                session.execute(insert(ProviderLinkRow), [_link_values(link) for link in batch])
+
+    def all(self) -> tuple[ProviderLink, ...]:
+        with Session(self._engine) as session:
+            rows = session.scalars(select(ProviderLinkRow).order_by(ProviderLinkRow.place_id))
+            return tuple(_to_link(row) for row in rows)
 
 
 def _apply_filters(statement: Select[Any], query: ProviderQuery) -> Select[Any]:

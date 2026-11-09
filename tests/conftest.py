@@ -1,6 +1,7 @@
 """Shared fixtures: inline register rows in the real CSV format, catalogue rows copied from the
 real workbook (written to a small XLSX with the same sheet/column layout), seeded SQLite repos."""
 
+import sqlite3
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -22,6 +23,8 @@ from ndis.domain.entities import (
     RegistrationGroup,
     SupportItem,
 )
+from ndis.domain.entity_resolution import MapsPlace
+from ndis.domain.register import website_domain
 
 REGISTER_HEADER = (
     '"Provider business name","Legal name",ABN,"Head office address",Website,'
@@ -385,3 +388,80 @@ def seeded_support_items(db_path: Path) -> SqlAlchemySupportItemRepository:
     repository = SqlAlchemySupportItemRepository(create_sqlite_engine(db_path))
     repository.replace_all(SEED_SUPPORT_ITEMS)
     return repository
+
+
+# --- Maps export (synthetic; the real one is private and never leaves data/private/) --------
+
+# The ``providers`` table of the scraper's SQLite file, copied from db/schema.sql.
+MAPS_SCHEMA = """
+CREATE TABLE providers (
+    place_id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT, categories TEXT,
+    address TEXT, suburb TEXT, state TEXT, postcode TEXT, phone TEXT, website TEXT,
+    emails TEXT, review_rating REAL, review_count INTEGER, reviews_per_rating TEXT,
+    latitude REAL, longitude REAL, maps_link TEXT, open_hours TEXT, instagram TEXT,
+    facebook TEXT, linkedin TEXT, tiktok TEXT, youtube TEXT, x TEXT, scraped_at TEXT NOT NULL
+);
+CREATE TABLE reviews (
+    id INTEGER PRIMARY KEY, place_id TEXT NOT NULL REFERENCES providers(place_id),
+    rating INTEGER, when_text TEXT, text TEXT
+);
+"""
+
+# (place_id, title, category, website, suburb, postcode, latitude, longitude); shapes seen in
+# the real export: utm-decorated URLs, blank website, blank category, decorated titles.
+MAPS_ROWS = [
+    ("place-alpha", "Alpha Therapy - NDIS Provider Brisbane", "Physiotherapist",
+     "https://www.10000000001.example.com.au/about?utm_source=gbp", "West End", "4101",
+     -27.48, 153.01),
+    ("place-beta", "Beta Supports", "Disability services and support organization",
+     None, "Brisbane City", "4000", -27.47, 153.02),
+    ("place-delta", "Delta Revoked", "", "http://10000000004.example.com.au", "Milton",
+     "4064", None, None),
+    ("place-recruit", "Hire Co", "Recruitment Agency", "https://hireco.example.com",
+     "Milton", "4064", -27.46, 153.0),
+    ("place-unknown", "Nobody Known Pty Ltd", "Disability services and support organization",
+     "https://nobody.example.com", " ", "", -27.5, 153.03),
+]  # fmt: skip
+
+
+def write_maps_export(path: Path, rows: list[tuple[object, ...]]) -> Path:
+    connection = sqlite3.connect(path)
+    with connection:
+        connection.executescript(MAPS_SCHEMA)
+        connection.executemany(
+            "insert into providers (place_id, title, category, website, suburb, postcode, "
+            "latitude, longitude, scraped_at) values (?, ?, ?, ?, ?, ?, ?, ?, '2026-11-01')",
+            rows,
+        )
+        connection.execute(
+            "insert into reviews (place_id, rating, when_text, text) "
+            "values ('place-alpha', 5, 'a week ago', 'never read by the matcher')"
+        )
+    connection.close()
+    return path
+
+
+@pytest.fixture
+def maps_export(tmp_path: Path) -> Path:
+    return write_maps_export(tmp_path / "maps_brisbane.db", MAPS_ROWS)
+
+
+def make_place(
+    place_id: str,
+    title: str,
+    *,
+    category: str | None = "Disability services and support organization",
+    website: str | None = None,
+    postcode: str | None = "4101",
+) -> MapsPlace:
+    return MapsPlace(
+        place_id=place_id,
+        title=title,
+        category=category,
+        website=website,
+        website_domain=website_domain(website),
+        suburb="WEST END",
+        postcode=postcode,
+        latitude=-27.48,
+        longitude=153.01,
+    )

@@ -7,12 +7,20 @@ import pytest
 from sqlalchemy import inspect, text
 
 from ndis.adapters.sqlite_repository import (
+    SqlAlchemyProviderLinkRepository,
     SqlAlchemyProviderRepository,
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
 )
 from ndis.application.providers import ProviderQuery
-from tests.conftest import SEED_OUTLETS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS
+from ndis.domain.entity_resolution import (
+    Candidate,
+    EntityMatch,
+    MatchStatus,
+    MatchStrategy,
+    ProviderLink,
+)
+from tests.conftest import SEED_OUTLETS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS, make_place
 
 
 def abns(repository: SqlAlchemyProviderRepository, query: ProviderQuery) -> list[str]:
@@ -26,6 +34,7 @@ def test_tables_and_indexes_exist(seeded_repository: SqlAlchemyProviderRepositor
         "outlets",
         "provider_registration_groups",
         "support_items",
+        "provider_links",
     }
     assert {index["name"] for index in inspector.get_indexes("outlets")} >= {
         "ix_outlets_postcode",
@@ -83,6 +92,60 @@ def test_replace_all_is_a_full_refresh(db_path: Path) -> None:
     assert abns(repository, ProviderQuery(postcode="4000")) == []
     reopened = SqlAlchemyProviderRepository(create_sqlite_engine(db_path))
     assert reopened.find(ProviderQuery()).total == 1
+
+
+def test_candidate_lookups(seeded_repository: SqlAlchemyProviderRepository) -> None:
+    alpha, beta, gamma, delta, epsilon = SEED_PROVIDERS
+    assert seeded_repository.find_by_website_domain("10000000001.example.com.au") == (alpha,)
+    assert seeded_repository.find_by_website_domain("www.10000000001.example.com.au") == ()
+    # Business and legal name (``ALPHA THERAPY``) normalise to the same key; one hit, not two.
+    assert seeded_repository.find_by_normalised_name("alpha therapy") == (alpha,)
+    assert seeded_repository.find_by_normalised_name("Alpha Therapy") == ()
+    assert seeded_repository.find_by_normalised_name("") == ()
+    assert seeded_repository.brisbane_providers() == (alpha, beta, delta, epsilon)
+    assert gamma not in seeded_repository.brisbane_providers()
+
+
+def test_name_index_is_rebuilt_after_replace_all(
+    seeded_repository: SqlAlchemyProviderRepository,
+) -> None:
+    assert seeded_repository.find_by_normalised_name("gamma care") != ()
+    seeded_repository.replace_all(SEED_PROVIDERS[:1], SEED_OUTLETS[:1])
+    assert seeded_repository.find_by_normalised_name("gamma care") == ()
+    assert seeded_repository.find_by_normalised_name("alpha therapy") == (SEED_PROVIDERS[0],)
+
+
+def test_provider_links_round_trip(db_path: Path) -> None:
+    engine = create_sqlite_engine(db_path)
+    repository = SqlAlchemyProviderLinkRepository(engine)
+    alpha = SEED_PROVIDERS[0]
+    linked = ProviderLink(
+        make_place("place-b", "Alpha Therapy", website="https://www.alpha.example/x"),
+        EntityMatch("place-b", alpha.abn, MatchStatus.REGISTERED, MatchStrategy.DOMAIN, 0.95, "A"),
+    )
+    unmatched = ProviderLink(
+        make_place("place-a", "Nobody", category=None, postcode=None),
+        EntityMatch("place-a", None, MatchStatus.UNREGISTERED, MatchStrategy.NONE, 0.4, None),
+    )
+    ambiguous = ProviderLink(
+        make_place("place-c", "Franchise", website="https://franchise.example"),
+        EntityMatch(
+            "place-c", None, MatchStatus.AMBIGUOUS, MatchStrategy.DOMAIN, 0.3, None,
+            (Candidate("10000000001", "Alpha Therapy"), Candidate("10000000002", "Beta Supports")),
+        ),
+    )  # fmt: skip
+    repository.replace_all([linked, unmatched, ambiguous])
+    assert repository.all() == (unmatched, linked, ambiguous)
+    repository.replace_all([linked])
+    assert SqlAlchemyProviderLinkRepository(create_sqlite_engine(db_path)).all() == (linked,)
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT abn, match_status, strategy, latitude, longitude, candidates "
+                "FROM provider_links"
+            )
+        ).one()
+    assert tuple(row) == (alpha.abn, "registered", "domain", -27.48, 153.01, "[]")
 
 
 def test_support_items_round_trip_exact_decimals(

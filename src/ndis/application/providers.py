@@ -50,6 +50,18 @@ class ProviderRepository(Protocol):
         """Return the providers matching ``query`` ordered by business name then ABN."""
         ...
 
+    def find_by_website_domain(self, domain: str) -> tuple[Provider, ...]:
+        """Providers whose stored website domain equals ``domain`` exactly, ordered by ABN."""
+        ...
+
+    def find_by_normalised_name(self, name: str) -> tuple[Provider, ...]:
+        """Providers whose normalised business or legal name equals ``name``, ordered by ABN."""
+        ...
+
+    def brisbane_providers(self) -> tuple[Provider, ...]:
+        """Every provider flagged ``brisbane_area``, ordered by ABN."""
+        ...
+
 
 class InvalidQueryError(ValueError):
     """A query with out-of-range pagination or unusable filter values."""

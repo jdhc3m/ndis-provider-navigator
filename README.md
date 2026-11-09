@@ -106,6 +106,27 @@ with all three tiers; `remoteness=remote|very_remote` selects a tier; an unknown
 case-sensitively after trimming whitespace, because the catalogue contains the mixed-case
 item number `Bereavement` alongside the usual `01_002_0107_1_1` form.
 
+## Entity resolution (Maps places → register)
+
+```sh
+uv run python scripts/resolve_entities.py   # reads data/private/maps_brisbane.db, writes provider_links,
+                                            # evals/er_sample.yaml and reports/entity_resolution.md
+```
+
+The script stops with an error when the private Maps export is missing. Each place is
+linked by website domain first, then by normalised name, then by a `rapidfuzz` ratio over
+the Brisbane-area subset with threshold 92. When a shared franchise domain or a common name
+maps to several ABNs, only an exact name agreement or the place's postcode may break the
+tie; otherwise the place is `ambiguous` with the candidates listed, and a lone name hit far
+from Brisbane is `ambiguous` too. `gov.au` websites and Google categories on an explicit
+non-provider deny list get `not_a_provider` unless the register knows them. Results go
+to the `provider_links` table in `data/ndis.db` with `match_status` ∈ {registered,
+unregistered, revoked_or_banned, ambiguous, not_a_provider}, a strategy and a confidence.
+Fuzzy matches are never treated as registration evidence. The 50-row sample is stratified
+by (status, strategy) and holds only Maps titles and register names/ABNs; the owner fills
+`verdict:` and `uv run pytest -m eval --no-cov` reports precision over the filled labels
+(and skips visibly when none are filled). See [the report](reports/entity_resolution.md).
+
 ## Architecture
 
 - `src/ndis/domain/`: pure entities and rules, no frameworks.
@@ -143,7 +164,7 @@ Learning notes are added after each merge under `docs/learning/`.
 
 ## Not built yet
 
-Pricing Arrangements PDF rule retrieval; entity resolution; polite website fetching;
+Pricing Arrangements PDF rule retrieval; polite website fetching;
 evidence-backed extraction; intent parsing and refusal guards; measured model
 evaluations; tracing; Streamlit; geographic ranking; and the fresh-clone demo. No service
 or rule answer should be considered available at this stage; the provider endpoint lists
