@@ -1,0 +1,60 @@
+# Pricing-rules golden questions. Every `page` was verified by the agent against the
+# downloaded PDF (data/public/pricing_arrangements.pdf, "NDIS Pricing Arrangements and
+# Price Limits 2025-26 v1.1", 104 pages): the quoted fact appears on that printed page
+# ("Page N of 104" footer matches the PDF page index). `evidence` is the span the page
+# actually contains, lightly shortened for this file; the eval checks the page number,
+# not this text. The off-topic row is the refusal case: it must NOT be answered.
+questions:
+- question: "Can a provider claim 100% of the agreed fee for a short notice cancellation?"
+  page: 26
+  topic: short_notice_cancellations
+  evidence: "Where a provider has a Short Notice Cancellation (or no show), they can claim up to 100% of the agreed fee"
+  verified_by: agent
+- question: "How many clear business days notice does a participant need to give to avoid a short notice cancellation charge for non-DSW supports?"
+  page: 26
+  topic: short_notice_cancellations
+  evidence: "Short Notice Cancellation - 2 clear business days ... where a participant has provided less than two clear business days notice"
+  verified_by: agent
+- question: "Can a provider charge for the time spent travelling to a participant, and how is it limited?"
+  page: 22
+  topic: provider_travel
+  evidence: "Provider Travel - Labour Costs (Time) ... the price limit for provider travel time is 50% of the regular price limit for these items"
+  verified_by: agent
+- question: "Can telehealth be used to deliver supports and claimed, and under what conditions?"
+  page: 20
+  topic: telehealth
+  evidence: "Telehealth can be used to deliver direct supports where appropriate and with the agreement of the participant"
+  verified_by: agent
+- question: "Can a provider claim for time spent on non-face-to-face activities such as writing progress reports?"
+  page: 21
+  topic: non_face_to_face
+  evidence: "time spent on Non-Face-to-Face activities that assist the participant - for example, writing reports for co-workers and other providers about the client's progress with skill development - could be claimed against this support item"
+  verified_by: agent
+- question: "Are registered providers allowed to add extra charges such as credit card surcharges or gap fees?"
+  page: 40
+  topic: other_fees
+  evidence: "All registered providers must not add any other charge to the cost of the supports ... such as credit card surcharges, or any additional fees including any 'gap' fees, late payment fees or cancellation fees"
+  verified_by: agent
+- question: "Are NDIS supports GST-free?"
+  page: 40
+  topic: gst
+  evidence: "Goods and Services Tax (GST) Many, but not all, NDIA supports provided to NDIS participants are GST-free"
+  verified_by: agent
+- question: "How much higher are price limits in remote and very remote areas?"
+  page: 31
+  topic: remote_loading
+  evidence: "In general, price limits are 40% higher in Remote areas and 50% higher in Very Remote areas"
+  verified_by: agent
+- question: "Do the price limits apply to plan-managed participants?"
+  page: 10
+  topic: applicability
+  evidence: "Plan managers must adhere to the arrangements prescribed in the NDIS Pricing Arrangements and Price Limits, including ensuring that the prices charged by providers do not exceed the price limits"
+  verified_by: agent
+- question: "Can a provider claim the costs of running and maintaining a facility through a support item?"
+  page: 34
+  topic: centre_capital_costs
+  evidence: "Claiming for Centre Capital Costs A provider delivering supports in one of the following Registration Groups can claim an additional amount for the costs of running and maintaining a facility (Centre) through the relevant Centre Capital Cost support item"
+  verified_by: agent
+off_topic:
+  question: "What is the capital of France?"
+  reason_expected: below_similarity_threshold

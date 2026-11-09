@@ -181,6 +181,61 @@ Excerpts from the NDIS Pricing Arrangements and Price Limits:
 {blocks}"""
 
 
+@dataclass(frozen=True)
+class RetrievalRow:
+    """One golden question's retrieval outcome for the hit@k measurement."""
+
+    question: str
+    expected_page: int
+    retrieved_pages: tuple[int, ...]
+    top_similarity: float | None
+
+    def hit(self, k: int) -> bool:
+        return self.expected_page in self.retrieved_pages[:k]
+
+
+def retrieval_rows(
+    embedder: EmbeddingClient,
+    store: RuleVectorStore,
+    strategy: str,
+    questions: Sequence[tuple[str, int]],
+    k: int = 3,
+) -> tuple[RetrievalRow, ...]:
+    """One retrieval pass over golden (question, expected page) pairs: all questions are
+    embedded in one bounded batch, then each is searched on ``strategy``. The report and
+    the eval test share this function so the numbers cannot drift apart."""
+    if not questions:
+        return ()
+    vectors = embedder.embed([question for question, _ in questions]).vectors
+    rows: list[RetrievalRow] = []
+    for (question, expected), vector in zip(questions, vectors, strict=True):
+        scored = store.search(strategy, vector, k)
+        rows.append(
+            RetrievalRow(
+                question=question,
+                expected_page=expected,
+                retrieved_pages=tuple(item.chunk.page for item in scored),
+                top_similarity=scored[0].similarity if scored else None,
+            )
+        )
+    return tuple(rows)
+
+
+def hit_rate(rows: Sequence[RetrievalRow], k: int = 3) -> float | None:
+    """The fraction of rows whose expected page appears in the top ``k``; ``None`` when
+    there are no rows."""
+    if not rows:
+        return None
+    return sum(1 for row in rows if row.hit(k)) / len(rows)
+
+
+def lowest_top_similarity(rows: Sequence[RetrievalRow]) -> float | None:
+    """The smallest top-chunk similarity over the rows, the floor any refusal threshold
+    must sit below so no golden question is refused."""
+    similarities = [row.top_similarity for row in rows if row.top_similarity is not None]
+    return min(similarities) if similarities else None
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 

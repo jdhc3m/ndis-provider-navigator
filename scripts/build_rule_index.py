@@ -62,6 +62,13 @@ def main(argv: list[str] | None = None) -> int:
             model="unused-for-embeddings",
             embed_model=embed_model(),
             budget=TokenBudget(10_000_000),
+            # Free tier is limited per minute AND per day; the adapter's own 6 s pacing
+            # and 30 s backoff cap are tuned for chat, embeddings need a minute-scale
+            # rhythm so a throttled window is waited out rather than abandoned.
+            interval=20.0,
+            backoff_base=20.0,
+            backoff_cap=75.0,
+            max_attempts=6,
         ),
         cache,
         embed_model(),

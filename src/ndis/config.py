@@ -41,9 +41,10 @@ def embed_configured() -> bool:
 
 
 # The refusal threshold for rule questions: a best-chunk cosine similarity below this
-# refuses before any model call. Measured on the golden set in reports/retrieval.md;
-# on-topic questions score well above it, off-topic ones well below.
-DEFAULT_SIMILARITY_THRESHOLD = 0.35
+# refuses before any model call. Measured on the golden set in reports/retrieval.md:
+# the ten on-topic questions score 0.71-0.88 top-1 similarity, off-topic questions
+# 0.50-0.62, so 0.65 separates them with the judge as the second gate behind it.
+DEFAULT_SIMILARITY_THRESHOLD = 0.65
 
 
 def rule_similarity_threshold() -> float:
