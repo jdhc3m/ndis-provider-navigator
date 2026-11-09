@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 02 merged; third Foreman thread starts at ticket 03.
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 03 merged; this Foreman thread continues with ticket 04.
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -61,9 +61,19 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
   validated and returns the national tier. Documented in README; do not
   "fix" this by inventing state prices.
 
+- Ticket 03 — private data bootstrap and entity resolution (issue #4, PR #23). Note:
+  `docs/learning/03-entity-resolution.md`. `scripts/resolve_entities.py` needs
+  `data/private/maps_brisbane.db` (copy of `~/NDIS/ndis.db`) and a loaded
+  `data/ndis.db`; it writes `provider_links` (with Maps lat/lon for ticket 10),
+  `evals/er_sample.yaml` (50 rows, verdicts blank — the owner fills them) and
+  `reports/entity_resolution.md`. Measured 223 registered / 120 unregistered /
+  6 revoked / 16 ambiguous / 50 not_a_provider. Known follow-ups are on issue #4.
+  If a local `data/ndis.db` predates this ticket, `provider_links` must be
+  dropped once before re-running (the table gained a `candidates` column).
+
 ## In progress
 
-- None.
+- Ticket 04 — website fetcher (issue #5): next.
 
 ## Blocked
 
@@ -71,12 +81,9 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
 
 ## Next
 
-- Ticket 03 — private data bootstrap and entity resolution (issue #4). Needs
-  `~/NDIS/ndis.db` copied to `data/private/maps_brisbane.db` (ignored) and the
-  verified full register at `~/.amp/in/ndis/register_full.csv` (or re-fetch
-  with `scripts/fetch_public_data.py --only register`). Likely new runtime
-  dependency `rapidfuzz`: add it to the import-linter `forbidden_modules`
-  list in `pyproject.toml` as well (the contract is a denylist).
-- Ticket 04 (website fetcher) can run on this Mac. Ticket 05 onward needs an
-  LLM key and a machine that can reach the API; stop and tell the owner before
-  starting 05.
+- Ticket 04 (website fetcher) can run on this Mac; seed from the `pages` table
+  of `data/private/maps_brisbane.db` first, live fetch only for the gaps.
+  Likely new dependencies `httpx` (already a dev dep) and `trafilatura`
+  (already on the import-linter denylist).
+- Ticket 05 onward needs an LLM key and a machine that can reach the API;
+  stop and tell the owner before starting 05.
