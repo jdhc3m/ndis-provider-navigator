@@ -35,6 +35,7 @@ class ClaimedService:
     url: str
     quote: str
     confidence: float = 0.0
+    fetched_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ def mentions_for_provider(
         text = page_texts.get(claim.url, "")
         if not quote_supported(text, claim.quote):
             continue
-        mentions.append(ServiceMention(claim.service, claim.url, claim.quote))
+        mentions.append(ServiceMention(claim.service, claim.url, claim.quote, claim.fetched_at))
         if len(mentions) >= MAX_SERVICE_MENTIONS:
             break
     return tuple(mentions)
