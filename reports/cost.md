@@ -1,5 +1,5 @@
 # Cost, latency and judge agreement
-Generated 2026-11-09 13:54 UTC by `scripts/cost_report.py` from the private run recordings (`data/private/cost/`, not committed). Prices are the published paid-tier list prices per 1M tokens in `src/ndis/config.py` (checked 2026-11-09); the runs themselves went through the free tier, so the dollars are what this usage would cost at list prices, not what was paid. Model ids stay in `config.py` and the environment — endpoints are named by the pipeline step that calls.
+Generated 2026-11-09 14:15 UTC by `scripts/cost_report.py` from the private run recordings (`data/private/cost/`, not committed). Prices are the published paid-tier list prices per 1M tokens in `src/ndis/config.py` (checked 2026-11-09); the runs themselves went through the free tier, so the dollars are what this usage would cost at list prices, not what was paid. Model ids stay in `config.py` and the environment — endpoints are named by the pipeline step that calls.
 
 ## Measured per-call latency and tokens
 
@@ -18,10 +18,8 @@ Real calls recorded on 2026-11-09 with the lighter fallback model. Seconds are t
 |---|---|---|---|
 | intent parse over the 17 golden questions | 17 | estimated: 17 × the measured per-call mean (488 in / 73 out) | $0.0056 |
 | rule judge: the verdict-template generation run plus the latency re-measure (20 of the calls served the template's answers; the rest were refused candidates, which are real calls too) | 50 | measured | $0.0478 |
-| service extraction, ten labelled sites (the recorded run) | — | measured from the cache: 85563 in / 7091 out tokens | unpriced — see note |
-| pending full extraction run (~300 providers) | — | estimated: per-provider mean (9.3k tokens) × provider count | unpriced — see note |
-
-Note on the extraction run's price: the private cache predates model provenance — it records the token totals but not which model produced them — so no dollar figure is asserted for it. Token totals are the measured part; the missing piece is one provenance field in the cache format, not a measurement.
+| service extraction over the ten labelled sites (the 2026-11-09 run, 46 page calls) | 46 | measured (88420 in / 7208 out tokens in the cache) | $0.0484 |
+| pending full extraction run (~300 providers) | — | estimated: per-provider mean (9.6k tokens) × provider count at the same measured per-call basis | $0.8607 |
 
 Embeddings: the recorded embedding calls cost $0.0001 measured (24 batch calls; cache hits replay for nothing). The index build over the whole priced-rules corpus is estimated at 135441 tokens from 541766 recorded chunk characters, the same deterministic estimate the adapter falls back to.
 

@@ -14,9 +14,9 @@ filter_accuracy: 0.85
 rule_hit_at_3: 0.7
 
 # Service-extraction macro precision over the per-service rows of the labelled sites
-# (sites labelled_by: agent in evals/extraction_labels.yaml). Measured 0.827 on the ten
-# labelled sites after the served-confidence floor (evals/test_extraction.py,
-# reports/extraction.md).
+# (sites labelled_by: agent in evals/extraction_labels.yaml). Measured 0.840 on the ten
+# labelled sites of the 2026-11-09 run (refined prompt + served-confidence floor) —
+# evals/test_extraction.py, reports/extraction.md.
 extraction_precision: 0.8
 
 # Of the /ask golden refusal and adversarial cases, the fraction that is contained with

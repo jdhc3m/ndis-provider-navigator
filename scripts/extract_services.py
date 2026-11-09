@@ -35,6 +35,7 @@ from ndis.application.extraction import ExtractServices, PrecisionRecall, score_
 from ndis.config import llm_api_key, llm_base_url, llm_configured, llm_model
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.taxonomy import TAXONOMY, Service, services_for_slug
+from scripts.recording import RecordingClient, run_log
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "data" / "ndis.db"
@@ -160,10 +161,12 @@ def render_report(
         "page of the site in full and judging the truth set from page evidence only, "
         "without consulting the baseline slugs; sites were picked from the 40-site "
         "template for modest page counts (2-7 stored pages each). Extraction ran one "
-        "request per page (at most 8 pages per provider), paced at 10 s, on the "
-        "free-tier endpoint; after the primary model's daily request quota ran out, all "
-        "ten sites were (re-)extracted with the lighter model named in the run's "
-        "`LLM_MODEL` so that one model covers every prediction.\n",
+        "request per page (at most 8 pages per provider), paced at 7 s, on the "
+        "free-tier endpoint. The committed run is the 2026-11-09 re-extraction of all "
+        "ten sites with the lighter model named in the run's `LLM_MODEL` and the "
+        "refined prompt whose non-evidence rules match the labelling rules above "
+        "(expressions of interest and future offerings are not evidence), so one "
+        "prompt, one model and one run cover every prediction.\n",
         "\nCaveats: the sample is small, so most per-service cells rest on one or two "
         "sites and the macro averages are coarse. The baseline is scored on a different "
         "corpus (the Maps crawl's slug hits), so its higher recall partly measures the "
@@ -177,10 +180,12 @@ def render_report(
         "itself marked at or above the served-confidence floor (``MIN_SERVED_CONFIDENCE`` "
         "= 0.75 in ``src/ndis/domain/extraction.py``): on the labelled set every claim "
         "below that floor was an expression of interest or a coming-soon plan rather than "
-        "an offered service, and no claim at 0.75 or above was false. The recorded cache "
-        "keeps every claim; the floor is applied when a profile is read back, so the "
-        "macro precision above is computed over the 39 served predictions (31 correct), "
-        "not the 41 raw ones (73% macro, 76% micro).\n",
+        "an offered service. The recorded cache keeps every claim; the floor is applied "
+        "when a profile is read back, so the macro precision above is computed over the "
+        "39 served predictions (32 correct) of the 122 the run accepted. The confident "
+        "false positives that remain (seven) are pages that plainly state a service the "
+        "hand-label says the site does not actually deliver — a labelling disagreement "
+        "the next owner-label round should settle.\n",
     ]
     return "".join(lines)
 
@@ -223,12 +228,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         source = FilePageTextSource(engine, args.pages_dir)
         client = traced(
-            OpenAICompatibleClient(
-                base_url=llm_base_url(),
-                api_key=llm_api_key(),
-                model=llm_model(),
-                budget=TokenBudget(args.budget),
-                interval=args.interval,
+            RecordingClient(
+                OpenAICompatibleClient(
+                    base_url=llm_base_url(),
+                    api_key=llm_api_key(),
+                    model=llm_model(),
+                    budget=TokenBudget(args.budget),
+                    interval=args.interval,
+                ),
+                "extraction",
+                run_log("extraction"),
             ),
             "extraction",
         )

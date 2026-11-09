@@ -5,8 +5,9 @@ No model call is made: the per-provider cache under ``data/private/extraction`` 
 recorded run, so this is cache-only and repeatable. It skips visibly while any labelled
 site has no cache file yet (the extraction run has not covered it).
 
-The macro averages asserted here are the measured snapshot of the ten sites labelled for
-ticket 05 (see ``reports/extraction.md``); ticket 08 replaces them with owned thresholds.
+The macro precision is asserted against the owned floor in ``thresholds.yaml``; the
+recall and baseline pins are the measured snapshot of the 2026-11-09 run over the ten
+labelled sites (see ``reports/extraction.md``).
 """
 
 from pathlib import Path
@@ -61,7 +62,7 @@ def test_extraction_per_service_metrics_on_labelled_sites() -> None:
     )
     # Measured 2026-11-09 over the ten labelled sites (reports/extraction.md); the recall
     # and baseline pins are the recorded snapshot the threshold sits on top of.
-    assert round(100 * llm_r) == 88
+    assert round(100 * llm_r) == 90
     assert round(100 * base_p) == 56
     assert round(100 * base_r) == 93
     # The recorded run should beat the baseline on precision without trailing it on recall

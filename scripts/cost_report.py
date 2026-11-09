@@ -218,25 +218,29 @@ def render(
             "the rest were refused candidates, which are real calls too) | "
             f"{len(judge_rows)} | measured | {dollars(judge_cost)} |\n"
         )
-    if cache_tokens != (0, 0):
+    extraction_rows = per_site.get("extraction", [])
+    if extraction_rows:
+        extraction_cost, _ = site_cost(extraction_rows)
         lines.append(
-            f"| service extraction, ten labelled sites (the recorded run) | — | "
-            f"measured from the cache: {extraction_in} in / {extraction_out} out "
-            "tokens | unpriced — see note |\n"
+            f"| service extraction over the ten labelled sites (the 2026-11-09 run, "
+            f"{len(extraction_rows)} page calls) | {len(extraction_rows)} | measured "
+            f"({extraction_in} in / {extraction_out} out tokens in the cache) | "
+            f"{dollars(extraction_cost)} |\n"
         )
+        model = str(extraction_rows[0]["model"])
+        pending_cost = call_cost(model, round(per_provider_mean * PENDING_EXTRACTION_PROVIDERS), 0)
         lines.append(
             f"| pending full extraction run (~{PENDING_EXTRACTION_PROVIDERS} providers) "
             f"| — | estimated: per-provider mean ({per_provider_mean / 1000:.1f}k "
-            "tokens) × provider count | unpriced — see note |\n"
+            "tokens) × provider count at the same measured per-call basis | "
+            f"{dollars(pending_cost or 0.0)} |\n"
         )
-
-    lines.append(
-        "\nNote on the extraction run's price: the private cache predates model "
-        "provenance — it records the token totals but not which model produced them — "
-        "so no dollar figure is asserted for it. Token totals are the measured part; "
-        "the missing piece is one provenance field in the cache format, not a "
-        "measurement.\n"
-    )
+    elif cache_tokens != (0, 0):
+        lines.append(
+            f"| service extraction, ten labelled sites (the recorded run) | — | "
+            f"measured from the cache: {extraction_in} in / {extraction_out} out "
+            "tokens | unpriced — the run predates model provenance in the record |\n"
+        )
 
     corpus_tokens = corpus_chars // CHARS_PER_TOKEN
     embedding_rows = [
