@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 04 merged. Stopped before ticket 05: it needs the LLM key and a machine that can reach the Gemini API (see Blocked).
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 04 merged. Stopped before ticket 05. The owner has since put `LLM_API_KEY` on a second machine that can reach the Gemini API; ticket 05 onward runs there (see "Machine handoff").
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -110,28 +110,52 @@ updated. Facts the Builder of ticket 09 needs:
 
 ## Blocked
 
-- Ticket 05 (and 06, 07, 08, the eval gate and the live demo) need
-  `LLM_API_KEY` in `~/.config/ndis/.env` and a machine that can reach
-  `https://generativelanguage.googleapis.com/`. This Mac cannot (Zscaler 403),
-  and the key does not exist yet. The owner decides where those tickets run.
-  Whatever machine runs them needs: the repo clone, `uv sync`, the register
-  (`scripts/fetch_public_data.py --only register` then `scripts/load_register.py`),
-  the catalogue (`--only catalogue` then `scripts/load_catalogue.py`), a copy of
-  `~/NDIS/ndis.db` at `data/private/maps_brisbane.db`, then
-  `scripts/resolve_entities.py` and `scripts/collect_pages.py` to rebuild
-  `provider_links`, `page_meta` and `data/private/pages/` (or copy the
-  ignored `data/` directory from this Mac). Tickets 09 (front end) and 10
-  (geo ranking) do not need the LLM and can run here meanwhile.
+- Nothing, provided the next Foreman runs on the second machine (below).
+  On the corporate Mac, tickets 05–08, the eval gate and the live demo stay
+  blocked: Zscaler returns a 403 block page for
+  `https://generativelanguage.googleapis.com/` regardless of the key.
+
+## Machine handoff (2026-11-09)
+
+The owner has set `LLM_API_KEY` in `~/.config/ndis/.env` on a second machine
+that can reach the Gemini API. Ticket 05 and everything after it run there.
+Before the first ticket on that machine, the Foreman must check and, where
+missing, ask the owner for:
+
+- `~/.config/ndis/.env` with `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` and
+  `EMBED_MODEL` as in `.env.example`. Prove reachability once with a real
+  request (list models through `LLM_BASE_URL`) before briefing the Builder.
+- `~/NDIS/HARNESS_PROMPT.md` (the brief lives outside the repo; copy it from
+  the Mac) and the Maps export `~/NDIS/ndis.db` (private, never committed).
+- `gh auth login` as `jdhc3m`. The `GH_HOST=github.com` rule and the
+  mirror/VPN facts above are Mac-specific; check whether `uv sync` reaches
+  PyPI directly on the new machine. The lockfile rule still applies unless
+  `uv lock` there matches CI's PyPI resolution — test it once with
+  `uv lock --check` before relying on it.
+- The repo clone at `~/NDIS/ndis-provider-navigator`, `uv sync`, then either
+  copy the ignored `data/` directory from the Mac (it is complete there as of
+  this update: register, catalogue, `maps_brisbane.db`, `provider_links`,
+  `page_meta`, 1916 seeded + 50 live pages) or rebuild it:
+  `scripts/fetch_public_data.py`, `scripts/load_register.py`,
+  `scripts/load_catalogue.py`, copy `~/NDIS/ndis.db` to
+  `data/private/maps_brisbane.db`, `scripts/resolve_entities.py`,
+  `scripts/collect_pages.py`.
+- For ticket 09 later: the `ui-ux-pro-max` skill is installed globally on the
+  Mac at `~/.agents/skills/ui-ux-pro-max/`; install it on the new machine
+  before briefing that Builder.
+
+Free-tier Gemini limits are per minute and per day; ticket 05's Builder should
+pace or chunk the ~300-provider extraction run and cache results so a rerun
+does not repeat calls.
 
 ## Next
 
-- Ticket 05 — service extraction (issue #6), once the owner provides the key
-  and the machine. The regex baseline is `provider_services` in the Maps DB;
-  page text for extraction is under `data/private/pages/` keyed through
+- Ticket 05 — service extraction (issue #6), on the second machine. The
+  regex baseline is `provider_services` in the Maps DB; page text for
+  extraction is under `data/private/pages/` keyed through
   `page_meta.provider_key` (ABN when linked, else Maps place id).
-- If the owner prefers to keep going on this Mac first: ticket 10 (geo
-  ranking; `provider_links` already carries Maps latitude/longitude) and
-  ticket 09 (React front end; reread HARNESS_PROMPT.md §2, §5 ticket 09 and
+- Tickets 09 (React front end; reread HARNESS_PROMPT.md §2, §5 ticket 09 and
   issue #10, and tell the Builder to load the `ui-ux-pro-max` skill first)
-  are LLM-free, but the brief orders tickets by number, so this is the
-  owner's call, not the Foreman's.
+  and 10 (geo ranking; `provider_links` already carries Maps
+  latitude/longitude) are LLM-free and could still run on the Mac, but the
+  brief orders tickets by number, so that is the owner's call.
