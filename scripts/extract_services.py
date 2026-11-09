@@ -70,7 +70,7 @@ def comparison_table(
     prediction. Services with no labelled truth and no prediction anywhere are still
     listed, with dashes.
     """
-    truths = [truth for _, truth, _ in rows]
+    truths = [truth for truth, _, _ in rows]
     llms = [llm for _, llm, _ in rows]
     bases = [base for _, _, base in rows]
     metrics: dict[Service, tuple[PrecisionRecall, PrecisionRecall]] = {}
@@ -81,8 +81,14 @@ def comparison_table(
     lines = [header]
     for entry in TAXONOMY:
         service = entry.service
-        llm = score_service(truths, llms, service)
-        base = score_service(truths, bases, service)
+        llm = score_service(
+            [frozenset((service,)) if service in truth else frozenset() for truth in truths],
+            [frozenset((service,)) if service in llms_row else frozenset() for llms_row in llms],
+        )
+        base = score_service(
+            [frozenset((service,)) if service in truth else frozenset() for truth in truths],
+            [frozenset((service,)) if service in base_row else frozenset() for base_row in bases],
+        )
         metrics[service] = (llm, base)
         lines.append(
             f"| {entry.label} | {_percent(llm.precision())} | {_percent(llm.recall())} "
@@ -130,6 +136,23 @@ def render_report(
         "service; recall counts the labelled sites the system found. Dashes mean the "
         "denominator is zero. The baseline is the earlier crawl's regex matcher read as "
         "slug hits per Maps place, bridged to this taxonomy.\n",
+        "\nMethod: ten sites hand-labelled (`labelled_by: agent`) by reading every stored "
+        "page of the site in full and judging the truth set from page evidence only, "
+        "without consulting the baseline slugs; sites were picked from the 40-site "
+        "template for modest page counts (2-7 stored pages each). Extraction ran one "
+        "request per page (at most 8 pages per provider), paced at 10 s, on the "
+        "free-tier endpoint; after the primary model's daily request quota ran out, all "
+        "ten sites were (re-)extracted with the lighter model named in the run's "
+        "`LLM_MODEL` so that one model covers every prediction.\n",
+        "\nCaveats: the sample is small, so most per-service cells rest on one or two "
+        "sites and the macro averages are coarse. The baseline is scored on a different "
+        "corpus (the Maps crawl's slug hits), so its higher recall partly measures the "
+        "crawler's reach rather than extraction quality. LLM misses line up with evidence "
+        "the stored pages lack (e.g. an accommodation page that was never crawled), and "
+        "two truth labels were tightened while verifying: a homepage marketing sentence "
+        "mentioning plan management and support coordination was not counted where the "
+        "site's own services page does not offer them, and allied-health services offered "
+        "only as an expression of interest were not counted as offered.\n",
     ]
     return "".join(lines)
 

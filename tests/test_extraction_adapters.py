@@ -89,6 +89,36 @@ def test_store_save_is_idempotent_per_provider(db_path, tmp_path: Path) -> None:
         assert len(session.execute(select(ServiceClaimRow)).all()) == 2
 
 
+def test_store_projection_folds_same_page_duplicates(db_path, tmp_path: Path) -> None:
+    """Two claims for one service on one page collapse to the most confident row."""
+    when = datetime.now(UTC)
+    profile = ProviderExtraction(
+        provider_key="10000000002",
+        claims=(
+            PageClaim(
+                "https://a.example.com/",
+                ServiceClaim(Service.TRANSPORT, "We provide transport", 0.7),
+            ),
+            PageClaim(
+                "https://a.example.com/",
+                ServiceClaim(Service.TRANSPORT, "Door to door transport", 0.9),
+            ),
+        ),
+        attributes=PageAttributes(age_groups=(AgeGroup.ADULTS,), telehealth=False),
+        extracted_at=when,
+        input_tokens=100,
+        output_tokens=20,
+    )
+    store = CachedExtractionStore(create_sqlite_engine(db_path), tmp_path / "extraction")
+    store.save(profile)
+    assert len(store.load("10000000002").claims) == 2  # the cache keeps every claim
+    with Session(create_sqlite_engine(db_path)) as session:
+        rows = session.scalars(select(ServiceClaimRow)).all()
+        assert [(r.url, r.service, round(r.confidence, 1)) for r in rows] == [
+            ("https://a.example.com/", "transport", 0.9)
+        ]
+
+
 def test_store_rejects_corrupt_cache(tmp_path: Path, db_path) -> None:
     store = CachedExtractionStore(create_sqlite_engine(db_path), tmp_path / "extraction")
     (tmp_path / "extraction" / "broken.json").write_text("{nope", encoding="utf-8")

@@ -11,18 +11,18 @@ sites:
 - key: "70145d25e937"
   maps_title: "Adapt Housing"
   provider_key: "26616783325"
-  services: []
-  labelled_by: null
+  services: ["specialist_disability_accommodation"]
+  labelled_by: "agent"
 - key: "c51e6543c9d1"
   maps_title: "Advance Care Solutions"
   provider_key: "46394227593"
-  services: []
-  labelled_by: null
+  services: ["behaviour_support"]
+  labelled_by: "agent"
 - key: "acb29c538edc"
   maps_title: "Plan Partners - Queensland"
   provider_key: "54609868993"
-  services: []
-  labelled_by: null
+  services: ["plan_management"]
+  labelled_by: "agent"
 - key: "b685281b6590"
   maps_title: "Metanoia Rays"
   provider_key: "33660316790"
@@ -31,8 +31,8 @@ sites:
 - key: "22063d773149"
   maps_title: "Sunnysights Independent Living"
   provider_key: "31651264658"
-  services: []
-  labelled_by: null
+  services: ["supported_independent_living", "community_access", "specialist_disability_accommodation"]
+  labelled_by: "agent"
 - key: "ee0545ad8f39"
   maps_title: "Path to Independence"
   provider_key: "84657797638"
@@ -111,13 +111,13 @@ sites:
 - key: "862bc1e57eb7"
   maps_title: "Nexus Care Services"
   provider_key: "66654767709"
-  services: []
-  labelled_by: null
+  services: ["supported_independent_living", "community_access", "employment", "personal_care", "transport"]
+  labelled_by: "agent"
 - key: "7ea26dc21ead"
   maps_title: "Sisters in the City"
   provider_key: "79653949225"
-  services: []
-  labelled_by: null
+  services: ["nursing", "employment", "personal_care"]
+  labelled_by: "agent"
 - key: "b7805923a6ba"
   maps_title: "Spinal Life Healthy Living Centre"
   provider_key: "39293063049"
@@ -146,8 +146,8 @@ sites:
 - key: "7a05ce5baf5a"
   maps_title: "Aspire Early Intervention Brisbane"
   provider_key: "16130055408"
-  services: []
-  labelled_by: null
+  services: ["early_childhood", "speech_pathology"]
+  labelled_by: "agent"
 - key: "7bc0d23d5c63"
   maps_title: "Disability Connect"
   provider_key: "55647494611"
@@ -186,13 +186,13 @@ sites:
 - key: "76569afe15b3"
   maps_title: "Diverse Disability Services"
   provider_key: "23646480784"
-  services: []
-  labelled_by: null
+  services: ["nursing", "community_access", "personal_care", "supported_independent_living", "specialist_disability_accommodation"]
+  labelled_by: "agent"
 - key: "95fb99498d2c"
   maps_title: "VISION & GOALS PTY LTD (NDIS & MENTAL HEALTH SERVICES"
   provider_key: "43669628255"
-  services: []
-  labelled_by: null
+  services: ["personal_care", "behaviour_support", "transport", "community_access", "employment", "support_coordination", "psychology", "occupational_therapy", "nursing", "speech_pathology"]
+  labelled_by: "agent"
 - key: "4124b68a2c20"
   maps_title: "Ozcare - Corporate Office"
   provider_key: "58072422925"
@@ -206,5 +206,5 @@ sites:
 - key: "3281e19b3e4d"
   maps_title: "KS Life Care (QLD)"
   provider_key: "86633753947"
-  services: []
-  labelled_by: null
+  services: ["transport", "personal_care", "community_access"]
+  labelled_by: "agent"

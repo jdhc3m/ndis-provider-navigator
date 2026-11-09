@@ -99,17 +99,18 @@ class CachedExtractionStore:
                     ProviderAttributeRow.provider_key == profile.provider_key
                 )
             )
-            if profile.claims:
+            rows = _claim_rows(profile)
+            if rows:
                 session.execute(
                     insert(ServiceClaimRow),
                     [
                         {
                             "provider_key": profile.provider_key,
-                            "url": claim.url,
-                            "service": claim.claim.service.value,
-                            "confidence": claim.claim.confidence,
+                            "url": url,
+                            "service": service.value,
+                            "confidence": confidence,
                         }
-                        for claim in profile.claims
+                        for url, service, confidence in rows
                     ],
                 )
             session.execute(
@@ -123,6 +124,24 @@ class CachedExtractionStore:
                     "extracted_at": profile.extracted_at.isoformat(),
                 },
             )
+
+
+def _claim_rows(profile: ProviderExtraction) -> list[tuple[str, Service, float]]:
+    """One row per (page, service): the same service claimed twice on one page collapses
+    to its most confident claim, matching the table's (provider, url, service) key. The
+    private cache keeps every accepted claim with its evidence; only the projection folds
+    duplicates away."""
+    winner: dict[tuple[str, Service], int] = {}
+    for index, claim in enumerate(profile.claims):
+        key = (claim.url, claim.claim.service)
+        current = winner.get(key)
+        if current is None or claim.claim.confidence > profile.claims[current].claim.confidence:
+            winner[key] = index
+    return [
+        (claim.url, claim.claim.service, claim.claim.confidence)
+        for index, claim in enumerate(profile.claims)
+        if winner[(claim.url, claim.claim.service)] == index
+    ]
 
 
 def _from_json(provider_key: str, document: object) -> ProviderExtraction:

@@ -137,8 +137,6 @@ def merge_labels(rows: Iterable[LabelSite], previous: Iterable[LabelSite]) -> tu
     """Carry a previous label over to the regenerated row with the same key."""
     kept = {site.key: site for site in previous}
     return tuple(
-        kept[site.key]
-        if site.key in kept and kept[site.key].labelled_by is not None
-        else site
+        kept[site.key] if site.key in kept and kept[site.key].labelled_by is not None else site
         for site in rows
     )
