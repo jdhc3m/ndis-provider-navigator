@@ -20,6 +20,7 @@ from ndis.adapters.sqlite_repository import (
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
 )
+from ndis.adapters.thresholds import read_thresholds
 from ndis.application.ask import Ask, MissingIndexRuleAnswerer
 from ndis.application.catalogue import GetPriceLimit
 from ndis.application.extraction import LlmRequest, LlmResult
@@ -32,6 +33,7 @@ CACHE = ROOT / "evals" / "intent_cache.yaml"
 DB = ROOT / "data" / "ndis.db"
 EXTRACTION = ROOT / "data" / "private" / "extraction"
 PAGES = ROOT / "data" / "private" / "pages"
+THRESHOLDS = ROOT / "evals" / "thresholds.yaml"
 
 # Measured 2026-11-09 against the loaded register: every filter case is an exact match.
 EXPECTED_FILTER_ACCURACY = 1.0
@@ -121,18 +123,36 @@ def test_filter_cases_match_the_register_exactly(
 def test_refusal_cases_are_contained(ask: tuple[Ask, CachedIntentClient]) -> None:
     use_case, client = ask
     golden = read_golden(GOLDEN)
+    contained = 0
+    failures: list[str] = []
     for case in golden.refusal_cases:
         answer = use_case(case.question)
-        assert answer.refused, f"not refused: {case.question}"
-        assert answer.reason == case.expected_reason, case.question
-        assert answer.explanation is not None, case.question
+        problems: list[str] = []
+        if not answer.refused:
+            problems.append("not_refused")
+        elif answer.reason != case.expected_reason:
+            problems.append(f"reason:{answer.reason}!={case.expected_reason}")
+        if answer.explanation is None:
+            problems.append("no_explanation")
         # Containment: zero executed sections, no services, no caveat, no ungrounded text.
-        assert answer.providers == (), case.question
-        assert answer.provider_total == 0, case.question
-        assert dict(answer.services) == {}, case.question
-        assert answer.price is None and answer.price_error is None, case.question
-        assert answer.rule is None, case.question
-        assert answer.caveat is None, case.question
+        if answer.providers != ():
+            problems.append("providers")
+        if answer.provider_total != 0:
+            problems.append("provider_total")
+        if dict(answer.services) != {}:
+            problems.append("services")
+        if answer.price is not None or answer.price_error is not None:
+            problems.append("price")
+        if answer.rule is not None:
+            problems.append("rule")
+        if answer.caveat is not None:
+            problems.append("caveat")
+        if problems:
+            failures.append(f"{case.question}: {', '.join(problems)}")
+        else:
+            contained += 1
+    recall = contained / len(golden.refusal_cases)
+    assert recall >= read_thresholds(THRESHOLDS).refusal_recall, "\n".join(failures)
     assert client.asked == [case.question for case in golden.refusal_cases]
 
 

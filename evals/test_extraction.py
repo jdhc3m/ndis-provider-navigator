@@ -9,12 +9,15 @@ The macro averages asserted here are the measured snapshot of the ten sites labe
 ticket 05 (see ``reports/extraction.md``); ticket 08 replaces them with owned thresholds.
 """
 
+from pathlib import Path
+
 import pytest
 
 from ndis.adapters.extraction_labels import labelled, read_labels
 from ndis.adapters.extraction_store import CachedExtractionStore
 from ndis.adapters.maps_sqlite import SqliteRegexBaseline
 from ndis.adapters.sqlite_repository import create_sqlite_engine
+from ndis.adapters.thresholds import read_thresholds
 from scripts.extract_services import (
     DEFAULT_DB,
     DEFAULT_EXTRACTION_DIR,
@@ -25,6 +28,8 @@ from scripts.extract_services import (
     comparison_table,
     place_keys,
 )
+
+THRESHOLDS = Path(__file__).with_name("thresholds.yaml")
 
 
 @pytest.mark.eval
@@ -49,8 +54,13 @@ def test_extraction_per_service_metrics_on_labelled_sites() -> None:
     base_p, base_r = _macro(metrics, 1)
     assert llm_p is not None and llm_r is not None
     assert base_p is not None and base_r is not None
-    # Measured 2026-11-09 over the ten labelled sites (reports/extraction.md).
-    assert round(100 * llm_p) == 73
+    thresholds = read_thresholds(THRESHOLDS)
+    assert llm_p >= thresholds.extraction_precision, (
+        f"extraction precision {llm_p:.3f} is below the owned gate "
+        f"{thresholds.extraction_precision} (reports/extraction.md)"
+    )
+    # Measured 2026-11-09 over the ten labelled sites (reports/extraction.md); the recall
+    # and baseline pins are the recorded snapshot the threshold sits on top of.
     assert round(100 * llm_r) == 88
     assert round(100 * base_p) == 56
     assert round(100 * base_r) == 93
