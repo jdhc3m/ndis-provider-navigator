@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 06 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", completed and verified the same day).
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 07 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", completed and verified the same day).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -133,6 +133,17 @@ updated. Facts the Builder of ticket 09 needs:
   `LLM_MODEL=gemini-3.5-flash-lite` override. The eval gate command is
   `uv run pytest -m eval --no-cov` everywhere now (AGENTS.md, README).
 
+- Ticket 07 — intent parsing and the combined answer (issue #8, PR #34).
+  Note: `docs/learning/07-combined-answer.md`. `POST /ask`: intent parse is
+  the only new LLM call site; everything else deterministic. Output guard
+  `domain/answer.py.check_answer` (fabricated providers, quote-less service
+  claims, caveat symmetry — byte-exact `CAVEAT_SERVICES` constant). Golden:
+  12 exact-match filter cases + 5 refusal/adversarial cases appended to
+  `evals/golden.yaml` (ticket 06 rule questions untouched); intent parses
+  replayed from `evals/intent_cache.yaml` (17 captures, no secrets).
+  Filter accuracy 12/12, refusals 5/5. Zero new dependencies. Known:
+  `/providers` SQL latency ~3–9 s/query reused unchanged (pre-existing).
+
 ## In progress
 
 - None.
@@ -214,16 +225,17 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- Ticket 07 — intent parsing and the combined answer (issue #8), on this
-  machine. `POST /ask`: LLM → `Intent(provider_filters | None,
-  price_query | None, rule_question | None, decision_request)` as structured
-  output; deterministic execution (filters → SQL, price → `price_limit()`,
-  rule → ticket 06's pipeline); `decision_request` → refusal. Output guard in
-  `domain`: every named provider must be in the result set, every service
-  claim must carry evidence, and the professions caveat appears whenever
-  services are used. AC: 12 filter cases exact-match, 5 refusal/adversarial
-  cases incl. one prompt injection, guard tests with a fabricated-provider
-  fixture.
-- Ticket 08 (evals as CI gate, tracing, cost) after that; ticket 09 (React
-  front end) needs the `ui-ux-pro-max` skill (installed at
-  `~/.agents/skills/`).
+- Ticket 08 — evals as a CI gate, tracing, cost (issue #9), on this machine.
+  `evals/thresholds.yaml` (filter accuracy ≥ 0.85, rule hit@3 ≥ 0.7,
+  extraction precision ≥ 0.8 on labelled rows, refusal recall = 1.0);
+  `pytest -m eval --no-cov` fails below thresholds. Langfuse `@observe` on
+  every LLM call with token/latency capture; `reports/cost.md` with cost and
+  p95 per endpoint over the golden set. One deliberate prompt-degrading
+  commit on a scratch branch to show CI red (link the run in the note). 20
+  judge verdicts hand-label template with 10 agent-labelled; agreement
+  reported. The eval gate design is this ticket's to own — it may restructure
+  how `pytest -m eval` is wired in CI.
+- Ticket 09 (React front end) after that; it needs the `ui-ux-pro-max` skill
+  (installed at `~/.agents/skills/`) and removes `streamlit` + `ndis.ui` —
+  here that means just commit the updated `uv.lock` (no skip-worktree dance;
+  `uv lock` works directly against PyPI on this machine).
