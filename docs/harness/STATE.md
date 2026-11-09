@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 07 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", completed and verified the same day).
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 08 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", completed and verified the same day).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -143,6 +143,20 @@ updated. Facts the Builder of ticket 09 needs:
   replayed from `evals/intent_cache.yaml` (17 captures, no secrets).
   Filter accuracy 12/12, refusals 5/5. Zero new dependencies. Known:
   `/providers` SQL latency ~3–9 s/query reused unchanged (pre-existing).
+
+- Ticket 08 — evals as a CI gate, tracing, cost (issue #9, PR #37). Note:
+  `docs/learning/08-evaluation-gates.md`. Thresholds owned in
+  `evals/thresholds.yaml` and enforced by the eval tests (probed: lowering a
+  threshold turns its eval red). Measured: filter 1.0, refusal recall 1.0,
+  hit@3 1.0, extraction P 0.840 served / 0.732 raw (floor 0.75 at serve
+  time, disclosed; recall 0.905 unchanged). Judge agreement 7/10 = 0.70 (10
+  agent-labelled; 10 await the owner). Langfuse tracing wraps every LLM call
+  site, lazy no-op without keys; `langfuse` added (sanctioned). CI gained a
+  "Model evaluation gate" job (replay suites + prompt-contract test; data
+  suites skip visibly). Red-CI demo: run 42630973402, draft PR #36 closed
+  unmerged, scratch branch deleted. Cost in `reports/cost.md`. NOTE: the
+  pending ~300-provider extraction run (≈ $1.34 est.) is still to do — pace
+  it after the daily quota resets.
 
 ## In progress
 

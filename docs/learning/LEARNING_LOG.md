@@ -10,3 +10,4 @@ One line per merged ticket: date, ticket, note, PR.
 - 2026-11-09 — 05 Service extraction with structured output — [note](05-service-extraction.md) — [PR #30](https://github.com/jdhc3m/ndis-provider-navigator/pull/30)
 - 2026-11-09 — 06 Pricing rules RAG — [note](06-pricing-rules.md) — [PR #32](https://github.com/jdhc3m/ndis-provider-navigator/pull/32)
 - 2026-11-09 — 07 Intent parsing and the combined answer — [note](07-combined-answer.md) — [PR #34](https://github.com/jdhc3m/ndis-provider-navigator/pull/34)
+- 2026-11-09 — 08 Evals as a CI gate, tracing, cost — [note](08-evaluation-gates.md) — [PR #37](https://github.com/jdhc3m/ndis-provider-navigator/pull/37)
