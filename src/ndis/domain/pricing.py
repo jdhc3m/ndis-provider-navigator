@@ -312,8 +312,16 @@ def parse_rule_answer(payload: str) -> ParsedRuleAnswer:
 
 
 def quote_in_text(text: str, quote: str) -> bool:
-    """True only when ``quote`` is a verbatim piece of ``text`` (whitespace-collapsed on
-    both sides, every other character exact) and long enough to be a real span."""
+    """True only when ``quote`` is a genuine span of ``text``.
+
+    Both sides are whitespace-collapsed and compared case-insensitively, so a quote that
+    spans a line break or differs in letter case still matches, but every other character
+    must match exactly: an inserted zero-width space, a swapped apostrophe or a reworded
+    sentence all fail. A quote shorter than ``MIN_CITATION_CHARS`` could name a bare
+    heading fragment, longer than ``MAX_CITATION_CHARS`` is a copied page rather than a
+    quotation, and a quote with no alphanumeric character at all is noise; none of those
+    are evidence.
+    """
     collapsed_quote = " ".join(quote.split())
     if not MIN_CITATION_CHARS <= len(collapsed_quote) <= MAX_CITATION_CHARS:
         return False

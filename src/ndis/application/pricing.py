@@ -38,9 +38,10 @@ Rules:
 - "answer" states the rule concisely in plain English, citing no page numbers inline.
 - Every citation is {"page": <the excerpt's page number>, "quote": "<a span copied
   VERBATIM from that excerpt, between 15 and 400 characters>"}. The quote must be ONE
-  contiguous run of that excerpt's text, copied character for character with its original
-  punctuation. Never stitch together text from different places, never paraphrase, never
-  shorten to a heading, and never quote a URL or a page footer.
+  contiguous run of that excerpt's text, matching it exactly apart from letter case and
+  line breaks, with the excerpt's original punctuation and spelling. Never stitch
+  together text from different places, never paraphrase, never shorten to a heading, and
+  never quote a URL or a page footer.
 - Cite only excerpts that directly support the answer; two or three at most.
 """
 
@@ -112,7 +113,6 @@ class IndexCounts:
     strategy: str
     chunks: int
     embedded: int
-    cached: int
     input_tokens: int
 
 
@@ -148,7 +148,6 @@ class BuildRuleIndex:
             strategy=strategy,
             chunks=len(chunks),
             embedded=embedded,
-            cached=0,
             input_tokens=input_tokens,
         )
 

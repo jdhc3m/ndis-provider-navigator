@@ -229,7 +229,7 @@ def test_builder_embeds_in_batches_and_writes_once() -> None:
     assert counts.chunks == 5 and counts.embedded == 5
 
 
-def test_builder_reports_cached_zero_and_budget_exhaustion_propagates() -> None:
+def test_builder_budget_exhaustion_propagates() -> None:
     class ExhaustedEmbedder(FakeEmbedder):
         def embed(self, texts: list[str]) -> EmbeddingsResult:
             raise BudgetExhausted("spent")
