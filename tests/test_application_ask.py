@@ -107,9 +107,7 @@ def intent_payload(**overrides: object) -> str:
         "decision_request": False,
     }
     for key, value in overrides.items():
-        document[key] = (
-            json.loads(value) if key in ("provider_filters", "price_query") else value
-        )
+        document[key] = json.loads(value) if key in ("provider_filters", "price_query") else value
     return json.dumps(document)
 
 
