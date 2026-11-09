@@ -17,6 +17,7 @@ from ndis.adapters.golden_questions import golden_pairs, read_golden
 from ndis.adapters.llm_client import OpenAICompatibleClient
 from ndis.adapters.pricing_pdf import PricingPdf
 from ndis.adapters.rule_vector_store import SqliteVecRuleStore
+from ndis.adapters.tracing import flush, traced
 from ndis.application.extraction import TokenBudget
 from ndis.application.pricing import (
     DEFAULT_TOP_K,
@@ -78,15 +79,18 @@ def build_report(  # type: ignore[no-untyped-def]
     dimension = store.dimension()
     cache = EmbeddingCache(cache_path)
     client = CachedEmbeddingClient(
-        OpenAICompatibleClient(
-            base_url=llm_base_url(),
-            api_key=llm_api_key(),
-            model="unused-for-embeddings",
-            embed_model=embed_model(),
-            budget=TokenBudget(1_000_000),
-            interval=20.0,
-            backoff_base=20.0,
-            backoff_cap=75.0,
+        traced(
+            OpenAICompatibleClient(
+                base_url=llm_base_url(),
+                api_key=llm_api_key(),
+                model="unused-for-embeddings",
+                embed_model=embed_model(),
+                budget=TokenBudget(1_000_000),
+                interval=20.0,
+                backoff_base=20.0,
+                backoff_cap=75.0,
+            ),
+            "rule_embedding",
         ),
         cache,
         embed_model(),
@@ -103,6 +107,7 @@ def build_report(  # type: ignore[no-untyped-def]
     finally:
         cache.close()
         store.close()
+        flush()
 
     lines = [
         "# Retrieval report — pricing rules RAG (ticket 06)",
@@ -172,21 +177,27 @@ def sample_answers(  # type: ignore[no-untyped-def]
     store = SqliteVecRuleStore(index_path)
     cache = EmbeddingCache(cache_path)
     embedder = CachedEmbeddingClient(
-        OpenAICompatibleClient(
-            base_url=llm_base_url(),
-            api_key=llm_api_key(),
-            model=llm_model(),
-            embed_model=embed_model(),
-            budget=TokenBudget(2_000_000),
+        traced(
+            OpenAICompatibleClient(
+                base_url=llm_base_url(),
+                api_key=llm_api_key(),
+                model=llm_model(),
+                embed_model=embed_model(),
+                budget=TokenBudget(2_000_000),
+            ),
+            "rule_embedding",
         ),
         cache,
         embed_model(),
     )
-    llm = OpenAICompatibleClient(
-        base_url=llm_base_url(),
-        api_key=llm_api_key(),
-        model=llm_model(),
-        budget=TokenBudget(2_000_000),
+    llm = traced(
+        OpenAICompatibleClient(
+            base_url=llm_base_url(),
+            api_key=llm_api_key(),
+            model=llm_model(),
+            budget=TokenBudget(2_000_000),
+        ),
+        "rule_judge",
     )
     use_case = AskRule(
         embedder, store, llm, strategy="heading", threshold=DEFAULT_SIMILARITY_THRESHOLD
@@ -220,6 +231,7 @@ def sample_answers(  # type: ignore[no-untyped-def]
         store.close()
         cache.close()
         llm.close()
+        flush()
     return lines
 
 

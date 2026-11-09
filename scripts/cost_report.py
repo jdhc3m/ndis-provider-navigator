@@ -202,7 +202,8 @@ def render(
     )
     judge_cost, _ = site_cost(judge_rows)
     extraction_in, extraction_out = cache_tokens
-    per_provider_mean = (extraction_in + extraction_out) / 10 if extraction_in else 0.0
+    per_provider_in = extraction_in / 10 if extraction_in else 0.0
+    per_provider_out = extraction_out / 10 if extraction_out else 0.0
     lines.append("\n| endpoint | calls | basis | cost USD |\n|---|---|---|---|\n")
     if intent_cost is not None:
         lines.append(
@@ -228,12 +229,16 @@ def render(
             f"{dollars(extraction_cost)} |\n"
         )
         model = str(extraction_rows[0]["model"])
-        pending_cost = call_cost(model, round(per_provider_mean * PENDING_EXTRACTION_PROVIDERS), 0)
+        pending_cost = call_cost(
+            model,
+            round(per_provider_in * PENDING_EXTRACTION_PROVIDERS),
+            round(per_provider_out * PENDING_EXTRACTION_PROVIDERS),
+        )
         lines.append(
             f"| pending full extraction run (~{PENDING_EXTRACTION_PROVIDERS} providers) "
-            f"| — | estimated: per-provider mean ({per_provider_mean / 1000:.1f}k "
-            "tokens) × provider count at the same measured per-call basis | "
-            f"{dollars(pending_cost or 0.0)} |\n"
+            f"| — | estimated: per-provider means ({per_provider_in / 1000:.1f}k in / "
+            f"{per_provider_out / 1000:.1f}k out tokens) × provider count at the same "
+            f"measured per-call basis | {dollars(pending_cost or 0.0)} |\n"
         )
     elif cache_tokens != (0, 0):
         lines.append(

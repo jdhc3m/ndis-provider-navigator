@@ -180,12 +180,14 @@ def render_report(
         "itself marked at or above the served-confidence floor (``MIN_SERVED_CONFIDENCE`` "
         "= 0.75 in ``src/ndis/domain/extraction.py``): on the labelled set every claim "
         "below that floor was an expression of interest or a coming-soon plan rather than "
-        "an offered service. The recorded cache keeps every claim; the floor is applied "
-        "when a profile is read back, so the macro precision above is computed over the "
-        "39 served predictions (32 correct) of the 122 the run accepted. The confident "
-        "false positives that remain (seven) are pages that plainly state a service the "
-        "hand-label says the site does not actually deliver — a labelling disagreement "
-        "the next owner-label round should settle.\n",
+        "an offered service. Without the floor the same run scores macro precision 73.2% "
+        "(32tp/10fp over 42 raw predictions of the 122 accepted claims); with it, 84.0% "
+        "(32tp/7fp over 39 served) — recall is identical at 90.5% either way, because the "
+        "floor drops only false positives. The floor applies uniformly at serve time (the "
+        "API withholds the weak claims) while the recorded cache keeps every claim. The "
+        "confident false positives that remain (seven) are pages that plainly state a "
+        "service the hand-label says the site does not actually deliver — a labelling "
+        "disagreement the next owner-label round should settle.\n",
     ]
     return "".join(lines)
 
