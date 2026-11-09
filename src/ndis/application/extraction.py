@@ -133,7 +133,7 @@ class ExtractionCounts:
 MAX_PAGES_PER_PROVIDER = 8
 MAX_PAGE_CHARS = 12_000
 
-_SYSTEM_PROMPT = """\
+EXTRACTION_SYSTEM_PROMPT = """\
 You are an information-extraction engine. You read one page of an Australian NDIS
 provider's website and answer with JSON only - no prose, no markdown fence.
 
@@ -271,7 +271,9 @@ class ExtractServices:
         for page in select_pages(pages, self._max_pages):
             excerpt = page_excerpt(page.text, self._max_page_chars)
             try:
-                result = self._client.complete(LlmRequest(_SYSTEM_PROMPT, page_prompt(excerpt)))
+                result = self._client.complete(
+                    LlmRequest(EXTRACTION_SYSTEM_PROMPT, page_prompt(excerpt))
+                )
             except BudgetExhausted:
                 tally.budget_exhausted = True
                 return _Outcome.BUDGET_STOPPED

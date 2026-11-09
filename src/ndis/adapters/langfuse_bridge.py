@@ -33,7 +33,11 @@ def traced_complete(inner: Any, request: LlmRequest, model: str, site: str) -> L
         input={"system": _head(request.system), "user": _head(request.user)},
         output=_head(result.text),
         usage={"input": result.input_tokens, "output": result.output_tokens},
-        metadata={"site": site, "endpoint": "chat/completions"},
+        metadata={
+            "site": site,
+            "endpoint": "chat/completions",
+            "endpoint_seconds": _endpoint_seconds(inner),
+        },
     )
     return result
 
@@ -48,7 +52,11 @@ def traced_embed(inner: Any, texts: Sequence[str], model: str, site: str) -> Emb
         input={"batch_size": len(texts), "chars": sum(len(text) for text in texts)},
         output={"vectors": len(result.vectors), "dim": _dim(result.vectors)},
         usage={"input": result.input_tokens},
-        metadata={"site": site, "endpoint": "embeddings"},
+        metadata={
+            "site": site,
+            "endpoint": "embeddings",
+            "endpoint_seconds": _endpoint_seconds(inner),
+        },
     )
     return result
 
@@ -80,6 +88,13 @@ def flush() -> None:
 def _head(text: str) -> dict[str, Any]:
     """Head-truncated content plus the full size, for prompts and answers alike."""
     return {"head": text[:INPUT_HEAD_CHARS], "chars": len(text)}
+
+
+def _endpoint_seconds(inner: Any) -> float | None:
+    """The wrapped client's own successful-POST latency, when it reports one; the
+    decorator still times the whole delegation either way."""
+    seconds = getattr(inner, "last_endpoint_seconds", None)
+    return None if seconds is None else round(seconds, 3)
 
 
 def _dim(vectors: Sequence[Sized]) -> int | None:

@@ -64,6 +64,7 @@ class OpenAICompatibleClient(EmbeddingClient):
         self._clock = clock
         self._sleep = sleep
         self._last_request_at: float | None = None
+        self.last_endpoint_seconds: float | None = None
         self._client = httpx.Client(
             timeout=httpx.Timeout(timeout),
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -173,7 +174,13 @@ class OpenAICompatibleClient(EmbeddingClient):
         The backoff itself is the wait before the next attempt, so the pacing clock is
         advanced across it and the last attempt of a request sleeps no more."""
         try:
+            started = self._clock()
             response = self._client.post(self._base_url + path, json=body)
+            # The endpoint latency of the most recent POST — the successful attempt when
+            # the call succeeded — excluding pacing waits and retry backoffs, which are
+            # the adapter's own rhythm and not the endpoint's speed. Tracing and the cost
+            # measurements report this, not the wall-clock around the whole call.
+            self.last_endpoint_seconds = self._clock() - started
         except (httpx.TimeoutException, httpx.TransportError):
             self._wait_before_retry(attempt)
             return None

@@ -27,19 +27,25 @@ class RecordingClient:
         self._inner = inner
         self._site = site
         self._log = log
-        self._model = getattr(inner, "model", "")
-        self._embed_model = getattr(inner, "embed_model", "") or ""
+
+    @property
+    def model(self) -> str:
+        return getattr(self._inner, "model", "")
+
+    @property
+    def embed_model(self) -> str:
+        return getattr(self._inner, "embed_model", "")
 
     def complete(self, request: LlmRequest) -> LlmResult:
         started = time.monotonic()
         result = self._inner.complete(request)
-        self._record_result("chat/completions", self._model, result, time.monotonic() - started)
+        self._record_result("chat/completions", self.model, result, time.monotonic() - started)
         return result
 
     def embed(self, texts: Sequence[str]) -> EmbeddingsResult:
         started = time.monotonic()
         result = self._inner.embed(texts)
-        self._record_result("embeddings", self._embed_model, result, time.monotonic() - started)
+        self._record_result("embeddings", self.embed_model, result, time.monotonic() - started)
         return result
 
     @property
@@ -53,6 +59,10 @@ class RecordingClient:
         self, endpoint: str, model: str, result: LlmResult | EmbeddingsResult, seconds: float
     ) -> None:
         self._log.parent.mkdir(parents=True, exist_ok=True)
+        # Prefer the wrapped client's own successful-POST latency (pacing and backoff
+        # excluded); the wall-clock around the delegation is the fallback for wrappers
+        # around clients that do not report one.
+        endpoint_seconds = getattr(self._inner, "last_endpoint_seconds", None)
         row = {
             "at": datetime.now(UTC).isoformat(timespec="seconds"),
             "site": self._site,
@@ -60,7 +70,9 @@ class RecordingClient:
             "model": model,
             "input_tokens": result.input_tokens,
             "output_tokens": getattr(result, "output_tokens", 0),
-            "seconds": round(seconds, 3),
+            "seconds": round(endpoint_seconds, 3)
+            if endpoint_seconds is not None
+            else round(seconds, 3),
         }
         with self._log.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row) + "\n")
