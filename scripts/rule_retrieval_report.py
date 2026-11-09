@@ -191,7 +191,14 @@ def sample_answers(  # type: ignore[no-untyped-def]
     use_case = AskRule(
         embedder, store, llm, strategy="heading", threshold=DEFAULT_SIMILARITY_THRESHOLD
     )
-    lines = ["## Sample answers (real adapter runs, heading strategy)", ""]
+    lines = [
+        "## Sample answers (real adapter runs, heading strategy)",
+        "",
+        "Judge model: the configured `LLM_MODEL` at run time; the 2026-11-09 run used a "
+        "daily-quota fallback override for the generation model after the primary hit its "
+        "free-tier daily limit (the retrieval numbers above do not depend on it).",
+        "",
+    ]
     try:
         picks = golden.questions[:answer_questions]
         for question in [item.question for item in picks] + [golden.off_topic_question]:

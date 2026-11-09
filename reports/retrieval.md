@@ -53,18 +53,3 @@ Chunking: fixed = 600-estimated-token windows packed at paragraph (then sentence
 - Off-topic question ("What is the capital of France?"): top-1 similarity **0.620**.
 - Chosen threshold: **0.65** (env `RULE_SIMILARITY_THRESHOLD`); it separates the off-topic band from the on-topic floor, and the judge LLM remains the second gate behind it. Refusal reasons, in order: no chunks, below threshold, judge unsupported, no verbatim citation.
 
-## Sample answers (real adapter runs, heading strategy)
-
-- **Can a provider claim 100% of the agreed fee for a short notice cancellation?**
-  - answer: When a provider experiences a short notice cancellation or no show, they can claim up to 100% of the agreed fee associated with the activity from the participant's plan, provided that specific conditions are met and the claim complies with the NDIS Pricing Arrangements and Price Limits and the terms of the service agreement.
-  - citations: p26: "Where a provider has a Short Notice Cancellation (or no show), they can claim up to 100% of the agreed fee associated with the activity from the participant’s plan, subject to the NDIS Pricing Arrangements and Price Limits and the terms of the service agreement with the participant."
-  - top similarity 0.784
-- **How many clear business days notice does a participant need to give to avoid a short notice cancellation charge for non-DSW supports?**
-  - answer: For non-DSW supports, a participant needs to give at least two clear business days' notice of cancellation to avoid a short notice cancellation charge.
-  - citations: p26: "Short Notice Cancellation – 2 clear business days • This policy typically applies to non-DSW supports where a participant has provided less than two (2) clear business days’ notice of cancellation for a support"
-  - top similarity 0.811
-- **Can a provider charge for the time spent travelling to a participant, and how is it limited?**
-  - answer: Providers can charge for travel time to a participant if allowed by the pricing rules for that support, the primary support is delivered face-to-face, the participant agrees in advance, and the provider is required to pay the worker for travel time (or is a sole trader). Travel claims are limited by hourly rates (such as 50% of the regular limit for therapy supports) and time caps based on the Modified Monash Model location (typically up to 30 minutes in MMM1-3 areas and up to 60 minutes in MMM4-5 areas for each eligible worker).
-  - citations: p21: "Provider Travel Providers can only claim travel costs from a participant’s plan when delivering a support item if all the following conditions are met: • The NDIS Pricing Arrangements and Price Limits indicates that providers can claim for Provider Travel for that support item; and"; p22: "For therapy supports providers, including early childhood therapy, the price limit for provider travel time is 50% of the regular price limit for these items."; p22: "When a provider claims for labour costs (travel time) related to a support, they can claim for up to 30 minutes of travel to and from each participant in MMM1-3 areas and up to 60 minutes in MMM4- 5 areas for each eligible worker. This is known as a travel time limit."
-  - top similarity 0.780
-- **What is the capital of France?** → refused (below_similarity_threshold), top similarity 0.620

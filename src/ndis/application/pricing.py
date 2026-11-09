@@ -37,8 +37,10 @@ Rules:
   not, or only partially, set "supported" to false and leave "answer" null.
 - "answer" states the rule concisely in plain English, citing no page numbers inline.
 - Every citation is {"page": <the excerpt's page number>, "quote": "<a span copied
-  VERBATIM from that excerpt, 15 to 400 characters>"}. Copy the exact characters; do not
-  paraphrase, shorten to a heading or stitch together text from different places.
+  VERBATIM from that excerpt, between 15 and 400 characters>"}. The quote must be ONE
+  contiguous run of that excerpt's text, copied character for character with its original
+  punctuation. Never stitch together text from different places, never paraphrase, never
+  shorten to a heading, and never quote a URL or a page footer.
 - Cite only excerpts that directly support the answer; two or three at most.
 """
 
