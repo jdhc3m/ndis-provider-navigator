@@ -32,6 +32,7 @@ from ndis.config import (
     llm_base_url,
     llm_model,
 )
+from ndis.domain.pricing import PRICING_DOCUMENT_TITLE
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PDF = ROOT / "data" / "public" / "pricing_arrangements.pdf"
@@ -112,7 +113,7 @@ def build_report(  # type: ignore[no-untyped-def]
     lines = [
         "# Retrieval report — pricing rules RAG (ticket 06)",
         "",
-        f"Source: NDIS Pricing Arrangements and Price Limits 2025-26 v1.1 "
+        f"Source: {PRICING_DOCUMENT_TITLE} "
         f"({page_count} PDF pages). Index: `{index_path.name}` "
         f"({dimension}-dimensional embeddings, one vec0 table per strategy).",
         "",

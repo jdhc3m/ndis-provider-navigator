@@ -19,7 +19,9 @@ from ndis.application.ask import (
     Ask,
     CombinedAnswer,
     MissingIndexRuleAnswerer,
+    Step,
     intent_prompt,
+    token_cost,
 )
 from ndis.application.catalogue import GetPriceLimit, UnknownSupportItemError
 from ndis.application.extraction import LlmRequest, LlmResult
@@ -111,6 +113,19 @@ def intent_payload(**overrides: object) -> str:
     return json.dumps(document)
 
 
+class TickingClock:
+    """A clock that advances a fixed number of milliseconds per reading, so step
+    timings are deterministic."""
+
+    def __init__(self, step_ms: int = 5) -> None:
+        self._now = 0.0
+        self._step = step_ms / 1000
+
+    def __call__(self) -> float:
+        self._now += self._step
+        return self._now
+
+
 def make_ask(
     client: FakeIntentClient,
     repository: SqlAlchemyProviderRepository,
@@ -118,6 +133,7 @@ def make_ask(
     rule_answerer: FakeRuleAnswerer | None = None,
     evidence: FakeEvidence | None = None,
     provider_limit: int = ASK_PROVIDER_LIMIT,
+    token_prices: tuple[float, float] | None = None,
 ) -> Ask:
     return Ask(
         client,
@@ -126,6 +142,8 @@ def make_ask(
         rule_answerer or FakeRuleAnswerer(),
         evidence or FakeEvidence(),
         provider_limit=provider_limit,
+        token_prices=token_prices,
+        clock=TickingClock(),
     )
 
 
@@ -429,6 +447,110 @@ class TestGuardTripWire:
         assert answer.refused
         assert answer.reason == "guard_failed"
         assert answer.explanation is not None
+
+
+class TestSteps:
+    def test_every_executed_stage_is_recorded_in_order(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [
+                intent_payload(
+                    provider_filters=FILTERS,
+                    price_query='{"item": "01_002_0107_1_1", "state": "QLD"}',
+                    rule_question="Can a provider charge a cancellation fee?",
+                )
+            ]
+        )
+        answer = make_ask(client, providers, catalogue, token_prices=(0.30, 2.50))(
+            "providers in NSW, the price of 01_002_0107_1_1 and cancellation rules"
+        )
+        assert not answer.refused
+        assert [step.kind for step in answer.steps] == [
+            "intent_parse",
+            "provider_filter",
+            "price_limit",
+            "rule_answer",
+            "evidence",
+            "guard",
+        ]
+        intent_step = answer.steps[0]
+        assert intent_step == Step(
+            "intent_parse",
+            "question (69 chars)",
+            "provider_filters, price_query, rule_question",
+            5,
+            120,
+            40,
+            token_cost((0.30, 2.50), 120, 40),
+        )
+        assert intent_step.cost_usd == pytest.approx((120 * 0.30 + 40 * 2.50) / 1_000_000)
+        assert answer.steps[1].input_summary == "state=NSW"
+        assert answer.steps[1].output_summary == "1 of 1 matching providers"
+        assert answer.steps[2].input_summary == "item=01_002_0107_1_1 state=QLD remoteness=national"
+        assert answer.steps[2].output_summary == "limit 82.57"
+        assert answer.steps[3].output_summary == "answered with 1 citations, top similarity 0.80"
+        assert answer.steps[4].output_summary == "0 verified mentions for 0 providers"
+        assert answer.steps[5] == Step("guard", "1 entries, caveat absent", "valid", 5)
+        assert all(step.ms == 5 for step in answer.steps)  # one clock tick per stage
+        assert all(step.input_tokens is None for step in answer.steps[1:])
+
+    def test_unpriced_model_leaves_cost_unknown_and_refusals_keep_their_steps(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient([intent_payload(decision_request=True)])
+        answer = make_ask(client, providers, catalogue)("Which provider is best?")
+        assert answer.refused
+        assert [step.kind for step in answer.steps] == ["intent_parse"]
+        assert answer.steps[0].output_summary == "decision_request"
+        assert answer.steps[0].cost_usd is None
+        assert answer.steps[0].input_tokens == 120
+        assert token_cost(None, 120, 40) is None
+
+    def test_step_summaries_name_rejections_errors_and_rule_refusals(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [
+                intent_payload(
+                    provider_filters='{"state": "Georgia", "postcode": "4101"}',
+                    price_query='{"item": "99_999_9999_1_1", "state": "QLD"}',
+                    rule_question="anything",
+                )
+            ]
+        )
+        refusing = FakeRuleAnswerer(RuleAnswer("anything", None, (), True, REFUSAL_NO_CHUNKS, None))
+        answer = make_ask(client, providers, catalogue, refusing)("mixed question")
+        assert not answer.refused
+        assert answer.steps[0].output_summary == (
+            "price_query, rule_question (rejected: provider_filters_invalid)"
+        )
+        assert [step.kind for step in answer.steps] == [
+            "intent_parse",
+            "price_limit",
+            "rule_answer",
+            "evidence",
+            "guard",
+        ]
+        assert answer.steps[1].output_summary == "unknown_item"
+        assert answer.steps[2].output_summary == f"refused: {REFUSAL_NO_CHUNKS}"
+
+    def test_unparseable_intent_records_the_parse_only(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        answer = make_ask(FakeIntentClient(["nonsense"]), providers, catalogue)("anything")
+        assert answer.refused
+        assert [(step.kind, step.output_summary) for step in answer.steps] == [
+            ("intent_parse", "unparseable")
+        ]
 
 
 def test_intent_prompt_carries_the_question() -> None:

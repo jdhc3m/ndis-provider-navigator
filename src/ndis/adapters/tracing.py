@@ -15,12 +15,29 @@ from ndis.application.pricing import EmbeddingClient, EmbeddingsResult
 
 PUBLIC_KEY_ENV = "LANGFUSE_PUBLIC_KEY"
 SECRET_KEY_ENV = "LANGFUSE_SECRET_KEY"
+# The SDK reads the base URL from LANGFUSE_BASE_URL, falling back to the older
+# LANGFUSE_HOST and then to the hosted service; this mirrors that order.
+BASE_URL_ENV = "LANGFUSE_BASE_URL"
+HOST_ENV = "LANGFUSE_HOST"
+DEFAULT_HOST = "https://cloud.langfuse.com"
 
 
 def langfuse_enabled() -> bool:
     """True when both Langfuse keys are configured; nothing else is required."""
     return bool(
         os.environ.get(PUBLIC_KEY_ENV, "").strip() and os.environ.get(SECRET_KEY_ENV, "").strip()
+    )
+
+
+def tracing_url() -> str | None:
+    """Where the traces can be viewed, or ``None`` when tracing is off: the same host the
+    SDK would send to (``LANGFUSE_BASE_URL``, then ``LANGFUSE_HOST``, then its default)."""
+    if not langfuse_enabled():
+        return None
+    return (
+        os.environ.get(BASE_URL_ENV, "").strip()
+        or os.environ.get(HOST_ENV, "").strip()
+        or DEFAULT_HOST
     )
 
 

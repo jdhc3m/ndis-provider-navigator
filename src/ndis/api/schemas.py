@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
-from ndis.application.ask import CombinedAnswer
+from ndis.application.ask import CombinedAnswer, Step
 from ndis.application.catalogue import PriceLimitResult
 from ndis.application.pricing import RuleAnswer
 from ndis.domain.answer import ServiceMention
@@ -224,9 +224,35 @@ class AskProviderOut(ProviderOut):
     services: list[ServiceMentionOut]
 
 
+class StepOut(BaseModel):
+    """One stage of building the answer: its kind, short in/out summaries, wall time and,
+    for the model call, tokens and cost (``null`` where not applicable or unpriced)."""
+
+    kind: str
+    input_summary: str
+    output_summary: str
+    ms: int
+    input_tokens: int | None
+    output_tokens: int | None
+    cost_usd: float | None
+
+    @classmethod
+    def from_step(cls, step: Step) -> "StepOut":
+        return cls(
+            kind=step.kind,
+            input_summary=step.input_summary,
+            output_summary=step.output_summary,
+            ms=step.ms,
+            input_tokens=step.input_tokens,
+            output_tokens=step.output_tokens,
+            cost_usd=step.cost_usd,
+        )
+
+
 class AskOut(BaseModel):
     """The combined answer: the parsed intent, the executed sections, and the refusal
-    fields. ``caveat`` carries the exact services sentence whenever services are used."""
+    fields. ``caveat`` carries the exact services sentence whenever services are used;
+    ``steps`` lists the stages that built the answer, in order."""
 
     question: str
     refused: bool
@@ -239,6 +265,7 @@ class AskOut(BaseModel):
     price_error: str | None
     rule: AskRuleOut | None
     caveat: str | None
+    steps: list[StepOut]
 
     @classmethod
     def from_result(cls, result: CombinedAnswer) -> "AskOut":
@@ -265,4 +292,28 @@ class AskOut(BaseModel):
             price_error=result.price_error,
             rule=None if result.rule is None else AskRuleOut.from_result(result.rule),
             caveat=result.caveat,
+            steps=[StepOut.from_step(step) for step in result.steps],
         )
+
+
+class TracingOut(BaseModel):
+    """Whether tracing is configured and, if so, where the traces can be viewed."""
+
+    configured: bool
+    url: str | None
+
+
+class MetaOut(BaseModel):
+    """What the page needs to label itself truthfully: the configured model ids (empty
+    strings when unset), the data snapshots and sources, and the tracing status. Nothing
+    here is hard-coded in the front end."""
+
+    llm_model: str
+    embed_model: str
+    llm_configured: bool
+    register_snapshot_date: date | None
+    catalogue_title: str
+    financial_year: str
+    pricing_document: str
+    rule_chunk_strategy: str
+    tracing: TracingOut

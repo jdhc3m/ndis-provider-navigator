@@ -10,7 +10,8 @@ refusal instead of a crash. The composed answer passes the domain output guard b
 is returned.
 """
 
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -42,6 +43,8 @@ from ndis.domain.intent import (
     REFUSAL_INTENT_UNPARSEABLE,
     Intent,
     ParsedIntent,
+    PriceQuery,
+    ProviderFilters,
     parse_intent,
 )
 from ndis.domain.pricing import REFUSAL_NO_CHUNKS
@@ -117,6 +120,26 @@ class ClaimEvidenceSource(Protocol):
 
 
 @dataclass(frozen=True)
+class Step:
+    """One stage of building an answer, for the "how this answer was built" disclosure:
+    what went in and came out (as short summaries, never page text), how long it took,
+    and — for the model call only — the tokens it used and what they cost."""
+
+    kind: str
+    input_summary: str
+    output_summary: str
+    ms: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+
+
+# USD per 1M input tokens, USD per 1M output tokens — the composition root looks the pair
+# up for the configured model; ``None`` means the model is unpriced and the step says so.
+TokenPrices = tuple[float, float] | None
+
+
+@dataclass(frozen=True)
 class CombinedAnswer:
     """The outcome of one question: the parsed intent, the deterministic sections that
     were executed, the verified service evidence, and the refusal fields."""
@@ -134,6 +157,82 @@ class CombinedAnswer:
     price_error: str | None = None
     rule: RuleAnswer | None = None
     caveat: str | None = None
+    steps: tuple[Step, ...] = ()
+
+
+class _StepLog:
+    """Collects the steps of one question, timing each with the injected clock."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self._clock = clock
+        self.steps: list[Step] = []
+
+    def start(self) -> float:
+        return self._clock()
+
+    def record(
+        self,
+        kind: str,
+        started: float,
+        input_summary: str,
+        output_summary: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cost_usd: float | None = None,
+    ) -> None:
+        ms = max(0, round((self._clock() - started) * 1000))
+        self.steps.append(
+            Step(kind, input_summary, output_summary, ms, input_tokens, output_tokens, cost_usd)
+        )
+
+    def done(self) -> tuple[Step, ...]:
+        return tuple(self.steps)
+
+
+def token_cost(prices: TokenPrices, input_tokens: int, output_tokens: int) -> float | None:
+    """The USD cost of one call at the given per-1M prices, or ``None`` when unpriced."""
+    if prices is None:
+        return None
+    input_price, output_price = prices
+    return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
+
+
+def _summarise_filters(intent: Intent) -> str:
+    filters = intent.provider_filters
+    if filters is None:
+        return "no provider filters"
+    parts = [
+        f"{name}={value}"
+        for name, value in (
+            ("state", filters.state),
+            ("postcode", filters.postcode),
+            ("group", filters.group),
+            ("status", filters.status),
+            ("brisbane_area", filters.brisbane_area),
+        )
+        if value is not None
+    ]
+    return " ".join(parts) or "no provider filters"
+
+
+def _summarise_intent(parsed: ParsedIntent) -> str:
+    intent = parsed.intent
+    if intent is None:
+        return "unparseable"
+    parts: list[str] = []
+    if intent.provider_filters is not None:
+        parts.append("provider_filters")
+    if intent.price_query is not None:
+        parts.append("price_query")
+    if intent.rule_question:
+        parts.append("rule_question")
+    if intent.decision_request:
+        parts.append("decision_request")
+    summary = ", ".join(parts) if parts else "empty intent"
+    if parsed.rejected:
+        summary += f" (rejected: {', '.join(parsed.rejected)})"
+    return summary
 
 
 class Ask:
@@ -153,6 +252,8 @@ class Ask:
         evidence: ClaimEvidenceSource,
         *,
         provider_limit: int = ASK_PROVIDER_LIMIT,
+        token_prices: TokenPrices = None,
+        clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._client = client
         self._providers = providers
@@ -160,27 +261,88 @@ class Ask:
         self._rule_answerer = rule_answerer
         self._evidence = evidence
         self._provider_limit = provider_limit
+        self._token_prices = token_prices
+        self._clock = clock
 
     def __call__(self, question: str) -> CombinedAnswer:
         text = question.strip()
+        log = _StepLog(self._clock)
+
+        started = log.start()
         result = self._client.complete(LlmRequest(INTENT_SYSTEM_PROMPT, intent_prompt(text)))
         parsed = parse_intent(result.text)
+        log.record(
+            "intent_parse",
+            started,
+            f"question ({len(text)} chars)",
+            _summarise_intent(parsed),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_usd=token_cost(self._token_prices, result.input_tokens, result.output_tokens),
+        )
         intent = parsed.intent
         if intent is None:
             return self._refusal(
-                text, REFUSAL_INTENT_UNPARSEABLE, INTENT_UNPARSEABLE_EXPLANATION, parsed
+                text, REFUSAL_INTENT_UNPARSEABLE, INTENT_UNPARSEABLE_EXPLANATION, parsed, log
             )
         if intent.decision_request:
             return self._refusal(
-                text, REFUSAL_DECISION_REQUEST, DECISION_REFUSAL_EXPLANATION, parsed
+                text, REFUSAL_DECISION_REQUEST, DECISION_REFUSAL_EXPLANATION, parsed, log
             )
         if intent.empty():
-            return self._refusal(text, REFUSAL_EMPTY_INTENT, EMPTY_INTENT_EXPLANATION, parsed)
+            return self._refusal(text, REFUSAL_EMPTY_INTENT, EMPTY_INTENT_EXPLANATION, parsed, log)
 
-        providers, provider_total = self._execute_filters(intent)
-        price, price_error = self._execute_price(intent)
-        rule = self._rule_answerer(intent.rule_question) if intent.rule_question else None
+        providers: tuple[Provider, ...] = ()
+        provider_total = 0
+        if intent.provider_filters is not None:
+            started = log.start()
+            providers, provider_total = self._execute_filters(intent.provider_filters)
+            log.record(
+                "provider_filter",
+                started,
+                _summarise_filters(intent),
+                f"{len(providers)} of {provider_total} matching providers",
+            )
+        price: PriceLimitResult | None = None
+        price_error: str | None = None
+        if intent.price_query is not None:
+            started = log.start()
+            query = intent.price_query
+            price, price_error = self._execute_price(query)
+            log.record(
+                "price_limit",
+                started,
+                f"item={query.item} state={query.state} "
+                f"remoteness={query.remoteness or 'national'}",
+                price_error
+                if price_error is not None
+                else f"limit {price.limit if price is not None else None}",
+            )
+        rule: RuleAnswer | None = None
+        if intent.rule_question:
+            started = log.start()
+            rule = self._rule_answerer(intent.rule_question)
+            log.record(
+                "rule_answer",
+                started,
+                f"rule question ({len(intent.rule_question)} chars)",
+                f"refused: {rule.reason}"
+                if rule.refused
+                else f"answered with {len(rule.citations)} citations"
+                + (f", top similarity {rule.top_similarity:.2f}" if rule.top_similarity else ""),
+            )
+
+        started = log.start()
         services, page_texts = self._service_evidence(providers)
+        mention_count = sum(len(mentions) for mentions in services.values())
+        log.record(
+            "evidence",
+            started,
+            f"{len(providers)} providers",
+            f"{mention_count} verified mentions for {len(services)} providers",
+        )
+
+        started = log.start()
         entries = tuple(
             ProviderEntry(provider.abn, provider.business_name, services.get(provider.abn, ()))
             for provider in providers
@@ -188,6 +350,12 @@ class Ask:
         caveat = CAVEAT_SERVICES if services else None
         document = AnswerDocument(providers=entries, caveat=caveat)
         guard = check_answer(document, providers, page_texts)
+        log.record(
+            "guard",
+            started,
+            f"{len(entries)} entries, caveat {'present' if caveat else 'absent'}",
+            "valid" if guard.valid else f"violations: {', '.join(guard.violations)}",
+        )
         if not guard.valid:
             return CombinedAnswer(
                 text,
@@ -196,6 +364,7 @@ class Ask:
                 "The composed answer failed its output guard and is withheld.",
                 intent,
                 parsed.rejected,
+                steps=log.done(),
             )
         return CombinedAnswer(
             question=text,
@@ -211,10 +380,16 @@ class Ask:
             price_error=price_error,
             rule=rule,
             caveat=caveat,
+            steps=log.done(),
         )
 
     def _refusal(
-        self, question: str, reason: str, explanation: str, parsed: ParsedIntent
+        self,
+        question: str,
+        reason: str,
+        explanation: str,
+        parsed: ParsedIntent,
+        log: _StepLog,
     ) -> CombinedAnswer:
         return CombinedAnswer(
             question,
@@ -223,12 +398,10 @@ class Ask:
             explanation,
             parsed.intent,
             parsed.rejected,
+            steps=log.done(),
         )
 
-    def _execute_filters(self, intent: Intent) -> tuple[tuple[Provider, ...], int]:
-        filters = intent.provider_filters
-        if filters is None:
-            return (), 0
+    def _execute_filters(self, filters: ProviderFilters) -> tuple[tuple[Provider, ...], int]:
         page = self._providers(
             ProviderQuery(
                 state=filters.state,
@@ -242,10 +415,7 @@ class Ask:
         )
         return page.items, page.total
 
-    def _execute_price(self, intent: Intent) -> tuple[PriceLimitResult | None, str | None]:
-        query = intent.price_query
-        if query is None:
-            return None, None
+    def _execute_price(self, query: PriceQuery) -> tuple[PriceLimitResult | None, str | None]:
         try:
             return (
                 self._catalogue(

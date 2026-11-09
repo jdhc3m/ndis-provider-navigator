@@ -17,6 +17,10 @@ from dataclasses import dataclass
 
 from ndis.domain.extraction import estimated_tokens
 
+# The one document the rule index is built from (see scripts/fetch_public_data.py for the
+# download); the API and the retrieval report both name it from here.
+PRICING_DOCUMENT_TITLE = "NDIS Pricing Arrangements and Price Limits 2025-26 v1.1"
+
 STRATEGY_FIXED = "fixed"
 STRATEGY_HEADING = "heading"
 CHUNK_STRATEGIES: tuple[str, ...] = (STRATEGY_FIXED, STRATEGY_HEADING)

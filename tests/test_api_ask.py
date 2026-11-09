@@ -21,8 +21,9 @@ from ndis.api.dependencies import (
     rule_answerer_for,
     rule_store_maybe,
 )
-from ndis.application.ask import Ask, CombinedAnswer
+from ndis.application.ask import Ask, CombinedAnswer, Step
 from ndis.application.extraction import LlmError
+from ndis.config import MODEL_PRICES_PER_1M
 from ndis.domain.answer import CAVEAT_SERVICES, ServiceMention
 from ndis.domain.intent import Intent, ProviderFilters
 from ndis.domain.pricing import REFUSAL_NO_CHUNKS
@@ -48,6 +49,12 @@ ANSWERED = CombinedAnswer(
     price_error=None,
     rule=None,
     caveat=None,
+    steps=(
+        Step("intent_parse", "question (16 chars)", "provider_filters", 412, 120, 40, 0.00024),
+        Step("provider_filter", "state=NSW", "0 of 1 matching providers", 7),
+        Step("evidence", "0 providers", "0 verified mentions for 0 providers", 0),
+        Step("guard", "0 entries, caveat absent", "valid", 0),
+    ),
 )
 
 
@@ -104,6 +111,44 @@ def test_ask_returns_the_combined_answer(
         "price_error": None,
         "rule": None,
         "caveat": None,
+        "steps": [
+            {
+                "kind": "intent_parse",
+                "input_summary": "question (16 chars)",
+                "output_summary": "provider_filters",
+                "ms": 412,
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "cost_usd": 0.00024,
+            },
+            {
+                "kind": "provider_filter",
+                "input_summary": "state=NSW",
+                "output_summary": "0 of 1 matching providers",
+                "ms": 7,
+                "input_tokens": None,
+                "output_tokens": None,
+                "cost_usd": None,
+            },
+            {
+                "kind": "evidence",
+                "input_summary": "0 providers",
+                "output_summary": "0 verified mentions for 0 providers",
+                "ms": 0,
+                "input_tokens": None,
+                "output_tokens": None,
+                "cost_usd": None,
+            },
+            {
+                "kind": "guard",
+                "input_summary": "0 entries, caveat absent",
+                "output_summary": "valid",
+                "ms": 0,
+                "input_tokens": None,
+                "output_tokens": None,
+                "cost_usd": None,
+            },
+        ],
     }
     assert stub.questions == ["providers in NSW"]
 
@@ -120,6 +165,7 @@ def test_ask_returns_a_refusal_with_the_explanation(
     assert "does not make recommendations" in body["explanation"]
     assert body["providers"] == []
     assert body["intent"]["decision_request"] is True
+    assert body["steps"] == []  # the stub recorded none; a real refusal carries intent_parse
 
 
 def test_ask_includes_services_and_the_exact_caveat(
@@ -232,3 +278,44 @@ def test_intent_and_service_mention_schemas_convert_domain_values() -> None:
     )
     assert mention_out.service == "Speech pathology"
     assert mention_out.fetched_at == "2026-11-07"
+
+
+def test_step_schema_converts_the_application_value() -> None:
+    from ndis.api.schemas import StepOut
+
+    step_out = StepOut.from_step(Step("guard", "1 entries, caveat present", "valid", 3))
+    assert step_out.model_dump() == {
+        "kind": "guard",
+        "input_summary": "1 entries, caveat present",
+        "output_summary": "valid",
+        "ms": 3,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cost_usd": None,
+    }
+
+
+def test_ask_use_case_prices_tokens_for_the_configured_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The composition root looks the token prices up in config for the model the
+    environment names; a model the price table lacks stays unpriced."""
+    create_sqlite_engine(tmp_path / "ndis.db")
+    monkeypatch.setenv(dependencies.DB_PATH_ENV, str(tmp_path / "ndis.db"))
+    monkeypatch.setenv(EXTRACTION_DIR_ENV, str(tmp_path / "extraction"))
+    monkeypatch.setenv(PAGES_DIR_ENV, str(tmp_path / "pages"))
+    monkeypatch.setenv(RULE_INDEX_PATH_ENV, str(tmp_path / "absent-index.db"))
+    monkeypatch.setattr(dependencies, "question_llm_client", lambda: StubCompleter())
+
+    def build() -> Ask:
+        return dependencies.ask_use_case(
+            dependencies.list_providers_use_case(dependencies.provider_repository()),
+            dependencies.get_price_limit_use_case(dependencies.support_item_repository()),
+            claim_evidence_source(),
+        )
+
+    monkeypatch.setenv("LLM_MODEL", "a-model-with-no-published-price")
+    assert build()._token_prices is None
+    priced_model, prices = next(iter(MODEL_PRICES_PER_1M.items()))
+    monkeypatch.setenv("LLM_MODEL", priced_model)
+    assert build()._token_prices == prices

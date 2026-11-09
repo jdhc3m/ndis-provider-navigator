@@ -12,7 +12,7 @@ from scripts.check_no_stubs import check_repository
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("layer", ["domain", "application", "adapters", "api", "ui"])
+@pytest.mark.parametrize("layer", ["domain", "application", "adapters", "api"])
 def test_layers_import(layer: str) -> None:
     assert importlib.import_module(f"ndis.{layer}").__name__ == f"ndis.{layer}"
 
