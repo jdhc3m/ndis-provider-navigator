@@ -47,6 +47,29 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
 - `pytest -m eval` runs with `--no-cov` in CI: the coverage gate applies to the
   unit/integration run, not the eval subset. Ticket 08 owns the eval gate design.
 
+## Decision 2026-11-09: ticket 09 is a React/TypeScript front end, not Streamlit
+
+The owner chose a TypeScript web page. Issue #10 and the brief (§2, §5 ticket 09,
+§6 AGENTS text, ticket 11 prerequisites) were rewritten; AGENTS.md and README
+updated. Facts the Builder of ticket 09 needs:
+
+- Stack: React 19 + TypeScript strict + Vite in `web/`, Tailwind CSS v4, pnpm,
+  Node 22. Fonts self-hosted (`@fontsource/*`); no CDN. Typed client generated
+  from `/openapi.json` with `openapi-typescript`; CI fails on schema drift.
+- Design comes from the `ui-ux-pro-max` skill installed globally on the Mac at
+  `~/.agents/skills/ui-ux-pro-max/` (Amp loads it; subagents can call `skill`
+  with name `ui-ux-pro-max`). Its generator for this product proposed the
+  "Accessible & Ethical" style, blue primary, Atkinson Hyperlegible, no
+  gradients; persist the output as `web/design-system/MASTER.md`.
+- pnpm works through the corporate npm mirror (`~/.npmrc`) and its lockfile
+  stores integrity hashes only, so `pnpm-lock.yaml` is committed normally; CI
+  installs from npmjs with `--frozen-lockfile`. Do not apply the `uv.lock`
+  skip-worktree dance to it. Playwright's browser download may be blocked by
+  the proxy; screenshots may be taken with the owner's browser instead.
+- `streamlit` is still a declared dependency in `pyproject.toml` and `ndis.ui`
+  is still in the import-linter contract; ticket 09 removes both (expect the
+  CI lock step to fail once and commit the `uv-lock` artifact as usual).
+
 ## Done
 
 - Ticket 00 — repo, tooling, CI, protections (issue #1, PR #16). Note:

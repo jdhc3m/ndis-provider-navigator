@@ -3,7 +3,7 @@
 A portfolio project for grounded NDIS provider discovery and deterministic pricing
 in Brisbane. **This repository currently contains tooling, register ingestion and
 catalogue price limits only, not a working provider navigator.** Python 3.12, FastAPI,
-Pydantic v2, SQLAlchemy 2, Streamlit and uv.
+Pydantic v2, SQLAlchemy 2 and uv; the front end (ticket 09) is React/TypeScript in `web/`.
 
 ## Development
 
@@ -132,7 +132,7 @@ by (status, strategy) and holds only Maps titles and register names/ABNs; the ow
 - `src/ndis/domain/`: pure entities and rules, no frameworks.
 - `src/ndis/application/`: ports and use cases, depends inward on domain.
 - `src/ndis/adapters/`: database, HTTP, model and tracing implementations.
-- `src/ndis/api/`: FastAPI composition; `src/ndis/ui/`: Streamlit page.
+- `src/ndis/api/`: FastAPI composition; `web/`: React/TypeScript front end (ticket 09; replaces the Streamlit page and the `src/ndis/ui/` package).
 
 Import-linter enforces inward dependencies and forbids framework dependencies in
 the inner layers. Standard-library imports are allowed. Strict typing covers
@@ -166,6 +166,6 @@ Learning notes are added after each merge under `docs/learning/`.
 
 Pricing Arrangements PDF rule retrieval; polite website fetching;
 evidence-backed extraction; intent parsing and refusal guards; measured model
-evaluations; tracing; Streamlit; geographic ranking; and the fresh-clone demo. No service
+evaluations; tracing; the web front end; geographic ranking; and the fresh-clone demo. No service
 or rule answer should be considered available at this stage; the provider endpoint lists
 register facts only and the price-limit endpoint returns catalogue limits only.
