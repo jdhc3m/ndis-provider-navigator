@@ -30,6 +30,7 @@ from ndis.adapters.sqlite_repository import (
     create_sqlite_engine,
 )
 from ndis.adapters.stored_pages import FilePageTextSource
+from ndis.adapters.tracing import flush, traced
 from ndis.application.extraction import ExtractServices, PrecisionRecall, score_service
 from ndis.config import llm_api_key, llm_base_url, llm_configured, llm_model
 from ndis.domain.extraction import TokenBudget
@@ -221,18 +222,22 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("LLM environment not configured (LLM_BASE_URL, LLM_MODEL, LLM_API_KEY)")
             return 1
         source = FilePageTextSource(engine, args.pages_dir)
-        client = OpenAICompatibleClient(
-            base_url=llm_base_url(),
-            api_key=llm_api_key(),
-            model=llm_model(),
-            budget=TokenBudget(args.budget),
-            interval=args.interval,
+        client = traced(
+            OpenAICompatibleClient(
+                base_url=llm_base_url(),
+                api_key=llm_api_key(),
+                model=llm_model(),
+                budget=TokenBudget(args.budget),
+                interval=args.interval,
+            ),
+            "extraction",
         )
         use_case = ExtractServices(source, client, store)
         started = time.monotonic()
         counts = use_case(provider_keys=args.only or None, limit=args.limit)
         logger.info("extracted %s in %.0f s", counts.summary(), time.monotonic() - started)
         client.close()
+        flush()
 
     sites = labelled(read_labels(args.labels))
     if not sites:

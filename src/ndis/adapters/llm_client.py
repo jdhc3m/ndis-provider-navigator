@@ -74,6 +74,16 @@ class OpenAICompatibleClient(EmbeddingClient):
         self._client.close()
 
     @property
+    def model(self) -> str:
+        """The completion model id this client asks the endpoint for."""
+        return self._model
+
+    @property
+    def embed_model(self) -> str:
+        """The embedding model id, or the empty string when none is configured."""
+        return self._embed_model or ""
+
+    @property
     def budget(self) -> TokenBudget:
         return self._budget
 

@@ -18,6 +18,7 @@ from ndis.adapters.sqlite_repository import (
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
 )
+from ndis.adapters.tracing import traced
 from ndis.application.ask import Ask, ClaimEvidenceSource, MissingIndexRuleAnswerer, RuleAnswerer
 from ndis.application.catalogue import GetPriceLimit, SupportItemRepository
 from ndis.application.extraction import TokenBudget
@@ -180,13 +181,14 @@ def rule_answerer_for(store: SqliteVecRuleStore | None) -> RuleAnswerer:
     index file is missing (a combined answer degrades, it does not fail)."""
     if store is None:
         return MissingIndexRuleAnswerer()
-    embedder: EmbeddingClient = CachedEmbeddingClient(
-        question_embedding_client(), rule_embedding_cache(), embed_model()
+    embedder: EmbeddingClient = traced(
+        CachedEmbeddingClient(question_embedding_client(), rule_embedding_cache(), embed_model()),
+        "rule_embedding",
     )
     return AskRule(
         embedder,
         store,
-        question_llm_client(),
+        traced(question_llm_client(), "rule_judge"),
         strategy=rule_chunk_strategy(),
         threshold=rule_similarity_threshold(),
         top_k=rule_top_k(),
@@ -201,7 +203,11 @@ def ask_use_case(
     """One use case per question; the intent-parse client and its token budget are
     fresh per request, the rule answerer degrades to refusals without an index."""
     return Ask(
-        question_llm_client(), providers, catalogue, rule_answerer_for(rule_store_maybe()), evidence
+        traced(question_llm_client(), "intent_parse"),
+        providers,
+        catalogue,
+        rule_answerer_for(rule_store_maybe()),
+        evidence,
     )
 
 
