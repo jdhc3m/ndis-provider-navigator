@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 05 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", which was completed and re-verified the same day).
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 06 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", completed and verified the same day).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -119,6 +119,20 @@ updated. Facts the Builder of ticket 09 needs:
   model across all predictions, cache uniform. The full ~300-provider run is
   still pending and should be paced/chunked after the quota resets.
 
+- Ticket 06 — pricing rules RAG (issue #7, PR #32). Note:
+  `docs/learning/06-pricing-rules.md`. hit@3 100% on both chunking strategies
+  (10 golden questions, pages verified against the PDF). Corpus: PAPL
+  2025-26 v1.1, 104 pages, 175 fixed / 284 heading-aware chunks, 3072-dim
+  embeddings, sqlite-vec index `data/rule_index.db` (26 MB); embedding cache
+  `data/private/embedding_cache.db` keyed sha256(model+text). Threshold 0.65
+  (`RULE_SIMILARITY_THRESHOLD`); off-topic band max 0.620. New deps:
+  `sqlite-vec`, `pymupdf` (pinned <2; no x86_64 macOS wheel for 2.x). The
+  written rules live in the 2025-26 PAPL — the 2026-27 page offers schedules
+  (tables) only. Chat quota 429s recur daily (~20 h reset); retrieval and the
+  eval are cache-only and unaffected, sample answer generation may need the
+  `LLM_MODEL=gemini-3.5-flash-lite` override. The eval gate command is
+  `uv run pytest -m eval --no-cov` everywhere now (AGENTS.md, README).
+
 ## In progress
 
 - None.
@@ -200,17 +214,16 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- Ticket 06 — pricing rules RAG (issue #7), on this machine. Depends on 02
-  (merged) and the LLM adapter from 05 (merged). Its inputs are public: it
-  downloads the Pricing Arrangements PDF itself (browser-like User-Agent).
-  Scope: pymupdf page-tagged chunks (fixed 600-token + heading-aware), the
-  ticket 05 adapter for embeddings, `sqlite-vec` store (new dependency —
-  must be justified in the PR body; `uv lock` works directly against PyPI
-  here, so commit the updated `uv.lock`), `POST /ask-rule` with
-  answer/citations(page, quoted span) or `refused: true` when similarity is
-  below threshold or the judge finds no support. 10 rule questions in
-  `evals/golden.yaml`, hit@3 for both chunking strategies in
-  `reports/retrieval.md`, refusal test for an off-topic question.
-- Tickets 07 (intent parsing + combined answer), 08 (evals gate, tracing,
-  cost) follow on this machine; ticket 09 (React front end) needs the
-  `ui-ux-pro-max` skill (now installed at `~/.agents/skills/`).
+- Ticket 07 — intent parsing and the combined answer (issue #8), on this
+  machine. `POST /ask`: LLM → `Intent(provider_filters | None,
+  price_query | None, rule_question | None, decision_request)` as structured
+  output; deterministic execution (filters → SQL, price → `price_limit()`,
+  rule → ticket 06's pipeline); `decision_request` → refusal. Output guard in
+  `domain`: every named provider must be in the result set, every service
+  claim must carry evidence, and the professions caveat appears whenever
+  services are used. AC: 12 filter cases exact-match, 5 refusal/adversarial
+  cases incl. one prompt injection, guard tests with a fabricated-provider
+  fixture.
+- Ticket 08 (evals as CI gate, tracing, cost) after that; ticket 09 (React
+  front end) needs the `ui-ux-pro-max` skill (installed at
+  `~/.agents/skills/`).
