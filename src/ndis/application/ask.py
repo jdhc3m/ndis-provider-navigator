@@ -196,7 +196,6 @@ class Ask:
                 "The composed answer failed its output guard and is withheld.",
                 intent,
                 parsed.rejected,
-                caveat=caveat,
             )
         return CombinedAnswer(
             question=text,
