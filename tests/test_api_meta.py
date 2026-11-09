@@ -14,14 +14,17 @@ from fastapi.testclient import TestClient
 from ndis.adapters import tracing
 from ndis.adapters.sqlite_repository import SqlAlchemyProviderRepository
 from ndis.api import dependencies
-from ndis.api.app import DEV_ORIGINS, create_app, meta
+from ndis.api.app import create_app, meta
 from ndis.api.dependencies import (
+    CORS_ORIGINS_ENV,
     DB_PATH_ENV,
+    DEFAULT_CORS_ORIGINS,
     DEFAULT_DB_PATH,
     DEFAULT_WEB_DIST,
     REGISTER_CSV_ENV,
     REGISTER_CSV_RELATIVE,
     WEB_DIST_ENV,
+    cors_origins,
     register_csv_path,
     register_snapshot_date,
     web_dist_dir,
@@ -48,6 +51,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv(REGISTER_CSV_ENV, str(tmp_path / "register.csv"))
     monkeypatch.setenv(DB_PATH_ENV, str(tmp_path / "ndis.db"))
     monkeypatch.setenv(WEB_DIST_ENV, str(tmp_path / "dist"))
+    monkeypatch.delenv(CORS_ORIGINS_ENV, raising=False)
     return tmp_path
 
 
@@ -149,7 +153,7 @@ def test_meta_route_is_registered_by_name() -> None:
 
 def test_dev_server_origin_is_allowed_by_cors(clean_env: Path) -> None:
     client = TestClient(create_app())
-    for origin in DEV_ORIGINS:
+    for origin in DEFAULT_CORS_ORIGINS:
         response = client.options(
             "/ask",
             headers={
@@ -162,6 +166,18 @@ def test_dev_server_origin_is_allowed_by_cors(clean_env: Path) -> None:
         assert response.headers["access-control-allow-origin"] == origin
     denied = client.get("/meta", headers={"Origin": "https://elsewhere.example"})
     assert "access-control-allow-origin" not in denied.headers
+
+
+def test_cors_origins_come_from_the_environment(
+    clean_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(CORS_ORIGINS_ENV, " http://localhost:5175, http://127.0.0.1:5175 ,")
+    assert cors_origins() == ("http://localhost:5175", "http://127.0.0.1:5175")
+    client = TestClient(create_app())
+    allowed = client.get("/meta", headers={"Origin": "http://localhost:5175"})
+    assert allowed.headers["access-control-allow-origin"] == "http://localhost:5175"
+    default_denied = client.get("/meta", headers={"Origin": DEFAULT_CORS_ORIGINS[0]})
+    assert "access-control-allow-origin" not in default_denied.headers
 
 
 def test_root_is_404_without_a_built_front_end(clean_env: Path) -> None:

@@ -12,6 +12,7 @@ from ndis.adapters.tracing import langfuse_enabled, tracing_url
 from ndis.api.dependencies import (
     ask_rule_use_case,
     ask_use_case,
+    cors_origins,
     get_price_limit_use_case,
     list_providers_use_case,
     register_snapshot_date,
@@ -43,15 +44,12 @@ from ndis.config import embed_model, llm_configured, llm_model, rule_chunk_strat
 from ndis.domain.catalogue import CATALOGUE_TITLE, FINANCIAL_YEAR
 from ndis.domain.pricing import PRICING_DOCUMENT_TITLE
 
-# The Vite dev server's origins; the built page is same-origin and needs no CORS.
-DEV_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
-
 
 def create_app() -> FastAPI:
     app = FastAPI(title="NDIS Provider Navigator", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=list(DEV_ORIGINS),
+        allow_origins=list(cors_origins()),
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type"],
     )

@@ -13,6 +13,8 @@ dist/
 .env
 .env.*
 !.env.example
+# The dev-server API base URL is not a secret; the page needs it committed.
+!web/.env.development
 data/
 data/private/
 *.db
@@ -23,3 +25,5 @@ data/private/
 /*.xlsx
 /*.pdf
 .worktrees/
+# Exported on demand for `pnpm --dir web gen:schema`; web/src/api/schema.d.ts is the committed artefact.
+/openapi.json
