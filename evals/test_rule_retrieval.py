@@ -15,6 +15,7 @@ from ndis.adapters.embedding_cache import EmbeddingCache
 from ndis.adapters.golden_questions import golden_pairs, read_golden
 from ndis.adapters.llm_client import OpenAICompatibleClient
 from ndis.adapters.rule_vector_store import SqliteVecRuleStore
+from ndis.adapters.thresholds import read_thresholds
 from ndis.application.extraction import TokenBudget
 from ndis.application.pricing import (
     DEFAULT_TOP_K,
@@ -28,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "evals" / "golden.yaml"
 INDEX = ROOT / "data" / "rule_index.db"
 CACHE = ROOT / "data" / "private" / "embedding_cache.db"
+THRESHOLDS = ROOT / "evals" / "thresholds.yaml"
 
 # Measured 2026-11-09 against the built 2025-26 v1.1 index (reports/retrieval.md).
 EXPECTED_HIT3 = {"fixed": 1.0, "heading": 1.0}
@@ -94,9 +96,13 @@ def test_hit_at_3_for_both_strategies(index: SqliteVecRuleStore) -> None:
     finally:
         cache.close()
 
+    thresholds = read_thresholds(THRESHOLDS)
     for strategy in ("fixed", "heading"):
         rate = hit_rate(rows[strategy], k=3)
         assert rate is not None
+        assert rate >= thresholds.rule_hit_at_3, (
+            f"hit@3 for {strategy} ({rate:.2f}) is below the owned gate {thresholds.rule_hit_at_3}"
+        )
         assert rate == pytest.approx(EXPECTED_HIT3[strategy]), (
             f"hit@3 for {strategy} changed; update reports/retrieval.md and EXPECTED_HIT3"
         )

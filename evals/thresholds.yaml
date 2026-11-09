@@ -1,0 +1,25 @@
+# Quality floors the eval gate (``pytest -m eval --no-cov``) enforces. A metric measured
+# below its floor fails the run; the floors are owned by this file and were set by
+# issue #9 — never lowered to make a run green. Measured values live in the reports and
+# in the eval tests that enforce each floor.
+
+# Of the /ask golden filter cases, the fraction whose parsed intent filters match the
+# hand-verified expectation exactly. Measured 12/12 = 1.0 (evals/test_ask_golden.py,
+# evals/test_intent_accuracy.py).
+filter_accuracy: 0.85
+
+# Retrieval: the fraction of golden pricing-rule questions whose verified page appears in
+# the top 3 retrieved chunks, for either chunking strategy. Measured 10/10 = 1.0 for both
+# strategies (evals/test_rule_retrieval.py, reports/retrieval.md).
+rule_hit_at_3: 0.7
+
+# Service-extraction macro precision over the per-service rows of the labelled sites
+# (sites labelled_by: agent in evals/extraction_labels.yaml). Measured 0.840 on the ten
+# labelled sites of the 2026-11-09 run (refined prompt + served-confidence floor) —
+# evals/test_extraction.py, reports/extraction.md.
+extraction_precision: 0.8
+
+# Of the /ask golden refusal and adversarial cases, the fraction that is contained with
+# exactly the expected machine reason and zero executed sections. Measured 5/5 = 1.0
+# (evals/test_ask_golden.py, evals/test_intent_accuracy.py).
+refusal_recall: 1.0

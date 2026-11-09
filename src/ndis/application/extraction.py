@@ -133,13 +133,17 @@ class ExtractionCounts:
 MAX_PAGES_PER_PROVIDER = 8
 MAX_PAGE_CHARS = 12_000
 
-_SYSTEM_PROMPT = """\
+EXTRACTION_SYSTEM_PROMPT = """\
 You are an information-extraction engine. You read one page of an Australian NDIS
 provider's website and answer with JSON only - no prose, no markdown fence.
 
 Rules:
-- Claim a service only when this page's text shows the provider OFFERS it to participants.
-  Marketing prose about the NDIS in general, referral notes and job ads are not evidence.
+- Claim a service only when this page's text shows the provider OFFERS it to participants
+  now, as a service the provider delivers itself. None of these is evidence of an offered
+  service: marketing prose about the NDIS in general, an expression of interest or a
+  planned or future offering, work referred out to or delivered by another provider, a
+  passing mention, referral notes and job ads. When the page only implies a service at
+  such a level, say so with a low confidence rather than claiming it plainly.
 - Every claim needs "evidence_quote": a passage copied VERBATIM from the page text,
   between 25 and 400 characters. Copy the exact characters, including original spelling
   and punctuation; do not fix, translate, shorten to a heading or paraphrase anything.
@@ -271,7 +275,9 @@ class ExtractServices:
         for page in select_pages(pages, self._max_pages):
             excerpt = page_excerpt(page.text, self._max_page_chars)
             try:
-                result = self._client.complete(LlmRequest(_SYSTEM_PROMPT, page_prompt(excerpt)))
+                result = self._client.complete(
+                    LlmRequest(EXTRACTION_SYSTEM_PROMPT, page_prompt(excerpt))
+                )
             except BudgetExhausted:
                 tally.budget_exhausted = True
                 return _Outcome.BUDGET_STOPPED

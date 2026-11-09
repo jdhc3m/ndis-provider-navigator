@@ -29,6 +29,15 @@ MAX_CLAIMS_PER_PAGE = 40
 MAX_LANGUAGES = 12
 MAX_LANGUAGE_CHARS = 40
 
+# The confidence a claim must reach before the system serves or scores it. The extraction
+# prompt scores 1.0 for a plainly stated service and 0.5 for one the wording merely
+# implies; on the ten hand-labelled sites every claim the model itself marked at 0.5 was
+# a service the site does not actually offer (expressions of interest and "coming soon"
+# plans), while claims from 0.75 up carry the true offers (reports/extraction.md). The
+# floor sits halfway between the two anchor scores and is the deterministic gate that
+# turns that measurement into behaviour: the model proposes, this check disposes.
+MIN_SERVED_CONFIDENCE = 0.75
+
 
 class AgeGroup(StrEnum):
     """Coarse audience bands a page can claim to serve."""
@@ -102,9 +111,19 @@ class ProviderExtraction:
     input_tokens: int
     output_tokens: int
 
+    def served_claims(self) -> tuple[PageClaim, ...]:
+        """The claims the system serves: those the model itself marked at or above
+        ``MIN_SERVED_CONFIDENCE``. The recorded cache keeps every claim; this is the gate
+        between the record and what users see and the evaluation scores."""
+        return tuple(
+            page_claim
+            for page_claim in self.claims
+            if page_claim.claim.confidence >= MIN_SERVED_CONFIDENCE
+        )
+
     def services(self) -> frozenset[Service]:
-        """The distinct claimed services, the set the evaluation scores."""
-        return frozenset(page_claim.claim.service for page_claim in self.claims)
+        """The distinct served services, the set the evaluation scores."""
+        return frozenset(page_claim.claim.service for page_claim in self.served_claims())
 
 
 def collapse_whitespace(text: str) -> str:

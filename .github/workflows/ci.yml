@@ -39,18 +39,17 @@ jobs:
       - run: uv run pytest -m 'not eval'
       - run: uv run python scripts/check_no_stubs.py
       - run: uv run python scripts/check_private_data.py --tracked
+      # The eval gate runs the committed captures: the intent-accuracy suite replays
+      # evals/intent_cache.yaml (the recorded answers of the configured small model)
+      # through the real parser and enforces the thresholds.yaml floors — no database,
+      # no endpoint, no quota. Suites that need data/ (the register snapshot, the rule
+      # index, the private extraction and embedding caches) skip here with a visible
+      # notice; they keep enforcing their floors on machines that have the data.
       - name: Model evaluation gate
         shell: bash
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
-          LLM_MODEL: ${{ vars.LLM_MODEL }}
-          EMBED_MODEL: ${{ vars.EMBED_MODEL }}
         run: |
-          if ! find evals -name 'test_*.py' -print -quit | grep -q .; then
-            echo '::notice::Model evals unavailable: no evaluation suite exists yet (ticket 08).'
-          elif [ -z "$LLM_API_KEY" ]; then
-            echo '::notice::Model evals skipped: LLM_API_KEY secret is not configured.'
-          else
-            uv run pytest -m eval --no-cov
+          set -o pipefail
+          uv run pytest -m eval --no-cov -rs 2>&1 | tee /tmp/eval-gate.txt
+          if grep -q '^SKIPPED' /tmp/eval-gate.txt; then
+            echo '::notice::Data-backed eval suites skipped in CI: they need data/ (the register snapshot, the rule index, the private extraction and embedding caches), which is never committed. Their thresholds stay enforced on machines with the data; the intent-accuracy suite runs here from the committed capture.'
           fi

@@ -16,6 +16,7 @@ from ndis.adapters.embedding_cache import EmbeddingCache
 from ndis.adapters.llm_client import OpenAICompatibleClient
 from ndis.adapters.pricing_pdf import PricingPdf
 from ndis.adapters.rule_vector_store import SqliteVecRuleStore
+from ndis.adapters.tracing import flush, traced
 from ndis.application.pricing import BuildRuleIndex
 from ndis.config import embed_model, llm_api_key, llm_base_url
 from ndis.domain.extraction import TokenBudget
@@ -56,19 +57,23 @@ def main(argv: list[str] | None = None) -> int:
 
     cache = EmbeddingCache(args.cache)
     client = CachedEmbeddingClient(
-        OpenAICompatibleClient(
-            base_url=llm_base_url(),
-            api_key=llm_api_key(),
-            model="unused-for-embeddings",
-            embed_model=embed_model(),
-            budget=TokenBudget(10_000_000),
-            # Free tier is limited per minute AND per day; the adapter's own 6 s pacing
-            # and 30 s backoff cap are tuned for chat, embeddings need a minute-scale
-            # rhythm so a throttled window is waited out rather than abandoned.
-            interval=20.0,
-            backoff_base=20.0,
-            backoff_cap=75.0,
-            max_attempts=6,
+        traced(
+            OpenAICompatibleClient(
+                base_url=llm_base_url(),
+                api_key=llm_api_key(),
+                model="unused-for-embeddings",
+                embed_model=embed_model(),
+                budget=TokenBudget(10_000_000),
+                # Free tier is limited per minute AND per day; the adapter's own 6 s
+                # pacing and 30 s backoff cap are tuned for chat, embeddings need a
+                # minute-scale rhythm so a throttled window is waited out rather than
+                # abandoned.
+                interval=20.0,
+                backoff_base=20.0,
+                backoff_cap=75.0,
+                max_attempts=6,
+            ),
+            "index_embedding",
         ),
         cache,
         embed_model(),
@@ -92,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         store.close()
         cache.close()
+        flush()
     return 0
 
 

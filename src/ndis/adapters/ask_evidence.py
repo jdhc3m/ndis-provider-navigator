@@ -39,7 +39,7 @@ class ExtractionEvidenceSource:
                     quote=page_claim.claim.evidence_quote,
                     confidence=page_claim.claim.confidence,
                 )
-                for page_claim in profile.claims
+                for page_claim in profile.served_claims()
             )
         return claims
 

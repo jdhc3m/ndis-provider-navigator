@@ -9,6 +9,26 @@ never from code.
 import os
 from pathlib import Path
 
+# Published paid-tier list prices per 1M tokens, USD (input, output), keyed by the model
+# id string the environment names. Prices are public knowledge from the vendor's pricing
+# pages (checked 2026-11-09, standard tier); the deprecation pages state which rates a
+# routed model is billed at. A model the table lacks is priced nowhere rather than at a
+# guess: the cost report marks it unpriced.
+MODEL_PRICES_PER_1M: dict[str, tuple[float, float]] = {
+    # Deprecated; the vendor's deprecation page states requests route to the newer
+    # generation's endpoint and are billed at its rates.
+    "gemini-3.5-flash": (0.75, 3.75),
+    "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
+    "gemini-embedding-001": (0.15, 0.0),
+}
+
+
+def token_price(model: str) -> tuple[float, float] | None:
+    """(USD per 1M input tokens, USD per 1M output tokens) for a model id, or ``None``
+    when no price is published for it here."""
+    return MODEL_PRICES_PER_1M.get(model.strip())
+
 
 def llm_base_url() -> str:
     """Root of an OpenAI-compatible chat endpoint, e.g. ``https://host/v1/``."""

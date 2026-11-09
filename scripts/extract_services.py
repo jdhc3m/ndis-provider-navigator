@@ -30,10 +30,12 @@ from ndis.adapters.sqlite_repository import (
     create_sqlite_engine,
 )
 from ndis.adapters.stored_pages import FilePageTextSource
+from ndis.adapters.tracing import flush, traced
 from ndis.application.extraction import ExtractServices, PrecisionRecall, score_service
 from ndis.config import llm_api_key, llm_base_url, llm_configured, llm_model
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.taxonomy import TAXONOMY, Service, services_for_slug
+from scripts.recording import RecordingClient, run_log
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT / "data" / "ndis.db"
@@ -159,10 +161,12 @@ def render_report(
         "page of the site in full and judging the truth set from page evidence only, "
         "without consulting the baseline slugs; sites were picked from the 40-site "
         "template for modest page counts (2-7 stored pages each). Extraction ran one "
-        "request per page (at most 8 pages per provider), paced at 10 s, on the "
-        "free-tier endpoint; after the primary model's daily request quota ran out, all "
-        "ten sites were (re-)extracted with the lighter model named in the run's "
-        "`LLM_MODEL` so that one model covers every prediction.\n",
+        "request per page (at most 8 pages per provider), paced at 7 s, on the "
+        "free-tier endpoint. The committed run is the 2026-11-09 re-extraction of all "
+        "ten sites with the lighter model named in the run's `LLM_MODEL` and the "
+        "refined prompt whose non-evidence rules match the labelling rules above "
+        "(expressions of interest and future offerings are not evidence), so one "
+        "prompt, one model and one run cover every prediction.\n",
         "\nCaveats: the sample is small, so most per-service cells rest on one or two "
         "sites and the macro averages are coarse. The baseline is scored on a different "
         "corpus (the Maps crawl's slug hits), so its higher recall partly measures the "
@@ -172,6 +176,18 @@ def render_report(
         "mentioning plan management and support coordination was not counted where the "
         "site's own services page does not offer them, and allied-health services offered "
         "only as an expression of interest were not counted as offered.\n",
+        "\nServing: the system serves — and this report scores — only the claims the model "
+        "itself marked at or above the served-confidence floor (``MIN_SERVED_CONFIDENCE`` "
+        "= 0.75 in ``src/ndis/domain/extraction.py``): on the labelled set every claim "
+        "below that floor was an expression of interest or a coming-soon plan rather than "
+        "an offered service. Without the floor the same run scores macro precision 73.2% "
+        "(32tp/10fp over 42 raw predictions of the 122 accepted claims); with it, 84.0% "
+        "(32tp/7fp over 39 served) — recall is identical at 90.5% either way, because the "
+        "floor drops only false positives. The floor applies uniformly at serve time (the "
+        "API withholds the weak claims) while the recorded cache keeps every claim. The "
+        "confident false positives that remain (seven) are pages that plainly state a "
+        "service the hand-label says the site does not actually deliver — a labelling "
+        "disagreement the next owner-label round should settle.\n",
     ]
     return "".join(lines)
 
@@ -213,18 +229,26 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("LLM environment not configured (LLM_BASE_URL, LLM_MODEL, LLM_API_KEY)")
             return 1
         source = FilePageTextSource(engine, args.pages_dir)
-        client = OpenAICompatibleClient(
-            base_url=llm_base_url(),
-            api_key=llm_api_key(),
-            model=llm_model(),
-            budget=TokenBudget(args.budget),
-            interval=args.interval,
+        client = traced(
+            RecordingClient(
+                OpenAICompatibleClient(
+                    base_url=llm_base_url(),
+                    api_key=llm_api_key(),
+                    model=llm_model(),
+                    budget=TokenBudget(args.budget),
+                    interval=args.interval,
+                ),
+                "extraction",
+                run_log("extraction"),
+            ),
+            "extraction",
         )
         use_case = ExtractServices(source, client, store)
         started = time.monotonic()
         counts = use_case(provider_keys=args.only or None, limit=args.limit)
         logger.info("extracted %s in %.0f s", counts.summary(), time.monotonic() - started)
         client.close()
+        flush()
 
     sites = labelled(read_labels(args.labels))
     if not sites:
