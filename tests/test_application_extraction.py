@@ -38,6 +38,13 @@ BAD_QUOTE_ANSWER = (
     '{"claims": [{"service": "nursing", "evidence_quote": '
     '"Our nurses deliver 24/7 wound and catheter care", "confidence": 0.9}]}'
 )
+DUPLICATE_ANSWER = (
+    '{"claims": [{"service": "physiotherapy", "evidence_quote": "'
+    + QUOTE
+    + '", "confidence": 0.9}, {"service": "physiotherapy", "evidence_quote": "'
+    + QUOTE
+    + '", "confidence": 0.8}]}'
+)
 NOT_JSON = "I cannot answer that."
 
 
@@ -156,6 +163,20 @@ def test_unsupported_quotes_are_counted_not_stored() -> None:
     assert profile.claims == ()
 
 
+def test_duplicate_claims_are_counted_as_duplicates_not_unsupported() -> None:
+    client = FakeClient([DUPLICATE_ANSWER, DUPLICATE_ANSWER])
+    store = FakeStore()
+    counts = ExtractServices(FakeSource(pages("alpha")), client, store, clock=now)(
+        provider_keys=["alpha"]
+    )
+    assert counts.claims_accepted == 2
+    assert counts.claims_rejected == 0  # a duplicate is not an unsupported quote
+    assert counts.rejections == {"claim_duplicate": 2}
+    profile = store.saved[0]
+    assert len(profile.claims) == 2  # one kept claim per page; the projection folds repeats
+    assert all(claim.claim.confidence == 0.9 for claim in profile.claims)
+
+
 def test_budget_exhaustion_stops_the_run_and_keeps_completed_providers() -> None:
     class ExhaustingClient(FakeClient):
         def complete(self, request: LlmRequest) -> LlmResult:
@@ -200,7 +221,8 @@ def test_summary_line_reports_counts() -> None:
     )
     text = counts.summary()
     assert "claims 0 accepted, 2 unsupported" in text
-    assert "claim_quote_not_in_page" not in text  # unsupported quotes are not parse rejects
+    assert "claim_quote_not_in_page=2" in text  # unsupported quotes carry their own reason
+    assert "not_json" not in text  # parse rejects are a different bucket and did not happen
 
 
 def test_store_port_is_satisfied_by_fakes() -> None:

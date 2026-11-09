@@ -239,21 +239,34 @@ def _parse_languages(value: object, rejected: list[str]) -> tuple[str, ...]:
     return tuple(languages)
 
 
-def accepted_claims(text: str, parsed: ParsedPage) -> tuple[ServiceClaim, ...]:
-    """The parsed claims whose quotes the page text actually supports, with duplicates
-    (same service quoting the same words again) dropped. This is the only gate between a
-    model and a trusted claim: an unsupported quote never reaches the store."""
+def claim_rejections(
+    text: str, parsed: ParsedPage
+) -> tuple[tuple[ServiceClaim, ...], tuple[str, ...]]:
+    """The parsed claims whose quotes the page text actually supports, with a reason per
+    dropped claim: ``claim_quote_not_in_page`` when the page text does not back the quote,
+    ``claim_duplicate`` when the same service quotes the same words again. This is the only
+    gate between a model and a trusted claim: an unsupported quote never reaches the
+    store."""
     accepted: list[ServiceClaim] = []
+    dropped: list[str] = []
     seen: set[tuple[Service, str]] = set()
     for claim in parsed.claims:
         if not quote_supported(text, claim.evidence_quote):
+            dropped.append("claim_quote_not_in_page")
             continue
         key = (claim.service, collapse_whitespace(claim.evidence_quote))
         if key in seen:
+            dropped.append("claim_duplicate")
             continue
         seen.add(key)
         accepted.append(claim)
-    return tuple(accepted)
+    return tuple(accepted), tuple(dropped)
+
+
+def accepted_claims(text: str, parsed: ParsedPage) -> tuple[ServiceClaim, ...]:
+    """The claims ``claim_rejections`` accepts: quotes the page text supports, duplicates
+    (same service quoting the same words again) dropped."""
+    return claim_rejections(text, parsed)[0]
 
 
 def merge_attributes(values: Sequence[PageAttributes]) -> PageAttributes:

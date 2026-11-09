@@ -20,7 +20,7 @@ from ndis.domain.extraction import (
     ProviderExtraction,
     StoredPage,
     TokenBudget,
-    accepted_claims,
+    claim_rejections,
     merge_attributes,
     page_excerpt,
     parse_extraction,
@@ -285,10 +285,12 @@ class ExtractServices:
                 return _Outcome.PAGE_FAILED
             for reason in parsed.rejected:
                 tally.rejections[reason] = tally.rejections.get(reason, 0) + 1
-            accepted = accepted_claims(excerpt, parsed)
+            accepted, dropped = claim_rejections(excerpt, parsed)
+            for reason in dropped:
+                tally.rejections[reason] = tally.rejections.get(reason, 0) + 1
             claims.extend(PageClaim(page.url, claim) for claim in accepted)
             tally.claims_accepted += len(accepted)
-            tally.claims_rejected += len(parsed.claims) - len(accepted)
+            tally.claims_rejected += dropped.count("claim_quote_not_in_page")
             attributes.append(parsed.attributes)
         self._store.save(
             ProviderExtraction(
@@ -321,8 +323,8 @@ class PrecisionRecall:
 
 
 def score_service(
-    truth: AbstractSet[frozenset[Service]],
-    predicted: AbstractSet[frozenset[Service]],
+    truth: Sequence[frozenset[Service]],
+    predicted: Sequence[frozenset[Service]],
 ) -> PrecisionRecall:
     """Precision/recall of one system on one service across sites, as parallel site sets."""
     tp = sum(1 for real, guess in zip(truth, predicted, strict=True) if guess and real)

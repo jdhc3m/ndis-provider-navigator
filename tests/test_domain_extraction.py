@@ -14,6 +14,7 @@ from ndis.domain.extraction import (
     StoredPage,
     TokenBudget,
     accepted_claims,
+    claim_rejections,
     estimated_tokens,
     merge_attributes,
     page_excerpt,
@@ -167,6 +168,9 @@ def test_accepted_claims_gate_and_dedupe() -> None:
     parsed = ParsedPage(claims=(good, fabricated, duplicate))
     assert accepted_claims(PAGE, parsed) == (good,)
     assert accepted_claims("no such text here", parsed) == ()
+    accepted, dropped = claim_rejections(PAGE, parsed)
+    assert accepted == (good,)
+    assert dropped == ("claim_quote_not_in_page", "claim_duplicate")
 
 
 def test_merge_attributes_unions_and_resolves_flags() -> None:

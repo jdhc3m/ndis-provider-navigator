@@ -17,7 +17,7 @@ import argparse
 import logging
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -59,6 +59,25 @@ def place_keys(engine) -> dict[str, str]:  # type: ignore[no-untyped-def]
 
 def _percent(value: float | None) -> str:
     return "—" if value is None else f"{100 * value:.0f}%"
+
+
+def comparison_rows(
+    sites: Sequence[LabelSite],
+    store: CachedExtractionStore,
+    keys: Mapping[str, str],
+    baseline: Mapping[str, frozenset[str]],
+) -> list[tuple[frozenset[Service], frozenset[Service], frozenset[Service]]]:
+    """Per labelled site: the truth set, the LLM prediction read from the cache and the
+    regex-baseline prediction bridged from the place's slug hits."""
+    rows: list[tuple[frozenset[Service], frozenset[Service], frozenset[Service]]] = []
+    for site in sites:
+        profile = store.load(site.provider_key)
+        llm = frozenset(profile.services()) if profile else frozenset()
+        place_id = keys.get(site.provider_key)
+        slugs = baseline.get(place_id, frozenset()) if place_id else frozenset()
+        base = frozenset(service for slug in slugs for service in services_for_slug(slug))
+        rows.append((frozenset(site.services), llm, base))
+    return rows
 
 
 def comparison_table(
@@ -213,16 +232,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     keys = place_keys(engine)
     baseline = SqliteRegexBaseline(args.maps).baseline()
-    comparisons: list[tuple[frozenset[Service], frozenset[Service], frozenset[Service]]] = []
-    predictions: dict[str, frozenset[Service]] = {}
-    for site in sites:
-        profile = store.load(site.provider_key)
-        llm = frozenset(profile.services()) if profile else frozenset()
-        predictions[site.provider_key] = llm
-        place_id = keys.get(site.provider_key)
-        slugs = baseline.get(place_id, frozenset()) if place_id else frozenset()
-        base = frozenset(service for slug in slugs for service in services_for_slug(slug))
-        comparisons.append((frozenset(site.services), llm, base))
+    comparisons = comparison_rows(sites, store, keys, baseline)
+    predictions = {
+        site.provider_key: llm for site, (_, llm, _) in zip(sites, comparisons, strict=True)
+    }
     table, metrics = comparison_table(comparisons)
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
