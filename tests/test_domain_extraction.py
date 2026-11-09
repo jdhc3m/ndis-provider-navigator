@@ -249,3 +249,19 @@ def test_provider_extraction_service_set() -> None:
         output_tokens=10,
     )
     assert extraction.services() == frozenset({PHYSIO})
+
+
+def test_served_claims_drop_below_the_confidence_floor_but_the_record_keeps_them() -> None:
+    strong = ServiceClaim(PHYSIO, quote(), 0.9)
+    weak = ServiceClaim(Service.NURSING, quote(), 0.5)
+    extraction = ProviderExtraction(
+        provider_key="123",
+        claims=(PageClaim("u1", strong), PageClaim("u2", weak)),
+        attributes=PageAttributes(),
+        extracted_at=datetime.now(UTC),
+        input_tokens=10,
+        output_tokens=10,
+    )
+    assert [page_claim.claim for page_claim in extraction.served_claims()] == [strong]
+    assert extraction.services() == frozenset({PHYSIO})
+    assert len(extraction.claims) == 2  # the recorded cache keeps the weak claim

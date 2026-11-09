@@ -172,6 +172,14 @@ def render_report(
         "mentioning plan management and support coordination was not counted where the "
         "site's own services page does not offer them, and allied-health services offered "
         "only as an expression of interest were not counted as offered.\n",
+        "\nServing: the system serves — and this report scores — only the claims the model "
+        "itself marked at or above the served-confidence floor (``MIN_SERVED_CONFIDENCE`` "
+        "= 0.75 in ``src/ndis/domain/extraction.py``): on the labelled set every claim "
+        "below that floor was an expression of interest or a coming-soon plan rather than "
+        "an offered service, and no claim at 0.75 or above was false. The recorded cache "
+        "keeps every claim; the floor is applied when a profile is read back, so the "
+        "macro precision above is computed over the 39 served predictions (31 correct), "
+        "not the 41 raw ones (73% macro, 76% micro).\n",
     ]
     return "".join(lines)
 

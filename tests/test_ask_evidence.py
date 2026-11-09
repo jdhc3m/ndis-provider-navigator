@@ -47,7 +47,7 @@ def store_profile(source: ExtractionEvidenceSource, tmp_path: Path) -> None:
                 ),
                 PageClaim(
                     URL,
-                    ServiceClaim(Service.OCCUPATIONAL_THERAPY, QUOTE, 0.5),
+                    ServiceClaim(Service.OCCUPATIONAL_THERAPY, QUOTE, 0.9),
                 ),
             ),
             attributes=PageAttributes(),
@@ -90,6 +90,27 @@ def test_claims_are_read_back_with_quotes_and_fold_per_url_service(
         "occupational_therapy",
         "speech_pathology",
     ]
+
+
+def test_claims_below_the_served_confidence_floor_are_not_read_back(
+    source: ExtractionEvidenceSource, tmp_path: Path
+) -> None:
+    store = CachedExtractionStore(source._engine, tmp_path / "extraction")
+    store.save(
+        ProviderExtraction(
+            provider_key=KEY,
+            claims=(
+                PageClaim(URL, ServiceClaim(Service.SPEECH_PATHOLOGY, QUOTE, 0.9)),
+                PageClaim(URL, ServiceClaim(Service.OCCUPATIONAL_THERAPY, QUOTE, 0.5)),
+            ),
+            attributes=PageAttributes(),
+            extracted_at=datetime(2026, 11, 7, tzinfo=UTC),
+            input_tokens=10,
+            output_tokens=10,
+        )
+    )
+    claims = source.claims_for([KEY])
+    assert [claim.service for claim in claims[KEY]] == [Service.SPEECH_PATHOLOGY]
 
 
 def test_page_text_comes_from_the_private_pages_directory(
