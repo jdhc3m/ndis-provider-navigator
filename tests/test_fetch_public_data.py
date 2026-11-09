@@ -8,11 +8,15 @@ from scripts import fetch_public_data
 from scripts.fetch_public_data import (
     CATALOGUE_MIN_BYTES,
     CATALOGUE_MIN_ITEMS,
+    PRICING_MIN_BYTES,
+    PRICING_MIN_PAGES,
     REGISTER_MIN_ABNS,
     REGISTER_MIN_BYTES,
     fetch_catalogue,
+    fetch_pricing_pdf,
     fetch_register,
     verify_catalogue,
+    verify_pricing_pdf,
     verify_register,
 )
 from tests.conftest import CURRENT_ROWS, GOOD_ROWS, LEGACY_ROWS, write_catalogue, write_register
@@ -168,11 +172,86 @@ def test_main_selects_datasets(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setitem(
         fetch_public_data.DATASETS, "catalogue", lambda: fetched.append("catalogue")
     )
+    monkeypatch.setitem(
+        fetch_public_data.DATASETS, "pricing_pdf", lambda: fetched.append("pricing_pdf")
+    )
     assert fetch_public_data.main(["--only", "register"]) == 0
     assert fetched == ["register"]
-    assert fetch_public_data.main(["--only", "catalogue"]) == 0
-    assert fetched == ["register", "catalogue"]
+    assert fetch_public_data.main(["--only", "pricing_pdf"]) == 0
+    assert fetched == ["register", "pricing_pdf"]
     assert fetch_public_data.main([]) == 0
-    assert fetched == ["register", "catalogue", "catalogue", "register"]
+    assert fetched == ["register", "pricing_pdf", "catalogue", "pricing_pdf", "register"]
     with pytest.raises(SystemExit):
         fetch_public_data.main(["--only", "nonexistent"])
+
+
+def write_mini_pdf(path: Path, pages: int = 60) -> Path:
+    """A real, tiny PDF with ``pages`` blank pages: readable by pymupdf, small on disk."""
+    import pymupdf
+
+    document = pymupdf.open()
+    for _ in range(pages):
+        document.new_page()
+    document.save(path)
+    document.close()
+    return path
+
+
+def test_small_pricing_download_is_rejected_for_size_and_pages(tmp_path: Path) -> None:
+    small = write_mini_pdf(tmp_path / "small.pdf", pages=10)
+    problems = verify_pricing_pdf(small)
+    assert len(problems) == 2
+    assert f"exceeds {PRICING_MIN_BYTES} bytes" in problems[0]
+    assert f"at least {PRICING_MIN_PAGES}" in problems[1]
+
+
+def test_non_pdf_pricing_download_is_rejected(tmp_path: Path) -> None:
+    junk = tmp_path / "junk.part"
+    junk.write_text("<html>Just a moment...</html>" * 60_000, encoding="utf-8")
+    problems = verify_pricing_pdf(junk)
+    assert "file does not start with the %PDF magic bytes" in problems
+
+
+def test_unreadable_pricing_pdf_is_rejected(tmp_path: Path) -> None:
+    fake = tmp_path / "fake.pdf"
+    fake.write_bytes(b"%PDF-1.4 not really a pdf")
+    problems = verify_pricing_pdf(fake)
+    assert any("not a readable PDF" in problem for problem in problems)
+
+
+def test_fetch_pricing_pdf_deletes_truncated_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, Path]] = []
+
+    def fake_download(url: str, destination: Path) -> int:
+        calls.append((url, destination))
+        destination.parent.mkdir(parents=True)
+        write_mini_pdf(destination, pages=10)
+        return destination.stat().st_size
+
+    monkeypatch.setattr(fetch_public_data, "download", fake_download)
+    with pytest.raises(SystemExit, match="pricing PDF download rejected and deleted"):
+        fetch_pricing_pdf(tmp_path / "public")
+    expected = (
+        fetch_public_data.PRICING_PDF_URL,
+        tmp_path / "public" / "pricing_arrangements.part",
+    )
+    assert calls == [expected]
+    assert list((tmp_path / "public").iterdir()) == []
+
+
+def test_fetch_pricing_pdf_keeps_verified_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_download(url: str, destination: Path) -> int:
+        destination.parent.mkdir(parents=True)
+        write_mini_pdf(destination)
+        return destination.stat().st_size
+
+    monkeypatch.setattr(fetch_public_data, "download", fake_download)
+    monkeypatch.setattr(fetch_public_data, "PRICING_MIN_BYTES", 0)
+    monkeypatch.setattr(fetch_public_data, "PRICING_MIN_PAGES", 1)
+    destination = fetch_pricing_pdf(tmp_path / "public")
+    assert destination == tmp_path / "public" / "pricing_arrangements.pdf"
+    assert [p.name for p in (tmp_path / "public").iterdir()] == ["pricing_arrangements.pdf"]
