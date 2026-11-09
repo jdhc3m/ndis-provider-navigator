@@ -1,0 +1,82 @@
+/*
+ * Design tokens derived from web/design-system/MASTER.md ("Accessible & Ethical",
+ * Government/Public Service, Atkinson Hyperlegible). Every colour a component uses
+ * comes from here; components never carry raw hex values.
+ */
+:root {
+  /* Colour palette (MASTER.md "Color Palette") */
+  --color-primary: #0f172a;
+  --color-on-primary: #ffffff;
+  --color-secondary: #334155;
+  --color-on-secondary: #ffffff;
+  --color-accent: #0369a1;
+  --color-on-accent: #ffffff;
+  --color-background: #f8fafc;
+  --color-foreground: #020617;
+  --color-card: #ffffff;
+  --color-card-foreground: #020617;
+  --color-muted: #e8ecf1;
+  --color-muted-foreground: #475569;
+  --color-border: #e2e8f0;
+  --color-destructive: #dc2626;
+  --color-on-destructive: #ffffff;
+  --color-ring: #0f172a;
+
+  /* Status colours used by the registration badge and the refusal banner. Each
+   * pairing is checked at >= 4.5:1 (dark text on a pale tint). */
+  --color-success: #166534;
+  --color-success-tint: #dcfce7;
+  --color-warning: #854d0e;
+  --color-warning-tint: #fef3c7;
+  --color-destructive-tint: #fee2e2;
+  --color-destructive-text: #991b1b;
+  --color-accent-tint: #e0f2fe;
+
+  /* Typography (MASTER.md "Typography"): one hyperlegible family for everything. */
+  --font-sans: 'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --text-xs: 0.875rem; /* 14px: labels and meta, never below (16px+ body rule) */
+  --text-sm: 1rem; /* 16px */
+  --text-base: 1.0625rem; /* 17px body */
+  --text-lg: 1.25rem; /* 20px */
+  --text-xl: 1.5rem; /* 24px */
+  --text-2xl: 2rem; /* 32px */
+  --text-3xl: 2.75rem; /* 44px: the big price number */
+  --leading-tight: 1.2;
+  --leading-normal: 1.55;
+
+  /* Spacing (MASTER.md "Spacing Variables") */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4rem;
+
+  /* Radii (MASTER.md component specs: buttons/inputs 8px, cards 12px, pills full) */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-full: 9999px;
+
+  /* Shadows (MASTER.md "Shadow Depths") */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+
+  /* Focus ring (MASTER.md: clear focus rings 3-4px) and touch targets (44px) */
+  --focus-ring-width: 3px;
+  --focus-ring-offset: 2px;
+  --target-min: 2.75rem;
+
+  /* Motion: short, and disabled entirely under prefers-reduced-motion */
+  --duration-fast: 150ms;
+  --duration-base: 200ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+  }
+}
