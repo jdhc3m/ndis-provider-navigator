@@ -91,7 +91,11 @@ def test_completion_delegates_and_enriches(monkeypatch: pytest.MonkeyPatch, no_k
             },
             "output": {"head": "{}", "chars": 2},
             "usage": {"input": 11, "output": 7},
-            "metadata": {"site": "intent_parse", "endpoint": "chat/completions"},
+            "metadata": {
+                "site": "intent_parse",
+                "endpoint": "chat/completions",
+                "endpoint_seconds": None,
+            },
         }
     ]
     wrapped.close()
@@ -116,7 +120,11 @@ def test_embedding_delegates_and_enriches(monkeypatch: pytest.MonkeyPatch, no_ke
             "input": {"batch_size": 2, "chars": 6},
             "output": {"vectors": 1, "dim": 2},
             "usage": {"input": 5},
-            "metadata": {"site": "rule_embedding", "endpoint": "embeddings"},
+            "metadata": {
+                "site": "rule_embedding",
+                "endpoint": "embeddings",
+                "endpoint_seconds": None,
+            },
         }
     ]
 
