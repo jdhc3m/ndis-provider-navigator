@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-09 (Australia/Brisbane), after ticket 04 merged. Stopped before ticket 05. The owner has since put `LLM_API_KEY` on a second machine that can reach the Gemini API; ticket 05 onward runs there (see "Machine handoff", which was re-verified on that machine the same day — still blocked on the API key and the private-data copy before ticket 05 can start).
+Updated: 2026-11-09 (Australia/Brisbane), after ticket 05 merged. Tickets 05–08 run on the second machine (the one with Gemini access; see "Machine handoff", which was completed and re-verified the same day).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -104,15 +104,29 @@ updated. Facts the Builder of ticket 09 needs:
   text lives only under `data/private/pages/`; `page_meta` holds url,
   fetched_at, status, source, text_hash, text_path, title.
 
+- Ticket 05 — service extraction (issue #6, PR #30). Note:
+  `docs/learning/05-service-extraction.md`. Headline on the 10 agent-labelled
+  sites: LLM macro P 73% / R 88% vs regex baseline 56% / 93% (baseline =
+  `provider_services`, 3,746 rows over 326 places). Adapter is
+  OpenAI-compatible over httpx (no new dependency); extraction cache lives
+  under `data/private/extraction/` per provider (resumable), projected into
+  public-safe `service_claims` / `provider_attributes` tables. Two builder
+  rounds were needed: the reviewer caught an inflated metrics table (row
+  unpacking read truth from the prediction column) and the eval metric living
+  only in a script, not under `pytest -m eval`. Caveat: the labelled run
+  finished on `gemini-3.5-flash-lite` via `LLM_MODEL` override because
+  `gemini-3.5-flash` hit its daily free-tier quota (429, ~21 h reset) — one
+  model across all predictions, cache uniform. The full ~300-provider run is
+  still pending and should be paced/chunked after the quota resets.
+
 ## In progress
 
 - None.
 
 ## Blocked
 
-- Ticket 05 start is blocked on the second machine (below) until the owner
-  supplies a valid `LLM_API_KEY` plus the missing env vars, the brief, and the
-  private-data copy — see the re-verification block in "Machine handoff".
+- Nothing on this machine: the handoff items (valid `LLM_API_KEY` + env vars,
+  the brief, the private-data copy) are all resolved — see "Machine handoff".
   On the corporate Mac, tickets 05–08, the eval gate and the live demo stay
   blocked: Zscaler returns a 403 block page for
   `https://generativelanguage.googleapis.com/` regardless of the key.
@@ -169,30 +183,34 @@ Green:
 - Board: ticket 05 = issue #6 is next, no open PRs;
   `git log --all -- data/private` is empty.
 
-Still missing before the Builder can be briefed:
-
-- `LLM_API_KEY` in `~/.config/ndis/.env` is malformed — pasted with markup
-  around it (55 chars, begins with `<`, contains a quote; the API replies
-  "Please pass a valid API key"). Re-paste the bare key and add
-  `LLM_BASE_URL`, `LLM_MODEL`, `EMBED_MODEL` from `.env.example` (only the key
-  line exists). Re-prove reachability with a real list-models request.
-- `~/NDIS/HARNESS_PROMPT.md` is absent (copy from the Mac; it must be read
-  before resuming).
-- `data/private/` is absent (no `maps_brisbane.db`, no `pages/`). Copy the
-  complete ignored `data/` directory from the Mac (register, catalogue,
-  `provider_links`, `page_meta`, 1916 seeded + 50 live pages) — ticket 05
-  needs the Maps `provider_services` baseline and the page text.
-- For ticket 09 later: the `ui-ux-pro-max` skill is not installed on this
-  machine yet.
+Still missing before the Builder can be briefed — **all resolved later the
+same day**: the API key was replaced with the bare `AQ.…` key (proven with a
+real list-models request: HTTP 200, 61 models, both configured models
+present), the three missing env vars were added, and `HARNESS_PROMPT.md`, the
+Maps export and the complete `data/` directory arrived via the private repo
+`jdhc3m/ndis-handoff` (bundle `ndis-handoff-2026-11-09.zip`: `HARNESS_PROMPT.md`,
+`ndis.db`, `data/` copied to the canonical checkout, `ui-ux-pro-max` skill
+installed at `~/.agents/skills/`). Data verified: `providers` 29,574,
+`outlets` 64,734, `support_items` 1,017, `provider_links` 415, `page_meta`
+1,951 (1,901 crawl + 50 live; 1,824 distinct text files, none missing —
+hash-deduped, 34 rows share files). Note: STATE previously said "1916
+seeded"; the bundle has 1,901 crawl rows — count drift, everything
+referenced exists. The Maps regex taxonomy lives in the DB `services` table
+(36 slugs), so the Mac-only `~/NDIS/db/services.py` file was not needed.
 
 ## Next
 
-- Ticket 05 — service extraction (issue #6), on the second machine. The
-  regex baseline is `provider_services` in the Maps DB; page text for
-  extraction is under `data/private/pages/` keyed through
-  `page_meta.provider_key` (ABN when linked, else Maps place id).
-- Tickets 09 (React front end; reread HARNESS_PROMPT.md §2, §5 ticket 09 and
-  issue #10, and tell the Builder to load the `ui-ux-pro-max` skill first)
-  and 10 (geo ranking; `provider_links` already carries Maps
-  latitude/longitude) are LLM-free and could still run on the Mac, but the
-  brief orders tickets by number, so that is the owner's call.
+- Ticket 06 — pricing rules RAG (issue #7), on this machine. Depends on 02
+  (merged) and the LLM adapter from 05 (merged). Its inputs are public: it
+  downloads the Pricing Arrangements PDF itself (browser-like User-Agent).
+  Scope: pymupdf page-tagged chunks (fixed 600-token + heading-aware), the
+  ticket 05 adapter for embeddings, `sqlite-vec` store (new dependency —
+  must be justified in the PR body; `uv lock` works directly against PyPI
+  here, so commit the updated `uv.lock`), `POST /ask-rule` with
+  answer/citations(page, quoted span) or `refused: true` when similarity is
+  below threshold or the judge finds no support. 10 rule questions in
+  `evals/golden.yaml`, hit@3 for both chunking strategies in
+  `reports/retrieval.md`, refusal test for an off-topic question.
+- Tickets 07 (intent parsing + combined answer), 08 (evals gate, tracing,
+  cost) follow on this machine; ticket 09 (React front end) needs the
+  `ui-ux-pro-max` skill (now installed at `~/.agents/skills/`).
