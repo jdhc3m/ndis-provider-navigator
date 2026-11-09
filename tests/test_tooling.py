@@ -65,3 +65,29 @@ def test_private_data_guard_checks_staged_and_tracked_files(tmp_path: Path) -> N
         result = subprocess.run(guard + args, cwd=tmp_path, capture_output=True, text=True)
         assert result.returncode == 1
         assert "data/private/business.csv" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("staged", "blocked"),
+    [
+        ("data/private/maps_brisbane.db", True),
+        ("data/private/maps/export/providers.sqlite", True),
+        ("data/private.md", False),
+        ("docs/data/private/notes.md", False),
+    ],
+)
+def test_private_data_guard_matches_the_private_directory_exactly(
+    tmp_path: Path, staged: str, blocked: bool
+) -> None:
+    """Any depth under ``data/private/`` is blocked even when the file is otherwise ignored
+    (as the real Maps export is) and was force-added; look-alike paths elsewhere pass."""
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text("data/\n*.db\n")
+    target = tmp_path / staged
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("synthetic test fixture\n")
+    subprocess.run(["git", "add", "--force", staged], cwd=tmp_path, check=True)
+    guard = [sys.executable, str(ROOT / "scripts" / "check_private_data.py")]
+    result = subprocess.run(guard, cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == (1 if blocked else 0), result.stdout
+    assert (staged in result.stdout) is blocked
