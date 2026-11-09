@@ -145,11 +145,8 @@ def test_parse_extraction_counts_missing_fields() -> None:
     parsed = parse_extraction("{}")
     assert parsed.claims == ()
     assert parsed.attributes == PageAttributes()
-    assert set(parsed.rejected) == {
-        "claims_missing",
-        "age_groups_missing",
-        "languages_missing",
-    }
+    # Only the claims list is required; the attribute fields may be left out entirely.
+    assert parsed.rejected == ("claims_missing",)
 
 
 def test_parse_extraction_caps_runaway_lists() -> None:

@@ -193,8 +193,7 @@ def _parse_claims(value: object, rejected: list[str]) -> list[ServiceClaim]:
 
 def _parse_age_groups(value: object, rejected: list[str]) -> tuple[AgeGroup, ...]:
     if value is None:
-        rejected.append("age_groups_missing")
-        return ()
+        return ()  # the prompt allows leaving this out when the page says nothing
     if not isinstance(value, list):
         rejected.append("age_groups_not_list")
         return ()
@@ -219,8 +218,7 @@ def _parse_flag(value: object, name: str, rejected: list[str]) -> bool | None:
 
 def _parse_languages(value: object, rejected: list[str]) -> tuple[str, ...]:
     if value is None:
-        rejected.append("languages_missing")
-        return ()
+        return ()  # the prompt allows leaving this out when the page says nothing
     if not isinstance(value, list):
         rejected.append("languages_not_list")
         return ()
