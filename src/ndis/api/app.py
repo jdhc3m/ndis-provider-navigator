@@ -1,12 +1,18 @@
-"""FastAPI application exposing the provider register and the support catalogue price limits."""
+"""FastAPI application exposing the provider register, price limits and rule answers."""
 
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 
-from ndis.api.dependencies import get_price_limit_use_case, list_providers_use_case
-from ndis.api.schemas import PriceLimitOut, ProviderOut, ProviderPageOut
+from ndis.api.dependencies import (
+    ask_rule_use_case,
+    get_price_limit_use_case,
+    list_providers_use_case,
+)
+from ndis.api.schemas import AskRuleIn, AskRuleOut, PriceLimitOut, ProviderOut, ProviderPageOut
 from ndis.application.catalogue import GetPriceLimit, PriceLimitQuery, UnknownSupportItemError
+from ndis.application.extraction import BudgetExhausted, LlmError
+from ndis.application.pricing import AskRule, EmbeddingError
 from ndis.application.providers import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
@@ -22,6 +28,7 @@ def create_app() -> FastAPI:
     # function that tests import and reference by name (scripts/check_no_stubs.py).
     app.get("/providers", response_model=ProviderPageOut)(list_providers)
     app.get("/price-limits", response_model=PriceLimitOut)(get_price_limit)
+    app.post("/ask-rule", response_model=AskRuleOut)(ask_rule)
     return app
 
 
@@ -71,6 +78,18 @@ def get_price_limit(
     except UnknownSupportItemError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PriceLimitOut.from_result(result)
+
+
+def ask_rule(
+    use_case: Annotated[AskRule, Depends(ask_rule_use_case)],
+    payload: AskRuleIn,
+) -> AskRuleOut:
+    """Answer a question about the pricing rules with page-verified citations, or refuse."""
+    try:
+        result = use_case(payload.question)
+    except (LlmError, EmbeddingError, BudgetExhausted) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return AskRuleOut.from_result(result)
 
 
 app = create_app()

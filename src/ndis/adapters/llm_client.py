@@ -17,11 +17,12 @@ Run hygiene, all enforced here for every call:
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import httpx
 
 from ndis.application.extraction import BudgetExhausted, LlmError, LlmRequest, LlmResult
+from ndis.application.pricing import EmbeddingClient, EmbeddingError, EmbeddingsResult
 from ndis.domain.extraction import TokenBudget, estimated_tokens
 
 DEFAULT_INTERVAL_SECONDS = 6.0
@@ -31,8 +32,9 @@ BACKOFF_BASE_SECONDS = 2.0
 BACKOFF_CAP_SECONDS = 30.0
 
 
-class OpenAICompatibleClient:
-    """Paced, budgeted ``LlmClient`` for one run; ``clock`` and ``sleep`` are injectable."""
+class OpenAICompatibleClient(EmbeddingClient):
+    """Paced, budgeted ``LlmClient`` and ``EmbeddingClient``; ``clock`` and ``sleep`` are
+    injectable. Embeddings share the pacing, retry and budget machinery of completions."""
 
     def __init__(
         self,
@@ -41,6 +43,7 @@ class OpenAICompatibleClient:
         api_key: str,
         model: str,
         budget: TokenBudget,
+        embed_model: str | None = None,
         interval: float = DEFAULT_INTERVAL_SECONDS,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_attempts: int = MAX_ATTEMPTS,
@@ -52,6 +55,7 @@ class OpenAICompatibleClient:
     ) -> None:
         self._base_url = base_url.rstrip("/") + "/"
         self._model = model
+        self._embed_model = (embed_model or "").strip() or None
         self._budget = budget
         self._interval = interval
         self._max_attempts = max_attempts
@@ -102,6 +106,32 @@ class OpenAICompatibleClient:
             return LlmResult(text, input_tokens, output_tokens)
         raise LlmError(f"endpoint failed after {self._max_attempts} attempts")
 
+    def embed(self, texts: Sequence[str]) -> EmbeddingsResult:
+        """One embedding vector per input text, in input order, from the embeddings
+        endpoint; same pacing, retries and budget as ``complete``."""
+        if not self._embed_model:
+            raise EmbeddingError("no embed model configured")
+        batch = list(texts)
+        chars = sum(len(text) for text in batch)
+        if self._budget.would_exceed(estimated_tokens("x" * chars)):
+            raise BudgetExhausted(
+                f"budget {self._budget.spent}/{self._budget.limit} cannot fit the batch"
+            )
+        body: dict[str, object] = {"model": self._embed_model, "input": batch}
+        for attempt in range(1, self._max_attempts + 1):
+            if attempt == 1:
+                self._pace()
+            response = self._post(body, attempt, path="embeddings", error=EmbeddingError)
+            if response is None:
+                continue
+            outcome = _parse_embeddings(response, chars)
+            if outcome is None:
+                continue  # undecodable 2xx body: one more attempt may spell it correctly
+            vectors, input_tokens = outcome
+            self._budget = self._budget.spend(input_tokens)
+            return EmbeddingsResult(vectors=tuple(vectors), input_tokens=input_tokens)
+        raise EmbeddingError(f"embedding endpoint failed after {self._max_attempts} attempts")
+
     def _backoff(self, attempt: int) -> float:
         return min(self._backoff_cap, self._backoff_base * 2 ** (attempt - 1))
 
@@ -113,13 +143,27 @@ class OpenAICompatibleClient:
                 self._sleep(delay)
         self._last_request_at = self._clock()
 
-    def _post(self, body: dict[str, object], attempt: int) -> httpx.Response | None:
-        """One POST; ``None`` means the failure was transient and worth another attempt.
+    def _wait_before_retry(self, attempt: int, at_least: float = 0.0) -> None:
+        if attempt >= self._max_attempts:
+            return
+        delay = min(self._backoff_cap, max(self._backoff(attempt), at_least))
+        self._sleep(delay)
+        self._last_request_at = self._clock()
+
+    def _post(
+        self,
+        body: dict[str, object],
+        attempt: int,
+        path: str = "chat/completions",
+        error: type[Exception] = LlmError,
+    ) -> httpx.Response | None:
+        """One POST to ``{base_url}/{path}``; ``None`` means the failure was transient and
+        worth another attempt.
 
         The backoff itself is the wait before the next attempt, so the pacing clock is
         advanced across it and the last attempt of a request sleeps no more."""
         try:
-            response = self._client.post(self._base_url + "chat/completions", json=body)
+            response = self._client.post(self._base_url + path, json=body)
         except (httpx.TimeoutException, httpx.TransportError):
             self._wait_before_retry(attempt)
             return None
@@ -132,15 +176,47 @@ class OpenAICompatibleClient:
             self._wait_before_retry(attempt, at_least=retry_after)
             return None
         if response.status_code >= 400:
-            raise LlmError(f"endpoint rejected the request: HTTP {response.status_code}")
+            raise error(f"endpoint rejected the request: HTTP {response.status_code}")
         return response
 
-    def _wait_before_retry(self, attempt: int, at_least: float = 0.0) -> None:
-        if attempt >= self._max_attempts:
-            return
-        delay = min(self._backoff_cap, max(self._backoff(attempt), at_least))
-        self._sleep(delay)
-        self._last_request_at = self._clock()
+
+def _parse_embeddings(response: httpx.Response, chars: int) -> tuple[list[list[float]], int] | None:
+    """``(vectors, input_tokens)`` from a 2xx embeddings body, or ``None`` when the body
+    is not the shape we asked for (worth one more attempt)."""
+    try:
+        document = json.loads(response.text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    data = document.get("data")
+    if not isinstance(data, list) or not data:
+        return None
+    pairs: list[tuple[int, list[float]]] = []
+    for position, item in enumerate(data):
+        if not isinstance(item, dict):
+            return None
+        index = item.get("index")
+        if index is None:
+            index = position  # some OpenAI-compatible endpoints omit the index field
+        embedding = item.get("embedding")
+        if isinstance(index, bool) or not isinstance(index, int):
+            return None
+        if not isinstance(embedding, list) or not all(
+            isinstance(value, int | float) and not isinstance(value, bool) for value in embedding
+        ):
+            return None
+        pairs.append((index, [float(value) for value in embedding]))
+    pairs.sort(key=lambda pair: pair[0])
+    if [index for index, _ in pairs] != list(range(len(pairs))):
+        return None
+    input_tokens = estimated_tokens("x" * chars)
+    usage = document.get("usage")
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens")
+        if isinstance(prompt, int) and not isinstance(prompt, bool):
+            input_tokens = prompt
+    return [tuple(vector) for _, vector in pairs], input_tokens
 
 
 def _parse_success(response: httpx.Response, prompt_chars: int) -> tuple[str, int, int] | None:

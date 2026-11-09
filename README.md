@@ -25,7 +25,7 @@ run `git update-index --skip-worktree uv.lock` in your checkout, and after a
 dependency change download the artifact from the failing run and commit that
 (`git update-index --no-skip-worktree uv.lock` first).
 
-Run `uv run pytest -m eval` once model-backed evaluation tests are added. CI gives
+Run `uv run pytest -m eval --no-cov` once model-backed evaluation tests are added (the 80% coverage gate applies to the unit/integration run only, matching CI). CI gives
 a visible notice when the suite or a usable model/key is unavailable. No LLM key
 is required for tickets 00–04. Personal model configuration belongs in
 `~/.config/ndis/.env` (see `.env.example`); environment-file loading is not built yet.
@@ -106,6 +106,45 @@ with all three tiers; `remoteness=remote|very_remote` selects a tier; an unknown
 404, an invalid state or remoteness is 422. Item numbers are matched exactly and
 case-sensitively after trimming whitespace, because the catalogue contains the mixed-case
 item number `Bereavement` alongside the usual `01_002_0107_1_1` form.
+
+## Pricing rules RAG
+
+```sh
+uv run python scripts/fetch_public_data.py --only pricing_pdf  # -> data/public/pricing_arrangements.pdf
+uv run python scripts/build_rule_index.py                      # -> data/rule_index.db, embeds with cache
+uv run python scripts/rule_retrieval_report.py --answers       # -> reports/retrieval.md
+uv run uvicorn ndis.api.app:app                                # POST /ask-rule {"question": "..."}
+```
+
+**Source.** "NDIS Pricing Arrangements and Price Limits 2025-26 v1.1" (PDF, 104 pages),
+linked from
+<https://www.ndis.gov.au/providers/pricing-and-payments/pricing/pricing-arrangements>
+as <https://www.ndis.gov.au/media/8096/download?attachment>. The 2026-27 "pricing
+schedules" on that page are price tables only; the written pricing rules (cancellations,
+travel, GST, non-face-to-face claiming, …) live in this document, so this is the one the
+index is built from. The media id changes with each new version; update
+`PRICING_PDF_URL` in `scripts/fetch_public_data.py` and the README when a later release
+is published. The download is kept only if it is a readable PDF of at least 50 pages over
+500 KB; the site answers only browser-like user agents (and, on some networks, rejects
+curl outright while a plain `urllib` request with the same header passes).
+
+**Index.** `scripts/build_rule_index.py` chunks every page with two strategies — fixed
+600-estimated-token windows and heading-aware chunks cut at the document's
+table-of-contents section boundaries — and embeds each chunk once through the bounded
+adapter, keyed by content hash in `data/private/embedding_cache.db`, so a rerun or a
+resumed run never re-embeds a chunk. Chunks and vectors live in `data/rule_index.db`
+(sqlite-vec, one vec0 table per strategy). The whole corpus is ~460 chunks and builds in
+a few paced minutes on the free tier.
+
+**Asking.** `POST /ask-rule` embeds the question, retrieves the top chunks of the
+configured strategy (`RULE_CHUNK_STRATEGY`, default `heading`), refuses with
+`refused: true` and a reason when the top similarity is under the threshold
+(`RULE_SIMILARITY_THRESHOLD`, default 0.65 — see `reports/retrieval.md` for the measured
+spread), or asks the judge model, which must claim support and cite pages. Every citation
+is checked in `domain` to be a verbatim span of a retrieved chunk from the cited page; an
+answer with no surviving citation is refused, never returned. The API answers only from
+the built index (503 until `build_rule_index.py` has run); it never quotes a span the
+document does not contain and never gives funding advice.
 
 ## Entity resolution (Maps places → register)
 

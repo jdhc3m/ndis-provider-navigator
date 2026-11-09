@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ndis.adapters.catalogue_xlsx import CatalogueFormatError, count_distinct_items
+from ndis.adapters.pricing_pdf import PricingPdfError, count_pdf_pages
 from ndis.adapters.register_csv import RegisterFormatError, count_distinct_abns
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,16 @@ REGISTER_MIN_ABNS = 25_000
 CATALOGUE_URL = "https://www.ndis.gov.au/media/8038/download?attachment"
 CATALOGUE_MIN_BYTES = 100 * 1024
 CATALOGUE_MIN_ITEMS = 900
+
+# "NDIS Pricing Arrangements and Price Limits 2025-26 v1.1" (PDF), linked from
+# https://www.ndis.gov.au/providers/pricing-and-payments/pricing/pricing-arrangements
+# under "Other pricing and claiming guidance documents" (the 2026-27 "pricing schedules"
+# are price tables only; the written pricing rules live in this document). The media id
+# changes with each new version, so update this constant and the README when a later
+# release is published.
+PRICING_PDF_URL = "https://www.ndis.gov.au/media/8096/download?attachment"
+PRICING_MIN_BYTES = 500 * 1024
+PRICING_MIN_PAGES = 50
 
 logger = logging.getLogger("fetch_public_data")
 
@@ -134,7 +145,51 @@ def fetch_catalogue(public_dir: Path = PUBLIC_DIR) -> Path:
     return destination
 
 
-DATASETS: dict[str, Callable[[], Path]] = {"catalogue": fetch_catalogue, "register": fetch_register}
+def verify_pricing_pdf(path: Path) -> list[str]:
+    """Return the reasons ``path`` is not the complete Pricing Arrangements PDF (empty = OK)."""
+    problems: list[str] = []
+    size = path.stat().st_size
+    if size <= PRICING_MIN_BYTES:
+        problems.append(f"file is {size} bytes; the pricing PDF exceeds {PRICING_MIN_BYTES} bytes")
+    if not path.read_bytes()[:5] == b"%PDF-":
+        return problems + ["file does not start with the %PDF magic bytes"]
+    try:
+        pages = count_pdf_pages(path)
+    except PricingPdfError as exc:
+        return problems + [f"file is not a readable PDF: {exc}"]
+    if pages < PRICING_MIN_PAGES:
+        problems.append(
+            f"PDF has {pages} pages; the pricing arrangements document has at least "
+            f"{PRICING_MIN_PAGES}"
+        )
+    return problems
+
+
+def fetch_pricing_pdf(public_dir: Path = PUBLIC_DIR) -> Path:
+    """Download the NDIS Pricing Arrangements and Price Limits PDF and verify it is complete."""
+    destination = public_dir / "pricing_arrangements.pdf"
+    partial = destination.with_suffix(".part")
+    logger.info("downloading %s -> %s", PRICING_PDF_URL, partial)
+    try:
+        size = download(PRICING_PDF_URL, partial)
+        logger.info("downloaded %d bytes", size)
+        problems = verify_pricing_pdf(partial)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    if problems:
+        partial.unlink(missing_ok=True)
+        raise SystemExit("pricing PDF download rejected and deleted:\n  " + "\n  ".join(problems))
+    partial.replace(destination)
+    logger.info("pricing PDF verified: %s", destination)
+    return destination
+
+
+DATASETS: dict[str, Callable[[], Path]] = {
+    "catalogue": fetch_catalogue,
+    "pricing_pdf": fetch_pricing_pdf,
+    "register": fetch_register,
+}
 
 
 def main(argv: list[str] | None = None) -> int:

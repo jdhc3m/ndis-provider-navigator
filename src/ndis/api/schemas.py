@@ -3,9 +3,10 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ndis.application.catalogue import PriceLimitResult
+from ndis.application.pricing import RuleAnswer
 from ndis.domain.catalogue import CATALOGUE_TITLE
 from ndis.domain.entities import Provider
 
@@ -101,4 +102,39 @@ class PriceLimitOut(BaseModel):
                 very_remote=item.limits.very_remote,
             ),
             source=CATALOGUE_TITLE,
+        )
+
+
+class AskRuleIn(BaseModel):
+    """One question about the NDIS pricing rules."""
+
+    question: str = Field(min_length=3, max_length=500)
+
+
+class RuleCitationOut(BaseModel):
+    """The printed page of the pricing PDF and the verbatim span quoted from it."""
+
+    page: int
+    quote: str
+
+
+class AskRuleOut(BaseModel):
+    """An answer with page-verified citations, or a refusal with its reason."""
+
+    question: str
+    answer: str | None
+    citations: list[RuleCitationOut]
+    refused: bool
+    reason: str | None
+    top_similarity: float | None
+
+    @classmethod
+    def from_result(cls, result: RuleAnswer) -> "AskRuleOut":
+        return cls(
+            question=result.question,
+            answer=result.answer,
+            citations=[RuleCitationOut(page=page, quote=quote) for page, quote in result.citations],
+            refused=result.refused,
+            reason=result.reason,
+            top_similarity=result.top_similarity,
         )
