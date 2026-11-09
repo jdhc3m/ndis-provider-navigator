@@ -41,6 +41,8 @@ def test_tables_and_indexes_exist(seeded_repository: SqlAlchemyProviderRepositor
         "support_items",
         "provider_links",
         "page_meta",
+        "service_claims",
+        "provider_attributes",
     }
     assert {index["name"] for index in inspector.get_indexes("outlets")} >= {
         "ix_outlets_postcode",

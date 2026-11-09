@@ -96,6 +96,14 @@ class ExtractionStore(Protocol):
         ...
 
 
+class BaselineSource(Protocol):
+    """Read port over the regex baseline of the earlier crawl, keyed by place id."""
+
+    def baseline(self) -> Mapping[str, frozenset[str]]:
+        """Place id → the slugs the regex matcher hit on that place."""
+        ...
+
+
 @dataclass(frozen=True)
 class ExtractionCounts:
     """What one run did, for the script's log line and the report."""
