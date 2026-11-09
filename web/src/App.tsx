@@ -133,7 +133,7 @@ function Result({ answer, meta, onPickExample }: ResultProps) {
   const hasRightColumn =
     answer.price !== null || answer.price_error !== null || answer.rule !== null
   return (
-    <div className="flex flex-col gap-6" aria-live="polite">
+    <div className="flex flex-col gap-6">
       <IntentRow intent={answer.intent} />
       {answer.refused ? (
         <RefusalBanner answer={answer} />

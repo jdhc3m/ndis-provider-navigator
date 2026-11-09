@@ -79,7 +79,7 @@ export function HowBuilt({ steps, meta }: HowBuiltProps) {
               <tfoot>
                 <tr className="border-t-2 border-border text-xs text-muted-foreground">
                   <th scope="row" className="py-2 pr-3 text-left font-bold">
-                    Total
+                    Total (priced steps)
                   </th>
                   <td />
                   <td className="py-2 pr-3 text-right font-mono">{formatMs(totalMs)}</td>
@@ -89,6 +89,11 @@ export function HowBuilt({ steps, meta }: HowBuiltProps) {
               </tfoot>
             </table>
           </div>
+          {steps.some((step) => step.cost_usd === null) && (
+            <p className="text-xs text-muted-foreground">
+              Steps without a cost are model calls whose usage is not yet reported.
+            </p>
+          )}
           {traceUrl ? (
             <p className="text-sm">
               <a

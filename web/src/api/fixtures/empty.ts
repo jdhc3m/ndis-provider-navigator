@@ -2,7 +2,7 @@ import type { AskOut } from '../client'
 
 /** Valid filters that match nobody on the register. */
 export const EMPTY: AskOut = {
-  question: 'Registered providers for Therapeutic Supports in postcode 4999',
+  question: 'Which approved providers are in postcode 4999?',
   refused: false,
   reason: null,
   explanation: null,
@@ -10,7 +10,7 @@ export const EMPTY: AskOut = {
     provider_filters: {
       state: 'QLD',
       postcode: '4999',
-      group: 'Therapeutic Supports',
+      group: null,
       status: 'Approved',
       brisbane_area: null,
     },
@@ -37,7 +37,7 @@ export const EMPTY: AskOut = {
     },
     {
       kind: 'provider_filter',
-      input_summary: 'state=QLD postcode=4999 group=Therapeutic Supports status=Approved',
+      input_summary: 'state=QLD postcode=4999 status=Approved',
       output_summary: '0 of 0 matching providers',
       ms: 38,
       input_tokens: null,

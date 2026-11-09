@@ -68,18 +68,10 @@
   }
 
   /* One visible focus style for every operable control (MASTER.md: 3-4px rings). */
-  :where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  :where(a, button, input, textarea, select, [tabindex]):focus-visible {
     outline: var(--focus-ring-width) solid var(--color-accent);
     outline-offset: var(--focus-ring-offset);
     border-radius: var(--radius-sm);
-  }
-
-  /* Native disclosure marker is replaced by our own chevron in <Disclosure>. */
-  summary::-webkit-details-marker {
-    display: none;
-  }
-  summary {
-    list-style: none;
   }
 
   @media (prefers-reduced-motion: reduce) {

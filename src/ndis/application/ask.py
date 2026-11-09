@@ -198,10 +198,7 @@ def token_cost(prices: TokenPrices, input_tokens: int, output_tokens: int) -> fl
     return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
 
 
-def _summarise_filters(intent: Intent) -> str:
-    filters = intent.provider_filters
-    if filters is None:
-        return "no provider filters"
+def _summarise_filters(filters: ProviderFilters) -> str:
     parts = [
         f"{name}={value}"
         for name, value in (
@@ -300,7 +297,7 @@ class Ask:
             log.record(
                 "provider_filter",
                 started,
-                _summarise_filters(intent),
+                _summarise_filters(intent.provider_filters),
                 f"{len(providers)} of {provider_total} matching providers",
             )
         price: PriceLimitResult | None = None
