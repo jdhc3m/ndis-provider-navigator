@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException
 from sqlalchemy import Engine
 
+from ndis.adapters.ask_evidence import ExtractionEvidenceSource
 from ndis.adapters.cached_embedding import CachedEmbeddingClient
 from ndis.adapters.embedding_cache import EmbeddingCache
 from ndis.adapters.llm_client import OpenAICompatibleClient
@@ -17,6 +18,7 @@ from ndis.adapters.sqlite_repository import (
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
 )
+from ndis.application.ask import Ask, ClaimEvidenceSource, MissingIndexRuleAnswerer, RuleAnswerer
 from ndis.application.catalogue import GetPriceLimit, SupportItemRepository
 from ndis.application.extraction import TokenBudget
 from ndis.application.pricing import AskRule, EmbeddingClient
@@ -40,6 +42,10 @@ RULE_INDEX_PATH_ENV = "RULE_INDEX_PATH"
 QUESTION_BUDGET = 200_000
 EMBEDDING_CACHE_ENV = "EMBEDDING_CACHE_PATH"
 DEFAULT_EMBEDDING_CACHE = Path("data/private/embedding_cache.db")
+EXTRACTION_DIR_ENV = "EXTRACTION_DIR"
+DEFAULT_EXTRACTION_DIR = Path("data/private/extraction")
+PAGES_DIR_ENV = "PAGES_DIR"
+DEFAULT_PAGES_DIR = Path("data/private/pages")
 
 
 def database_path() -> Path:
@@ -146,6 +152,34 @@ def ask_rule_use_case(
 ) -> AskRule:
     """One use case per question; the embedding cache is shared, the LLM clients and
     their token budgets are fresh per request."""
+    return rule_answerer_for(store)
+
+
+# --- Combined answers (POST /ask) ------------------------------------------------------------
+
+
+def extraction_dir() -> Path:
+    """The private extraction-cache directory from ``EXTRACTION_DIR``."""
+    return Path(os.environ.get(EXTRACTION_DIR_ENV) or DEFAULT_EXTRACTION_DIR)
+
+
+def pages_dir() -> Path:
+    """The private pages directory from ``PAGES_DIR``."""
+    return Path(os.environ.get(PAGES_DIR_ENV) or DEFAULT_PAGES_DIR)
+
+
+def claim_evidence_source() -> ClaimEvidenceSource:
+    """Evidence over the extraction cache and stored pages of the main database."""
+    return ExtractionEvidenceSource(
+        engine_for(database_path().resolve()), extraction_dir(), pages_dir()
+    )
+
+
+def rule_answerer_for(store: SqliteVecRuleStore | None) -> RuleAnswerer:
+    """The ticket 06 pipeline over the given store, or a refusing stand-in when the
+    index file is missing (a combined answer degrades, it does not fail)."""
+    if store is None:
+        return MissingIndexRuleAnswerer()
     embedder: EmbeddingClient = CachedEmbeddingClient(
         question_embedding_client(), rule_embedding_cache(), embed_model()
     )
@@ -157,3 +191,22 @@ def ask_rule_use_case(
         threshold=rule_similarity_threshold(),
         top_k=rule_top_k(),
     )
+
+
+def ask_use_case(
+    providers: Annotated[ListProviders, Depends(list_providers_use_case)],
+    catalogue: Annotated[GetPriceLimit, Depends(get_price_limit_use_case)],
+    evidence: Annotated[ClaimEvidenceSource, Depends(claim_evidence_source)],
+) -> Ask:
+    """One use case per question; the intent-parse client and its token budget are
+    fresh per request, the rule answerer degrades to refusals without an index."""
+    return Ask(
+        question_llm_client(), providers, catalogue, rule_answerer_for(rule_store_maybe()), evidence
+    )
+
+
+def rule_store_maybe() -> SqliteVecRuleStore | None:
+    """The rule index when built, else ``None`` — unlike ``rule_store``, this never
+    raises, because a /ask question that needs no rules must still be answerable."""
+    path = rule_index_database_path()
+    return rule_store_for(path) if path.exists() else None

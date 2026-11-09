@@ -1,4 +1,5 @@
-"""FastAPI application exposing the provider register, price limits and rule answers."""
+"""FastAPI application exposing the provider register, price limits, rule answers and
+the combined /ask endpoint."""
 
 from typing import Annotated
 
@@ -6,10 +7,20 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 
 from ndis.api.dependencies import (
     ask_rule_use_case,
+    ask_use_case,
     get_price_limit_use_case,
     list_providers_use_case,
 )
-from ndis.api.schemas import AskRuleIn, AskRuleOut, PriceLimitOut, ProviderOut, ProviderPageOut
+from ndis.api.schemas import (
+    AskIn,
+    AskOut,
+    AskRuleIn,
+    AskRuleOut,
+    PriceLimitOut,
+    ProviderOut,
+    ProviderPageOut,
+)
+from ndis.application.ask import Ask as AskCombined
 from ndis.application.catalogue import GetPriceLimit, PriceLimitQuery, UnknownSupportItemError
 from ndis.application.extraction import BudgetExhausted, LlmError
 from ndis.application.pricing import AskRule, EmbeddingError
@@ -29,6 +40,7 @@ def create_app() -> FastAPI:
     app.get("/providers", response_model=ProviderPageOut)(list_providers)
     app.get("/price-limits", response_model=PriceLimitOut)(get_price_limit)
     app.post("/ask-rule", response_model=AskRuleOut)(ask_rule)
+    app.post("/ask", response_model=AskOut)(ask)
     return app
 
 
@@ -90,6 +102,19 @@ def ask_rule(
     except (LlmError, EmbeddingError, BudgetExhausted) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return AskRuleOut.from_result(result)
+
+
+def ask(
+    use_case: Annotated[AskCombined, Depends(ask_use_case)],
+    payload: AskIn,
+) -> AskOut:
+    """Parse one question into an intent, execute it deterministically, and return the
+    combined answer — or a refusal with its reason."""
+    try:
+        result = use_case(payload.question)
+    except (LlmError, EmbeddingError, BudgetExhausted) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return AskOut.from_result(result)
 
 
 app = create_app()
