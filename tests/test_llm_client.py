@@ -186,6 +186,13 @@ def test_embed_parses_vectors_in_input_order_and_debits_budget() -> None:
     ]
 
 
+def test_embed_tolerates_a_missing_index_field() -> None:
+    body = json.dumps({"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]})
+    transcript = ScriptedTransport([(200, {}, body)])
+    result = make_embedder(transcript).embed(["first", "second"])
+    assert result.vectors == ((1.0, 0.0), (0.0, 1.0))
+
+
 def test_embed_429_is_retried() -> None:
     transcript = ScriptedTransport([(429, {}, "slow down"), (200, {}, EMBED_BODY)])
     result = make_embedder(transcript).embed(["text"])

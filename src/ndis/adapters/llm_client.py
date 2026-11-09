@@ -193,10 +193,12 @@ def _parse_embeddings(response: httpx.Response, chars: int) -> tuple[list[list[f
     if not isinstance(data, list) or not data:
         return None
     pairs: list[tuple[int, list[float]]] = []
-    for item in data:
+    for position, item in enumerate(data):
         if not isinstance(item, dict):
             return None
         index = item.get("index")
+        if index is None:
+            index = position  # some OpenAI-compatible endpoints omit the index field
         embedding = item.get("embedding")
         if isinstance(index, bool) or not isinstance(index, int):
             return None
