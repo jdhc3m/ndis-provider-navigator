@@ -114,15 +114,18 @@ uv run python scripts/resolve_entities.py   # reads data/private/maps_brisbane.d
 ```
 
 The script stops with an error when the private Maps export is missing. Each place is
-linked by website domain first, then by normalised name (postcode / Brisbane-area as the
-tie-break), then by a `rapidfuzz` ratio over the Brisbane-area subset with threshold 92;
-Google categories on an explicit non-provider deny list get `not_a_provider`. Results go
+linked by website domain first, then by normalised name, then by a `rapidfuzz` ratio over
+the Brisbane-area subset with threshold 92. When a shared franchise domain or a common name
+maps to several ABNs, only an exact name agreement or the place's postcode may break the
+tie; otherwise the place is `ambiguous` with the candidates listed, and a lone name hit far
+from Brisbane is `ambiguous` too. `gov.au` websites and Google categories on an explicit
+non-provider deny list get `not_a_provider` unless the register knows them. Results go
 to the `provider_links` table in `data/ndis.db` with `match_status` ∈ {registered,
 unregistered, revoked_or_banned, ambiguous, not_a_provider}, a strategy and a confidence.
-Fuzzy matches are never treated as registration evidence. The 50-row stratified sample
-holds only Maps titles and register names/ABNs; the owner fills `verdict:` and
-`uv run pytest -m eval --no-cov` reports precision over the filled labels (and skips
-visibly when none are filled). See [the report](reports/entity_resolution.md).
+Fuzzy matches are never treated as registration evidence. The 50-row sample is stratified
+by (status, strategy) and holds only Maps titles and register names/ABNs; the owner fills
+`verdict:` and `uv run pytest -m eval --no-cov` reports precision over the filled labels
+(and skips visibly when none are filled). See [the report](reports/entity_resolution.md).
 
 ## Architecture
 
