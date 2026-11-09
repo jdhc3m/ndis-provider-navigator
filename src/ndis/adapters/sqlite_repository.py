@@ -1,10 +1,12 @@
-"""SQLAlchemy 2 / SQLite implementations of the ProviderRepository, SupportItemRepository and
-ProviderLinkRepository ports; all share one metadata so a single ``data/ndis.db`` holds the
-register, the catalogue and the Maps-to-register links."""
+"""SQLAlchemy 2 / SQLite implementations of the ProviderRepository, SupportItemRepository,
+ProviderLinkRepository, ProviderSiteSource and PageStore ports; all share one metadata so a
+single ``data/ndis.db`` holds the register, the catalogue, the Maps-to-register links and
+the public-safe page metadata. Page text itself is written to files under the private
+pages directory, never to the database."""
 
 import json
 from collections.abc import Iterable, Sequence
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from itertools import batched
 from pathlib import Path
@@ -47,6 +49,7 @@ from ndis.domain.entity_resolution import (
     ProviderLink,
     normalise_name,
 )
+from ndis.domain.pages import FetchStatus, PageMeta, PageSource, ProviderSite
 
 INSERT_BATCH_SIZE = 1000
 
@@ -161,6 +164,25 @@ class ProviderLinkRow(Base):
         Index("ix_provider_links_abn", "abn"),
         Index("ix_provider_links_status", "match_status"),
     )
+
+
+class PageMetaRow(Base):
+    """Public-safe record of one collected page: no text, only where it is (``text_path``
+    relative to the private pages directory) and what it hashes to. ``fetched_at`` is kept
+    as ISO-8601 text so the UTC offset survives SQLite."""
+
+    __tablename__ = "page_meta"
+
+    provider_key: Mapped[str] = mapped_column(String, primary_key=True)
+    url: Mapped[str] = mapped_column(String, primary_key=True)
+    fetched_at: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    source: Mapped[str] = mapped_column(String)
+    text_hash: Mapped[str | None] = mapped_column(String(64))
+    text_path: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String)
+
+    __table_args__ = (Index("ix_page_meta_status", "status"),)
 
 
 def create_sqlite_engine(path: Path) -> Engine:
@@ -382,6 +404,99 @@ class SqlAlchemyProviderLinkRepository:
         with Session(self._engine) as session:
             rows = session.scalars(select(ProviderLinkRow).order_by(ProviderLinkRow.place_id))
             return tuple(_to_link(row) for row in rows)
+
+
+class SqlAlchemyProviderSiteSource:
+    """``ProviderSiteSource``: every link left-joined to its register provider's website."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        Base.metadata.create_all(engine)
+
+    def sites(self) -> tuple[ProviderSite, ...]:
+        statement = (
+            select(
+                ProviderLinkRow.place_id,
+                ProviderLinkRow.abn,
+                ProviderLinkRow.match_status,
+                ProviderRow.website,
+                ProviderLinkRow.website,
+            )
+            .join(ProviderRow, ProviderRow.abn == ProviderLinkRow.abn, isouter=True)
+            .order_by(ProviderLinkRow.place_id)
+        )
+        with Session(self._engine) as session:
+            return tuple(
+                ProviderSite(place_id, abn, MatchStatus(status), register_website, maps_website)
+                for place_id, abn, status, register_website, maps_website in session.execute(
+                    statement
+                )
+            )
+
+
+def _page_meta_values(meta: PageMeta) -> dict[str, object]:
+    return {
+        "provider_key": meta.provider_key,
+        "url": meta.url,
+        "fetched_at": meta.fetched_at.isoformat(),
+        "status": meta.status.value,
+        "source": meta.source.value,
+        "text_hash": meta.text_hash,
+        "text_path": meta.text_path,
+        "title": meta.title,
+    }
+
+
+def _to_page_meta(row: PageMetaRow) -> PageMeta:
+    return PageMeta(
+        url=row.url,
+        provider_key=row.provider_key,
+        fetched_at=datetime.fromisoformat(row.fetched_at),
+        status=FetchStatus(row.status),
+        source=PageSource(row.source),
+        text_hash=row.text_hash,
+        text_path=row.text_path,
+        title=row.title,
+    )
+
+
+class FilePageStore:
+    """``PageStore``: text files under ``pages_dir`` (which must stay ignored by Git) and
+    ``page_meta`` rows in SQLite, one per ``(provider_key, url)``, latest write wins."""
+
+    def __init__(self, engine: Engine, pages_dir: Path) -> None:
+        self._engine = engine
+        self._pages_dir = pages_dir
+        Base.metadata.create_all(engine)
+
+    def save(self, meta: PageMeta, text: str | None) -> None:
+        if text is not None and meta.text_path is not None:
+            self._pages_dir.mkdir(parents=True, exist_ok=True)
+            (self._pages_dir / meta.text_path).write_text(text, encoding="utf-8")
+        with Session(self._engine) as session, session.begin():
+            session.execute(
+                delete(PageMetaRow).where(
+                    PageMetaRow.provider_key == meta.provider_key, PageMetaRow.url == meta.url
+                )
+            )
+            session.execute(insert(PageMetaRow), [_page_meta_values(meta)])
+
+    def providers_with_ok_pages(self) -> frozenset[str]:
+        with Session(self._engine) as session:
+            keys = session.scalars(
+                select(PageMetaRow.provider_key)
+                .where(PageMetaRow.status == FetchStatus.OK.value)
+                .distinct()
+            )
+            return frozenset(keys)
+
+    def all(self) -> tuple[PageMeta, ...]:
+        """Every stored row ordered by provider key then URL."""
+        with Session(self._engine) as session:
+            rows = session.scalars(
+                select(PageMetaRow).order_by(PageMetaRow.provider_key, PageMetaRow.url)
+            )
+            return tuple(_to_page_meta(row) for row in rows)
 
 
 def _apply_filters(statement: Select[Any], query: ProviderQuery) -> Select[Any]:
