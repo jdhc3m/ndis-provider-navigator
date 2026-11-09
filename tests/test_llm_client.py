@@ -8,6 +8,7 @@ import pytest
 
 from ndis.adapters.llm_client import OpenAICompatibleClient
 from ndis.application.extraction import BudgetExhausted, LlmError, LlmRequest
+from ndis.application.pricing import EmbeddingError
 from ndis.domain.extraction import TokenBudget
 
 REQUEST = LlmRequest(system="system prompt", user="user prompt")
@@ -144,3 +145,83 @@ def test_requests_are_paced_by_the_interval() -> None:
     for _ in range(3):
         client.complete(REQUEST)
     assert sleeps == [6.0, 6.0]
+
+
+# --- Embeddings -----------------------------------------------------------------------------
+
+EMBED_BODY = json.dumps(
+    {
+        "data": [
+            {"index": 1, "embedding": [0.0, 1.0]},
+            {"index": 0, "embedding": [1.0, 0.0]},
+        ],
+        "usage": {"prompt_tokens": 12},
+    }
+)
+
+
+def make_embedder(
+    transcript: ScriptedTransport, budget: TokenBudget | None = None
+) -> OpenAICompatibleClient:
+    return OpenAICompatibleClient(
+        base_url="https://llm.example/v1/",
+        api_key="secret",
+        model="model-x",
+        embed_model="embed-x",
+        budget=budget or TokenBudget(10**9),
+        interval=6.0,
+        clock=lambda: 0.0,
+        sleep=lambda seconds: sleeps.append(seconds),
+        transport=transcript,
+    )
+
+
+def test_embed_parses_vectors_in_input_order_and_debits_budget() -> None:
+    transcript = ScriptedTransport([(200, {}, EMBED_BODY)])
+    result = make_embedder(transcript).embed(["hello world", "second text"])
+    assert result.vectors == ((1.0, 0.0), (0.0, 1.0))
+    assert result.input_tokens == 12
+    assert [request["url"] for request in transcript.requests] == [
+        "https://llm.example/v1/embeddings"
+    ]
+
+
+def test_embed_429_is_retried() -> None:
+    transcript = ScriptedTransport([(429, {}, "slow down"), (200, {}, EMBED_BODY)])
+    result = make_embedder(transcript).embed(["text"])
+    assert result.vectors == ((1.0, 0.0), (0.0, 1.0))
+    assert sleeps == [2.0]
+
+
+def test_embed_4xx_is_permanent() -> None:
+    transcript = ScriptedTransport([(401, {}, "no key")])
+    with pytest.raises(EmbeddingError):
+        make_embedder(transcript).embed(["text"])
+    assert transcript.calls == 1
+
+
+def test_embed_undecodable_body_is_retried_then_gives_up() -> None:
+    answers = [(200, {}, "not json"), (200, {}, '{"data": "x"}'), (200, {}, "junk"), (200, {}, "")]
+    with pytest.raises(EmbeddingError):
+        make_embedder(ScriptedTransport(answers)).embed(["text"])
+
+
+def test_embed_budget_gates_the_batch_before_sending() -> None:
+    transcript = ScriptedTransport([])
+    with pytest.raises(BudgetExhausted):
+        make_embedder(transcript, TokenBudget(1)).embed(["a fairly long text"])
+    assert transcript.calls == 0
+
+
+def test_embed_without_a_model_is_a_configuration_error() -> None:
+    transcript = ScriptedTransport([])
+    client = OpenAICompatibleClient(
+        base_url="https://llm.example/v1/",
+        api_key="secret",
+        model="model-x",
+        budget=TokenBudget(10**9),
+        transport=transcript,
+    )
+    with pytest.raises(EmbeddingError, match="no embed model"):
+        client.embed(["text"])
+    assert transcript.calls == 0

@@ -368,6 +368,7 @@ REFUSAL_BELOW_SIMILARITY = "below_similarity_threshold"
 REFUSAL_JUDGE_UNSUPPORTED = "judge_unsupported"
 REFUSAL_NO_VALID_CITATION = "no_valid_citation"
 REFUSAL_NO_CHUNKS = "no_chunks"
+REFUSAL_ANSWER_MISSING = "answer_missing"
 
 
 @dataclass(frozen=True)
