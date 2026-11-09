@@ -210,8 +210,6 @@ def golden_pairs(sites: Iterable[GoldenQuestion]) -> tuple[tuple[str, int], ...]
     return tuple((site.question, site.page) for site in sites)
 
 
-
-
 @dataclass(frozen=True)
 class CachedIntent:
     """One question's intent payload as the configured model answered it, captured on a
