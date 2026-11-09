@@ -1,9 +1,14 @@
 """Shared fixtures: inline register rows in the real CSV format, catalogue rows copied from the
-real workbook (written to a small XLSX with the same sheet/column layout), seeded SQLite repos."""
+real workbook (written to a small XLSX with the same sheet/column layout), seeded SQLite repos,
+a synthetic Maps export with crawled pages, and a local HTTP site for the fetcher."""
 
 import sqlite3
+import threading
+import time
+from collections.abc import Iterator
 from datetime import date
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import openpyxl
@@ -392,7 +397,8 @@ def seeded_support_items(db_path: Path) -> SqlAlchemySupportItemRepository:
 
 # --- Maps export (synthetic; the real one is private and never leaves data/private/) --------
 
-# The ``providers`` table of the scraper's SQLite file, copied from db/schema.sql.
+# The ``providers``, ``reviews`` and ``pages`` tables of the scraper's SQLite file, copied
+# from db/schema.sql.
 MAPS_SCHEMA = """
 CREATE TABLE providers (
     place_id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT, categories TEXT,
@@ -404,6 +410,11 @@ CREATE TABLE providers (
 CREATE TABLE reviews (
     id INTEGER PRIMARY KEY, place_id TEXT NOT NULL REFERENCES providers(place_id),
     rating INTEGER, when_text TEXT, text TEXT
+);
+CREATE TABLE pages (
+    id INTEGER PRIMARY KEY, place_id TEXT NOT NULL REFERENCES providers(place_id),
+    url TEXT NOT NULL, status TEXT NOT NULL, title TEXT, text TEXT, fetched_at TEXT NOT NULL,
+    UNIQUE (place_id, url)
 );
 """
 
@@ -424,7 +435,30 @@ MAPS_ROWS = [
 ]  # fmt: skip
 
 
-def write_maps_export(path: Path, rows: list[tuple[object, ...]]) -> Path:
+# (place_id, url, status, title, text, fetched_at); shapes seen in the real crawl: several
+# ``ok`` pages per place, an ``ok`` page with blank text, and every failure status.
+MAPS_PAGES = [
+    ("place-alpha", "https://www.10000000001.example.com.au/", "ok", "Alpha Therapy",
+     "Alpha Therapy\nPhysiotherapy and occupational therapy for NDIS participants.\n\n\n",
+     "2026-11-07T03:49:42+00:00"),
+    ("place-alpha", "https://www.10000000001.example.com.au/about", "ok", None,
+     "About Alpha Therapy.   \nWe are a team of allied health professionals in West End.",
+     "2026-11-07T03:49:43+00:00"),
+    ("place-alpha", "https://www.10000000001.example.com.au/missing", "http_404", None, None,
+     "2026-11-07T03:49:44+00:00"),
+    ("place-beta", "https://beta.example/", "ok", "", "  \n ", "2026-11-07T03:50:00+00:00"),
+    ("place-delta", "http://10000000004.example.com.au/", "timeout", None, None,
+     "2026-11-07T03:51:00+00:00"),
+    ("place-recruit", "https://hireco.example.com/", "ok", "Hire Co",
+     "Recruitment for the care sector.", "2026-11-07T03:52:00+00:00"),
+    ("place-unknown", "https://nobody.example.com/", "error:SSL", None, None,
+     "2026-11-07T03:53:00+00:00"),
+]  # fmt: skip
+
+
+def write_maps_export(
+    path: Path, rows: list[tuple[object, ...]], pages: list[tuple[object, ...]] | None = None
+) -> Path:
     connection = sqlite3.connect(path)
     with connection:
         connection.executescript(MAPS_SCHEMA)
@@ -437,13 +471,18 @@ def write_maps_export(path: Path, rows: list[tuple[object, ...]]) -> Path:
             "insert into reviews (place_id, rating, when_text, text) "
             "values ('place-alpha', 5, 'a week ago', 'never read by the matcher')"
         )
+        connection.executemany(
+            "insert into pages (place_id, url, status, title, text, fetched_at) "
+            "values (?, ?, ?, ?, ?, ?)",
+            pages or [],
+        )
     connection.close()
     return path
 
 
 @pytest.fixture
 def maps_export(tmp_path: Path) -> Path:
-    return write_maps_export(tmp_path / "maps_brisbane.db", MAPS_ROWS)
+    return write_maps_export(tmp_path / "maps_brisbane.db", MAPS_ROWS, MAPS_PAGES)
 
 
 def make_place(
@@ -465,3 +504,124 @@ def make_place(
         latitude=-27.48,
         longitude=153.01,
     )
+
+
+# --- Local HTTP fixture for the polite fetcher ---------------------------------------------
+
+
+class LocalSite:
+    """A real HTTP server on localhost that records every request it receives.
+
+    ``robots`` is served at ``/robots.txt`` with ``robots_status`` after ``robots_delay``
+    seconds (``None`` → 404; ``robots_redirect_to`` set → 302 there instead). Paths:
+    ``/page`` and ``/other`` return small HTML documents, ``/slow`` sleeps for
+    ``slow_seconds`` before answering, ``/500`` answers 500, ``/404`` answers 404, ``/big``
+    streams ``big_bytes`` of body, ``/pdf`` answers with a PDF media type, ``/drop`` closes
+    the connection without answering, ``/redirect`` answers 302 to ``redirect_to`` (``None``
+    → 302 without ``Location``), ``/loop`` redirects to itself and ``/private/secret`` is
+    what a ``Disallow: /private`` rule should keep us away from.
+    """
+
+    def __init__(self) -> None:
+        self.robots: str | None = ""
+        self.robots_status = 200
+        self.robots_delay = 0.0
+        self.slow_seconds = 2.0
+        self.big_bytes = 4096
+        self.redirect_to: str | None = "/page"
+        self.robots_redirect_to: str | None = None
+        self.requests: list[tuple[str, float, str | None]] = []
+        site = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                del format, args
+
+            def do_GET(self) -> None:
+                site.requests.append((self.path, time.monotonic(), self.headers.get("User-Agent")))
+                try:
+                    self._answer()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+
+            def _answer(self) -> None:
+                if self.path == "/robots.txt":
+                    time.sleep(site.robots_delay)
+                    if site.robots_redirect_to is not None:
+                        return self._redirect(site.robots_redirect_to)
+                    if site.robots is None:
+                        return self._send(404, b"nothing here")
+                    body = site.robots.encode("utf-8")
+                    return self._send(site.robots_status, body, "text/plain")
+                if self.path == "/slow":
+                    time.sleep(site.slow_seconds)
+                    return self._send(200, b"<html><body>late</body></html>")
+                if self.path == "/500":
+                    return self._send(500, b"server error")
+                if self.path == "/404":
+                    return self._send(404, b"not here")
+                if self.path == "/big":
+                    return self._send(200, b"<html><body>" + b"x" * site.big_bytes)
+                if self.path == "/pdf":
+                    return self._send(200, b"%PDF-1.4 not html", "application/pdf")
+                if self.path == "/drop":
+                    self.close_connection = True
+                    return self.connection.close()
+                if self.path in {"/redirect", "/loop"}:
+                    return self._redirect("/loop" if self.path == "/loop" else site.redirect_to)
+                name = self.path.strip("/") or "page"
+                body = PAGE_HTML.replace(b"{name}", name.encode("utf-8"))
+                return self._send(200, body)
+
+            def _redirect(self, target: str | None) -> None:
+                self.send_response(302)
+                if target is not None:
+                    self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def _send(self, status: int, body: bytes, content_type: str = "text/html") -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", f"{content_type}; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = True
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
+        self._thread.start()
+
+    @property
+    def host(self) -> str:
+        return "127.0.0.1"
+
+    def url(self, path: str) -> str:
+        return f"http://127.0.0.1:{self._server.server_address[1]}{path}"
+
+    def paths(self) -> list[str]:
+        return [path for path, _, _ in self.requests]
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+PAGE_HTML = b"""<!doctype html><html><head><title>Acme Care | {name}</title></head><body>
+<nav><ul><li><a href="/">Home</a></li><li><a href="/about">About us</a></li>
+<li><a href="/contact">Contact</a></li></ul></nav>
+<main><h1>Acme Care {name}</h1>
+<p>Acme Care provides support coordination and daily personal activities for NDIS
+participants across Brisbane. Our team of experienced support workers helps you live the
+life you choose, at home and in the community, seven days a week.</p></main>
+<footer><p>Copyright 2026 Acme Care. Privacy policy. Terms of use.</p></footer>
+</body></html>"""
+
+
+@pytest.fixture
+def local_site() -> Iterator[LocalSite]:
+    site = LocalSite()
+    yield site
+    site.close()

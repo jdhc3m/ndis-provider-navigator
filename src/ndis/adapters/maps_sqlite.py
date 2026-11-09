@@ -1,13 +1,17 @@
-"""Read the private Google Maps export (``data/private/maps_brisbane.db``) as MapsPlace values.
+"""Read the private Google Maps export (``data/private/maps_brisbane.db``) as MapsPlace and
+CachedPage values.
 
-Only the ``providers`` table is read and only the columns the matcher needs; ``reviews`` and
-the crawled pages are never touched. The file itself must stay under ``data/private/``.
+Only the ``providers`` table (the columns the matcher needs) and the ``ok`` rows of the
+``pages`` table (the earlier crawl's cleaned text) are read; ``reviews`` is never touched. The
+file itself must stay under ``data/private/``.
 """
 
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ndis.domain.entity_resolution import MapsPlace
+from ndis.domain.pages import CachedPage
 from ndis.domain.register import website_domain
 
 PLACE_COLUMNS = (
@@ -20,6 +24,7 @@ PLACE_COLUMNS = (
     "latitude",
     "longitude",
 )
+PAGE_STATUS_OK = "ok"
 
 
 class MapsExportError(RuntimeError):
@@ -33,6 +38,19 @@ def _blank_to_none(value: object) -> str | None:
     return text or None
 
 
+def _read_rows(path: Path, query: str) -> list[tuple[object, ...]]:
+    if not path.is_file():
+        raise MapsExportError(f"Maps export not found at {path}")
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        try:
+            return connection.execute(query).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise MapsExportError(f"{path} is not a Maps export: {exc}") from exc
+    finally:
+        connection.close()
+
+
 class SqliteMapsPlaceSource:
     """``MapsPlaceSource`` over the scraper's SQLite file, read-only."""
 
@@ -40,17 +58,8 @@ class SqliteMapsPlaceSource:
         self._path = path
 
     def places(self) -> tuple[MapsPlace, ...]:
-        if not self._path.is_file():
-            raise MapsExportError(f"Maps export not found at {self._path}")
         query = f"select {', '.join(PLACE_COLUMNS)} from providers order by place_id"
-        connection = sqlite3.connect(f"file:{self._path}?mode=ro", uri=True)
-        try:
-            try:
-                rows = connection.execute(query).fetchall()
-            except sqlite3.OperationalError as exc:
-                raise MapsExportError(f"{self._path} is not a Maps export: {exc}") from exc
-        finally:
-            connection.close()
+        rows = _read_rows(self._path, query)
         places = []
         for place_id, title, category, website, suburb, postcode, latitude, longitude in rows:
             website = _blank_to_none(website)
@@ -68,3 +77,32 @@ class SqliteMapsPlaceSource:
                 )
             )
         return tuple(places)
+
+
+class SqliteMapsPageSource:
+    """``CachedPageSource`` over the crawl's ``pages`` table, read-only; ``ok`` rows only."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def ok_pages(self) -> tuple[CachedPage, ...]:
+        query = (
+            "select place_id, url, title, text, fetched_at from pages "
+            f"where status = '{PAGE_STATUS_OK}' order by place_id, url"
+        )
+        return tuple(
+            CachedPage(
+                place_id=str(place_id),
+                url=str(url).strip(),
+                title=_blank_to_none(title),
+                text="" if text is None else str(text),
+                fetched_at=_parse_fetched_at(str(fetched_at)),
+            )
+            for place_id, url, title, text, fetched_at in _read_rows(self._path, query)
+        )
+
+
+def _parse_fetched_at(value: str) -> datetime:
+    """The crawl stamps ISO-8601 with an offset; a stamp without one is taken as UTC."""
+    parsed = datetime.fromisoformat(value.strip())
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)

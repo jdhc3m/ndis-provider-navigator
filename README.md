@@ -1,8 +1,9 @@
 # NDIS Provider Navigator
 
 A portfolio project for grounded NDIS provider discovery and deterministic pricing
-in Brisbane. **This repository currently contains tooling, register ingestion and
-catalogue price limits only, not a working provider navigator.** Python 3.12, FastAPI,
+in Brisbane. **This repository currently contains tooling, register ingestion,
+catalogue price limits, Maps-to-register entity resolution and polite website page
+collection only, not a working provider navigator.** Python 3.12, FastAPI,
 Pydantic v2, SQLAlchemy 2 and uv; the front end (ticket 09) is React/TypeScript in `web/`.
 
 ## Development
@@ -127,6 +128,39 @@ by (status, strategy) and holds only Maps titles and register names/ABNs; the ow
 `verdict:` and `uv run pytest -m eval --no-cov` reports precision over the filled labels
 (and skips visibly when none are filled). See [the report](reports/entity_resolution.md).
 
+## Website evidence (polite page collection)
+
+```sh
+uv run python scripts/collect_pages.py [--refresh] [--limit N] [--dry-run]
+# seeds data/private/pages/ + page_meta from the Maps crawl, then fetches the gap live
+```
+
+For every `provider_links` row that is not `not_a_provider` (keyed by ABN when linked, by
+place id otherwise) the script picks one website, the register's `Website` column first and
+the Maps URL second, after normalising both (scheme added, host lower-cased, fragment and
+`utm_*`/`gclid` parameters dropped, mangled values such as `https://188 George Street`
+rejected). It first seeds the cache from the `ok` rows of the private Maps crawl's `pages`
+table (blank text is stored as `empty`), skipping any `(provider_key, url)` the database
+already holds so a crawl row never overwrites a later live result, then fetches live only
+for providers with no `ok` page stored, or for all of them with `--refresh`. `--dry-run`
+writes nothing: it counts the seeding and lists the fetches. Cleaned text is written to
+`data/private/pages/<sha256(url)[:16]>.txt` (ignored by Git); the `page_meta` table in
+`data/ndis.db` holds only `url`, `provider_key`, `fetched_at`, `status`, `text_hash`,
+`source` (`maps_crawl` or `live`), `text_path` and `title`.
+
+The fetcher sends `User-Agent: ndis-provider-navigator/0.1 (+repo URL)`, reads `robots.txt`
+once per host (a 4xx means no rules; a 5xx, timeout or dropped connection means the rules are
+unknown and the site is recorded `robots_unavailable`, not fetched), keeps requests to one
+host at least 1 s apart (or the site's `Crawl-delay` if longer; over 30 s the site is
+recorded `crawl_delay_too_long` and left alone), times out after 10 s, abandons bodies over
+2 MB as `too_large`, records non-HTML answers as `empty` without reading them, and retries
+exactly once on a timeout, failed or dropped connection or 5xx, never on 4xx or a robots
+decision. Redirects are followed by hand for up to 5 hops, each hop through the robots check
+and pacing of its own host. `trafilatura` strips navigation, footers and comments. Statuses:
+`ok`, `empty`, `robots_disallowed`, `robots_unavailable`, `crawl_delay_too_long`, `timeout`,
+`http_error`, `connection_error`, `too_large`. No LLM is involved; nothing from the pages is
+published.
+
 ## Architecture
 
 - `src/ndis/domain/`: pure entities and rules, no frameworks.
@@ -164,8 +198,8 @@ Learning notes are added after each merge under `docs/learning/`.
 
 ## Not built yet
 
-Pricing Arrangements PDF rule retrieval; polite website fetching;
-evidence-backed extraction; intent parsing and refusal guards; measured model
-evaluations; tracing; the web front end; geographic ranking; and the fresh-clone demo. No service
-or rule answer should be considered available at this stage; the provider endpoint lists
-register facts only and the price-limit endpoint returns catalogue limits only.
+Pricing Arrangements PDF rule retrieval; evidence-backed extraction; intent parsing and
+refusal guards; measured model evaluations; tracing; the web front end; geographic ranking;
+and the fresh-clone demo. No service or rule answer should be considered available at this
+stage; the provider endpoint lists register facts only and the price-limit endpoint returns
+catalogue limits only.

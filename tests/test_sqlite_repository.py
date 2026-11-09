@@ -1,5 +1,7 @@
-"""SQLAlchemy SQLite repositories: filters, pagination, exact money round-trip, full refresh."""
+"""SQLAlchemy SQLite repositories: filters, pagination, exact money round-trip, full refresh,
+the links-to-register website join and the private-text/public-metadata page store."""
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -7,8 +9,10 @@ import pytest
 from sqlalchemy import inspect, text
 
 from ndis.adapters.sqlite_repository import (
+    FilePageStore,
     SqlAlchemyProviderLinkRepository,
     SqlAlchemyProviderRepository,
+    SqlAlchemyProviderSiteSource,
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
 )
@@ -20,6 +24,7 @@ from ndis.domain.entity_resolution import (
     MatchStrategy,
     ProviderLink,
 )
+from ndis.domain.pages import FetchStatus, PageMeta, PageSource, ProviderSite
 from tests.conftest import SEED_OUTLETS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS, make_place
 
 
@@ -35,6 +40,7 @@ def test_tables_and_indexes_exist(seeded_repository: SqlAlchemyProviderRepositor
         "provider_registration_groups",
         "support_items",
         "provider_links",
+        "page_meta",
     }
     assert {index["name"] for index in inspector.get_indexes("outlets")} >= {
         "ix_outlets_postcode",
@@ -188,3 +194,99 @@ def test_support_items_share_the_register_database(
     reopened = SqlAlchemySupportItemRepository(create_sqlite_engine(db_path))
     assert reopened.get("01_002_0107_1_1") == SEED_SUPPORT_ITEMS[0]
     assert seeded_repository.find(ProviderQuery()).total == len(SEED_PROVIDERS)
+
+
+def test_provider_sites_join_links_to_the_register_website(
+    seeded_repository: SqlAlchemyProviderRepository, db_path: Path
+) -> None:
+    engine = create_sqlite_engine(db_path)
+    alpha, beta = SEED_PROVIDERS[0], SEED_PROVIDERS[1]
+    SqlAlchemyProviderLinkRepository(engine).replace_all(
+        [
+            ProviderLink(
+                make_place("place-b", "Alpha", website="https://alpha.example/?utm_source=gbp"),
+                EntityMatch("place-b", alpha.abn, MatchStatus.REGISTERED, MatchStrategy.DOMAIN,
+                            0.95, "Alpha Therapy"),
+            ),
+            ProviderLink(
+                make_place("place-a", "Nobody", website="https://nobody.example"),
+                EntityMatch("place-a", None, MatchStatus.UNREGISTERED, MatchStrategy.NONE, 0.6,
+                            None),
+            ),
+            ProviderLink(
+                make_place("place-c", "Beta Supports"),
+                EntityMatch("place-c", beta.abn, MatchStatus.REGISTERED, MatchStrategy.NAME, 0.9,
+                            "Beta Supports"),
+            ),
+            ProviderLink(
+                make_place("place-d", "Hire Co", category="Recruitment Agency"),
+                EntityMatch("place-d", None, MatchStatus.NOT_A_PROVIDER, MatchStrategy.CATEGORY,
+                            0.9, None),
+            ),
+        ]
+    )  # fmt: skip
+    assert SqlAlchemyProviderSiteSource(engine).sites() == (
+        ProviderSite("place-a", None, MatchStatus.UNREGISTERED, None, "https://nobody.example"),
+        ProviderSite("place-b", alpha.abn, MatchStatus.REGISTERED, alpha.website,
+                     "https://alpha.example/?utm_source=gbp"),
+        ProviderSite("place-c", beta.abn, MatchStatus.REGISTERED, beta.website, None),
+        ProviderSite("place-d", None, MatchStatus.NOT_A_PROVIDER, None, None),
+    )  # fmt: skip
+
+
+def test_page_store_writes_text_privately_and_metadata_publicly(
+    db_path: Path, tmp_path: Path
+) -> None:
+    engine = create_sqlite_engine(db_path)
+    pages_dir = tmp_path / "data" / "private" / "pages"
+    store = FilePageStore(engine, pages_dir)
+    fetched_at = datetime(2026, 11, 7, 3, 49, 42, tzinfo=UTC)
+    ok = PageMeta(
+        url="https://alpha.example/",
+        provider_key="10000000001",
+        fetched_at=fetched_at,
+        status=FetchStatus.OK,
+        source=PageSource.MAPS_CRAWL,
+        text_hash="ab" * 32,
+        text_path="0123456789abcdef.txt",
+        title="Alpha",
+    )
+    failed = PageMeta("https://beta.example/", "place-beta", fetched_at, FetchStatus.TIMEOUT,
+                      PageSource.LIVE)  # fmt: skip
+    store.save(ok, "Alpha Therapy\nWest End")
+    store.save(failed, None)
+    assert (pages_dir / "0123456789abcdef.txt").read_text(encoding="utf-8") == (
+        "Alpha Therapy\nWest End"
+    )
+    assert sorted(path.name for path in pages_dir.iterdir()) == ["0123456789abcdef.txt"]
+    assert store.all() == (ok, failed)
+    assert store.providers_with_ok_pages() == frozenset({"10000000001"})
+    with engine.connect() as connection:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(page_meta)"))}
+        rows = connection.execute(
+            text("SELECT url, fetched_at, status, text_hash FROM page_meta ORDER BY url")
+        ).all()
+    assert columns >= {"url", "fetched_at", "status", "text_hash"}
+    assert "text" not in columns
+    assert [tuple(row) for row in rows] == [
+        ("https://alpha.example/", "2026-11-07T03:49:42+00:00", "ok", "ab" * 32),
+        ("https://beta.example/", "2026-11-07T03:49:42+00:00", "timeout", None),
+    ]
+
+
+def test_page_store_upserts_by_provider_and_url(db_path: Path, tmp_path: Path) -> None:
+    store = FilePageStore(create_sqlite_engine(db_path), tmp_path / "pages")
+    when = datetime(2026, 11, 9, tzinfo=UTC)
+    first = PageMeta("https://alpha.example/", "k", when, FetchStatus.TIMEOUT, PageSource.LIVE)
+    store.save(first, None)
+    store.save(first, None)
+    later = PageMeta("https://alpha.example/", "k", when, FetchStatus.OK, PageSource.LIVE,
+                     "cd" * 32, "f.txt", None)  # fmt: skip
+    store.save(later, "text")
+    other = PageMeta("https://alpha.example/", "other", when, FetchStatus.EMPTY, PageSource.LIVE)
+    store.save(other, None)
+    assert store.all() == (later, other)
+    assert store.providers_with_ok_pages() == frozenset({"k"})
+    assert store.stored_pages() == frozenset(
+        {("k", "https://alpha.example/"), ("other", "https://alpha.example/")}
+    )
