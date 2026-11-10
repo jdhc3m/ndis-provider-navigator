@@ -20,6 +20,12 @@ uv run pytest -m eval --no-cov                   # terminal 2 — START THIS at 
 Open `http://localhost:8000/` in a maximised browser window. Keep terminal 2 visible
 (`tmux` split or a second half-screen window).
 
+Tracing: whether Langfuse is wired up is visible in `GET /meta` (`tracing.configured`);
+on the walkthrough machine the keys were empty, so tracing was off and the per-step
+time/tokens/cost disclosure in the answer (step 6) is the visible cost/latency artifact.
+With keys set, every call site also reports to the Langfuse project (url also in
+`/meta.tracing.url`).
+
 Needs the key: steps 2–6. Without a key everything else still runs (the page, `/meta`,
 `/providers`, `/price-limits`), but `POST /ask` answers 503 `LLM not configured` — not a
 demo-able state.

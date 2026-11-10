@@ -64,9 +64,9 @@ fetch scripts are.
 
 Two Python dependencies are worth naming: `pymupdf` (PDF chunking) is dual-licensed
 AGPL-3.0 or Artifex commercial — the only AGPL dependency — and `sqlite-vec` (the vector
-index) is MIT/Apache-2.0. Both read from the installed package metadata. The rest of the
-runtime stack (FastAPI, pydantic, SQLAlchemy, uvicorn, httpx, openpyxl, rapidfuzz,
-trafilatura, langfuse) is MIT/BSD/Apache.
+index) is MIT/Apache-2.0. Both statements come from the installed packages' own metadata.
+The rest of the runtime stack (FastAPI, pydantic, SQLAlchemy, uvicorn, httpx, openpyxl,
+rapidfuzz, trafilatura, langfuse) is MIT/BSD/Apache.
 
 ## Setup
 
@@ -89,12 +89,14 @@ Optional: `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` enable tracing; `RULE_*`
 `NDIS_DB_PATH`, `WEB_DIST_DIR`, `EXTRACTION_DIR`, `PAGES_DIR` override defaults (see
 `src/ndis/config.py` and `src/ndis/api/dependencies.py`).
 
-**Public data** (downloads land in git-ignored `data/public/`, databases in `data/`):
+**Public data** (downloads land in git-ignored `data/public/`, databases in `data/`).
+Measured 2026-11-10 on a fresh clone: register fetch ≈ 4 min, register load ≈ 12 s,
+everything else seconds:
 
 ```sh
 uv sync --locked
 
-uv run python scripts/fetch_public_data.py --only register    # ~85 MB CSV; browser-UA guarded
+uv run python scripts/fetch_public_data.py --only register    # Commission CSV, ~42 MB; browser-UA guarded
 uv run python scripts/load_register.py                        # -> data/ndis.db (29,574 providers, 64,734 outlets)
 uv run python scripts/fetch_public_data.py --only catalogue   # NDIS Support Catalogue 2026-27
 uv run python scripts/load_catalogue.py                       # -> support_items (1,017)
@@ -103,11 +105,13 @@ uv run python scripts/load_postcodes.py                       # -> postcode_cent
 ```
 
 Every fetch is verified (minimum size, minimum distinct rows) and a bad download is
-deleted, not kept. **Key-dependent:** the rule index needs the embedding endpoint:
+deleted, not kept. **Key-dependent:** the rule index needs the embedding endpoint —
+measured ~5 paced minutes on a fresh clone; the whole corpus is ~135 k input tokens, a
+couple of US cents at list prices ([reports/cost.md](reports/cost.md)):
 
 ```sh
 uv run python scripts/fetch_public_data.py --only pricing_pdf
-uv run python scripts/build_rule_index.py                     # ~460 chunks, paced minutes, pennies
+uv run python scripts/build_rule_index.py                     # ~460 chunks over both strategies
 ```
 
 **Private data (optional, local-only).** These steps fill in what the public sources
@@ -149,7 +153,7 @@ turns it into a 3-minute screen recording.
 **Tests and evals:**
 
 ```sh
-uv run pytest                     # unit + integration; LLM mocked; no key, no data
+uv run pytest                     # unit + integration + eval tests; LLM mocked; no key, no data
 uv run pytest -m eval --no-cov    # the eval gate; replays committed captures, no quota
 ```
 
@@ -159,9 +163,9 @@ is absent — CI never claims they passed. The gate spends no model quota: it re
 committed captures and disk caches. Model calls made outside the gate (serving, index
 build) go through the hosted free tier, which throttles per minute and per day; the
 adapter retries and then fails loudly (HTTP 502), never degrades silently. Known wart:
-`evals/test_extraction.py` creates an
-empty `data/ndis.db` as a side effect, which can un-skip the register-backed suites on a
-later data-less run (listed under "Not built yet").
+`evals/test_extraction.py` creates an empty `data/ndis.db` as a side effect, which can
+un-skip the register-backed suites on a later data-less run (listed under
+"Not built yet").
 
 **Development gates** (run before finishing any change; see `AGENTS.md`):
 
