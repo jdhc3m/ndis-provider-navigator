@@ -1,7 +1,8 @@
 # Three-minute recording checklist
 
-For a 3-minute screen recording of the demo in `docs/demo.md`. Timings add up to ~170 s,
-leaving slack for cuts. Written after the 2026-11-10 live walkthrough.
+For a 3-minute screen recording of the demo in `docs/demo.md`. The shot timings below add
+up to exactly 180 s (3:00) — trim a shot when a take runs long rather than relying on
+slack. Written after the 2026-11-10 live walkthrough.
 
 ## Prepare beforehand
 

@@ -70,7 +70,7 @@ rapidfuzz, trafilatura, langfuse) is MIT/BSD/Apache.
 
 ## Setup
 
-Prerequisites: Python 3.12 with [uv](https://docs.astral.sh/uv/) (CI pins ≥ 0.13.7), Node
+Prerequisites: Python 3.12 with [uv](https://docs.astral.sh/uv/) (CI pins 0.13.7), Node
 22 and pnpm (Corepack picks the exact version — if a global pnpm newer than the
 `packageManager` pin refuses to run, `corepack prepare pnpm@11.11.0 --activate` once). No
 key is needed to install, to run the unit/integration tests, or for the
