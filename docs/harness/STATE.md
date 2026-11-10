@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-10 (Australia/Brisbane), after ticket 09 merged. Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); ticket 09 ran on the corporate Mac.
+Updated: 2026-11-10 (Australia/Brisbane), after ticket 10 merged. Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); ticket 09 ran on the corporate Mac.
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -190,6 +190,27 @@ updated. Facts the Builder of ticket 09 needs:
   `gh run download <id> -n uv-lock` → commit `chore: lock dependencies
   against PyPI`).
 
+- Ticket 10 — geo ranking (issue #11, PR #41, squash `2df8748`). Note:
+  `docs/learning/10-geo-ranking.md`. `domain/geo.py` (haversine R =
+  6371.0088 km, `Distance{km, source: exact|postcode_centroid}`,
+  `rank_by_distance` over the whole matched set before pagination, inclusive
+  `max_km` on the shown 1-dp value); `postcode_centroids` table (3,173
+  postcodes; mean of located rows; `0,0` rows rejected; 9999 "North Pole"
+  excluded by the explicit `NON_GEOGRAPHIC_POSTCODES` list — owner decision;
+  PO-box postcodes kept) from Matthew Proctor's public CSV via
+  `scripts/fetch_public_data.py --only postcodes` + `scripts/load_postcodes.py`
+  (loaded into the canonical Mac `ndis.db`; the second machine must run both
+  scripts once). `GET /providers?near=&max_km=` + `distance_origin`; `/ask`
+  uses `intent.postcode`, falls back without distances on unknown postcode and
+  says so in the `provider_filter` step. Cards show km + source label.
+  Measured: 736 passed / 6 skipped, coverage 95.0%; `near` ranking ≈8 ms over
+  29,574 providers, 0.08 s end to end. Review: APPROVE, 0 must-fix.
+  Follow-ups (not ticketed): providers matched by a Brisbane outlet but with
+  an interstate head office get the head-office centroid (nearest-outlet
+  postcode would be better); `exact_coordinates()` loads all 223 registered
+  links per request (fine today). Reviewer-brief template at
+  `~/NDIS/.amp/in/ticket-10/reviewer-brief.md`.
+
 ## In progress
 
 - None.
@@ -271,18 +292,11 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- Ticket 10 — geo ranking (issue #11). Postcode→centroid table from a
-  public Australian postcode CSV fetched by `scripts/fetch_public_data.py`
-  (not committed; document source and licence); pure `haversine` in
-  `domain`; distance and `max_km` filter in provider results; Maps-matched
-  providers (ticket 03) use their exact `latitude`/`longitude`, register-only
-  providers use the centroid, and the response labels which was used. The
-  issue's "Files to touch" still says `src/ndis/ui/` — that is now `web/`:
-  fill the card's "Distance: not available yet" slot
-  (`web/src/components/ProviderCard.tsx`) with the measured value and source
-  label; the Builder loads `ui-ux-pro-max` and follows
-  `web/design-system/MASTER.md`; regenerate `web/src/api/schema.d.ts` after
-  the schema change (the `web` CI job diffs it) and run `pnpm --dir web check`.
-- Ticket 11 — README and demo (issue #12) after that. Needs the second
-  machine for the live `/ask` walkthrough (see ticket 09 NOT-verified item).
+- Ticket 11 — README, demo script, limitations (issue #12). Needs the second
+  machine for the live `/ask` walkthrough (tickets 09 and 10 each have a
+  "not verified live" item: `/ask` through the page, and `/ask` distances);
+  on that machine also run `fetch_public_data.py --only postcodes` and
+  `load_postcodes.py` once so `/ask` has centroids.
 - Ticket 12 — stretch (issue #13), only if time remains.
+- This Foreman thread has processed tickets 09 and 10 (limit 3 per thread);
+  hand off after ticket 11 at the latest.
