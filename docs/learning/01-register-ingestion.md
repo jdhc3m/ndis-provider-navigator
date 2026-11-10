@@ -28,9 +28,23 @@ The first real data path: a script downloads the NDIS Commission provider regist
 
 ## Check yourself
 
-1. Why is `ProviderRepository` a `Protocol` in `application/` rather than an abstract class in `adapters/`?
-2. A provider's head office is in NSW and one outlet is in 4101. Does `GET /providers?postcode=4101` return it, and why was that chosen?
-3. What would go wrong if `merge_provider_rows` kept the first row seen for each ABN?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
+
+**Say it**
+
+1. In two sentences: what is the register, and what does ticket 01 turn it into?
+2. Why does the download script refuse a file that is smaller than 30 MB?
+
+**Spot it**
+
+3. Which function turns `"SOUTH BRISBANE, QLD, 4101, AU"` into suburb, state and postcode, and which layer is it in?
+4. Where is the `ProviderRepository` interface declared, and where is the SQLite class that implements it?
+
+**Defend it**
+
+5. Why is `ProviderRepository` a `Protocol` in `application/` rather than an abstract class in `adapters/`?
+6. A provider's head office is in NSW and one outlet is in 4101. Does `GET /providers?postcode=4101` return it, and why was that chosen?
+7. What would go wrong if `merge_provider_rows` kept the first row seen for each ABN?
 
 ## Numbers
 
@@ -42,4 +56,4 @@ The first real data path: a script downloads the NDIS Commission provider regist
 
 ---
 
-Answers: 1. The use case owns the contract it needs; adapters conform to it. Putting it in `adapters/` would force `application/` to import outward and break the import-linter contract. 2. Yes; the filter matches head office or any outlet, because a person in Brisbane cares where the service is delivered, not where the company is registered. 3. Re-registered providers whose first row in the file is Revoked would be shown as Revoked, and `brisbane_area` would be false if the first row happened to be a non-Brisbane outlet.
+Answers: 1. The NDIS Commission's public CSV of every registered provider and outlet (64,734 rows). Ticket 01 downloads it, parses each row into `Provider` and `Outlet` objects, and loads them into SQLite so `GET /providers` can filter by state, postcode, group and status. 2. The site returns a truncated CSV to non-browser clients that looks like a successful download; the size and the > 25,000 distinct-ABN checks are how the script tells the full file from the trap. 3. `parse_address_tail()` in `src/ndis/domain/register.py` — a pure function in `domain`, which is why it can be tested on five awkward strings with no database. 4. Declared as a `Protocol` in `src/ndis/application/providers.py`; implemented by `SqlAlchemyProviderRepository` in `src/ndis/adapters/sqlite_repository.py`. 5. The use case owns the contract it needs; adapters conform to it. Putting it in `adapters/` would force `application/` to import outward and break the import-linter contract. 6. Yes; the filter matches head office or any outlet, because a person in Brisbane cares where the service is delivered, not where the company is registered. 7. Re-registered providers whose first row in the file is Revoked would be shown as Revoked, and `brisbane_area` would be false if the first row happened to be a non-Brisbane outlet.

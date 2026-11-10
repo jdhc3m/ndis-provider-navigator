@@ -26,11 +26,25 @@ The front door. `POST /ask` takes one plain-language question and the LLM's only
 
 ## Check yourself
 
-1. Why must the caveat be a byte-exact constant instead of a semantic check?
-2. What does "drop the part whole" mean for an intent with an invalid filter and a valid price query?
-3. Why is the evidence quote re-verified at answer time even though extraction already validated it?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
 
-**Answers:** 1. A semantic check is an LLM judgement — exactly what the guard exists to constrain; exact matching is deterministic, testable against adversarial variants, and the wording is a product decision. 2. The filter part is dropped with a machine-readable reason and the price query still executes — partial understanding of one part never contaminates the other. 3. The cache is a store, not a source of truth: files can change, be missing, or be stale; re-checking at answer time is what makes the guard independent of how the cache was built.
+**Say it**
+
+1. In two sentences: what does `POST /ask` do with a free-text question before any data is touched?
+2. Which kinds of question are refused outright, and who decides — the model or the code?
+
+**Spot it**
+
+3. Which function turns the model's JSON into an `Intent`, and what does it do with a postcode like `"41O1"`?
+4. Which function is the output guard, and name two of the violations it can report.
+
+**Defend it**
+
+5. Why must the caveat be a byte-exact constant instead of a semantic check?
+6. What does "drop the part whole" mean for an intent with an invalid filter and a valid price query?
+7. Why is the evidence quote re-verified at answer time even though extraction already validated it?
+
+**Answers:** 1. One LLM call parses it into a typed `Intent` with four optional parts: provider filters, a price query, a rule question, and a `decision_request` flag. Everything after that is deterministic code — SQL, `price_limit()`, or the ticket 06 pipeline. 2. Decision requests ("which is best", "approve my funding"), unparseable model output, and questions that map to nothing (including prompt injections). The model only sets a flag or returns nulls; the refusal itself is three `if` statements in `Ask.__call__` (`application/ask.py`). 3. `parse_intent()` in `src/ndis/domain/intent.py`; an invalid postcode fails `_valid_postcode`, so the whole `provider_filters` part is dropped with a rejection reason and nothing half-understood is executed. 4. `check_answer()` in `src/ndis/domain/answer.py`; any two of `provider_not_in_results`, `provider_name_mismatch`, `evidence_page_missing`, `evidence_quote_not_in_page`, `caveat_missing`, `caveat_unneeded`. 5. A semantic check is an LLM judgement — exactly what the guard exists to constrain; exact matching is deterministic, testable against adversarial variants, and the wording is a product decision. 6. The filter part is dropped with a machine-readable reason and the price query still executes — partial understanding of one part never contaminates the other. 7. The cache is a store, not a source of truth: files can change, be missing, or be stale; re-checking at answer time is what makes the guard independent of how the cache was built.
 
 ## Numbers
 
