@@ -76,7 +76,9 @@ are under `docs/screenshots/`.
 ```sh
 uv run python scripts/fetch_public_data.py --only register   # -> data/public/register.csv
 uv run python scripts/load_register.py                        # -> data/ndis.db, logs counts
-uv run uvicorn ndis.api.app:app                               # GET /providers?state=&postcode=&group=&status=&brisbane_area=&limit=&offset=
+uv run python scripts/fetch_public_data.py --only postcodes  # -> data/public/australian_postcodes.csv
+uv run python scripts/load_postcodes.py                       # -> data/ndis.db (postcode_centroids), logs counts
+uv run uvicorn ndis.api.app:app                               # GET /providers?state=&postcode=&group=&status=&brisbane_area=&near=&max_km=&limit=&offset=
 ```
 
 The fetch script rejects (and deletes) a download that is not over 30 MB with more
@@ -86,6 +88,36 @@ parsed providers/outlets in memory before one atomic write (~85 MB peak for the 
 register); it stores one provider per ABN and one outlet per row nationally, and flags
 `brisbane_area` when a head office or outlet postcode is in 4000–4207 or 4300–4305.
 `NDIS_DB_PATH` overrides the database path.
+
+### Distance ranking
+
+`GET /providers?near=4101` ranks the whole matched set by straight-line distance from
+the centroid of postcode 4101 before the page is cut (nearest first, providers without a
+distance last); `&max_km=5` keeps only providers within 5 km inclusive and requires
+`near`. Each item carries `distance: {km, source}` and the page carries
+`distance_origin`; an unknown `near` postcode is a 422 with a readable `detail`, and
+`max_km` without `near` is a 422. `POST /ask` uses the intent's postcode, when there is
+one, as the origin in the same way and reports the exact/centroid/unmeasured counts in
+the `provider_filter` step; an unknown postcode falls back to the unranked list and says
+so.
+
+**Distance is approximate.** A provider whose Google Maps listing resolved to its ABN
+(`match_status = registered` in `provider_links`) is measured from that listing's
+coordinates (`source: "exact"`; with several listings, the nearest one). Every other
+provider is measured from the centroid of its head-office postcode
+(`source: "postcode_centroid"`), which can be tens of kilometres off in large rural
+postcodes; a provider with neither has `distance: null` and is dropped by `max_km`. All
+distances are great-circle (haversine) kilometres, not driving distances.
+
+Postcode centroids come from Matthew Proctor's Australian postcodes database
+(<https://www.matthewproctor.com/australian_postcodes>, CSV at
+<https://github.com/matthewproctor/australianpostcodes>), one row per locality with
+`lat`/`long`; retrieved 2026-11-10 (18,559 rows, 3,174 postcodes with a location). The
+author describes it as free and "regarded as public domain"; the repository carries no
+LICENSE file. The loader takes the mean of every located row per postcode (the source
+writes `0,0` when a locality has no location and those rows are skipped) and stores one
+`postcode_centroids` row per postcode. The fetch script rejects a download that is not
+over 1 MB with more than 2,500 located postcodes including 4000, 4101 and 4350.
 
 ## Support catalogue and price limits
 
@@ -278,7 +310,7 @@ Learning notes are added after each merge under `docs/learning/`.
 ## Not built yet
 
 Pricing Arrangements PDF rule retrieval; evidence-backed extraction; intent parsing and
-refusal guards; measured model evaluations; tracing; geographic ranking (the page shows
-"distance: not available yet" until then); and the fresh-clone demo. No service or rule
-answer should be considered available at this stage; the provider endpoint lists register
-facts only and the price-limit endpoint returns catalogue limits only.
+refusal guards; measured model evaluations; tracing; and the fresh-clone demo. No service
+or rule answer should be considered available at this stage; the provider endpoint lists
+register facts and straight-line distances only and the price-limit endpoint returns
+catalogue limits only.
