@@ -1,5 +1,12 @@
 import type { AskProviderOut, ServiceMentionOut } from '../api/client'
-import { REGISTRATION_LABEL, formatAbn, formatDate, registrationBadge } from '../format'
+import {
+  DISTANCE_SOURCE_LABEL,
+  REGISTRATION_LABEL,
+  formatAbn,
+  formatDate,
+  formatKm,
+  registrationBadge,
+} from '../format'
 import { Chip, type ChipTone } from './Chip'
 import { Disclosure } from './Disclosure'
 
@@ -13,7 +20,8 @@ interface ProviderCardProps {
   provider: AskProviderOut
 }
 
-/** One register entry with its verified service mentions and their evidence. */
+/** One register entry with its distance from the origin postcode (when the API measured
+ * one, labelled exact or approximate), its verified service mentions and their evidence. */
 export function ProviderCard({ provider }: ProviderCardProps) {
   const badge = registrationBadge(provider.registration_status)
   const office = provider.head_office
@@ -42,7 +50,16 @@ export function ProviderCard({ provider }: ProviderCardProps) {
           <dt className="text-muted-foreground">Head office</dt>
           <dd>{place || 'not recorded'}</dd>
           <dt className="text-muted-foreground">Distance</dt>
-          <dd className="text-muted-foreground">not available yet</dd>
+          {provider.distance ? (
+            <dd className="flex flex-wrap items-baseline gap-x-2">
+              <span className="font-bold text-foreground">{formatKm(provider.distance.km)}</span>
+              <span className="text-xs text-muted-foreground">
+                {DISTANCE_SOURCE_LABEL[provider.distance.source]}
+              </span>
+            </dd>
+          ) : (
+            <dd className="text-muted-foreground">not available</dd>
+          )}
         </dl>
       </header>
       <section aria-label={`Services verified for ${provider.business_name}`}>

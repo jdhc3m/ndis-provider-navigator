@@ -1,11 +1,11 @@
 """SQLAlchemy 2 / SQLite implementations of the ProviderRepository, SupportItemRepository,
-ProviderLinkRepository, ProviderSiteSource and PageStore ports; all share one metadata so a
-single ``data/ndis.db`` holds the register, the catalogue, the Maps-to-register links and
-the public-safe page metadata. Page text itself is written to files under the private
-pages directory, never to the database."""
+ProviderLinkRepository, ProviderSiteSource, PageStore and PostcodeCentroids ports; all share
+one metadata so a single ``data/ndis.db`` holds the register, the catalogue, the
+Maps-to-register links, the postcode centroids and the public-safe page metadata. Page
+text itself is written to files under the private pages directory, never to the database."""
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 from itertools import batched
@@ -31,7 +31,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
-from ndis.application.providers import Page, ProviderQuery
+from ndis.application.providers import Page, ProviderLocation, ProviderQuery
 from ndis.domain.entities import (
     AddressParts,
     Outlet,
@@ -49,6 +49,7 @@ from ndis.domain.entity_resolution import (
     ProviderLink,
     normalise_name,
 )
+from ndis.domain.geo import Coordinates, PostcodeCentroid
 from ndis.domain.pages import FetchStatus, PageMeta, PageSource, ProviderSite
 
 INSERT_BATCH_SIZE = 1000
@@ -214,6 +215,17 @@ class ProviderAttributeRow(Base):
     extracted_at: Mapped[str] = mapped_column(String)
 
 
+class PostcodeCentroidRow(Base):
+    """The representative point of one Australian postcode (mean of its locality rows)."""
+
+    __tablename__ = "postcode_centroids"
+
+    postcode: Mapped[str] = mapped_column(String(4), primary_key=True)
+    latitude: Mapped[float] = mapped_column(Float)
+    longitude: Mapped[float] = mapped_column(Float)
+    locality_count: Mapped[int] = mapped_column(Integer)
+
+
 def create_sqlite_engine(path: Path) -> Engine:
     """Create an engine for the SQLite file at ``path``, creating parent directories."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,6 +338,42 @@ class SqlAlchemyProviderRepository:
                 .offset(query.offset),
             )
         return Page(items=items, total=total, limit=query.limit, offset=query.offset)
+
+    def matched_locations(self, query: ProviderQuery) -> tuple[ProviderLocation, ...]:
+        statement = _apply_filters(
+            select(ProviderRow.abn, ProviderRow.head_office_postcode), query
+        ).order_by(ProviderRow.business_name, ProviderRow.abn)
+        with Session(self._engine) as session:
+            return tuple(
+                ProviderLocation(abn, postcode) for abn, postcode in session.execute(statement)
+            )
+
+    def exact_coordinates(self) -> Mapping[str, tuple[Coordinates, ...]]:
+        statement = (
+            select(ProviderLinkRow.abn, ProviderLinkRow.latitude, ProviderLinkRow.longitude)
+            .where(
+                ProviderLinkRow.match_status == MatchStatus.REGISTERED.value,
+                ProviderLinkRow.abn.is_not(None),
+                ProviderLinkRow.latitude.is_not(None),
+                ProviderLinkRow.longitude.is_not(None),
+            )
+            .order_by(ProviderLinkRow.place_id)
+        )
+        points: dict[str, list[Coordinates]] = {}
+        with Session(self._engine) as session:
+            for abn, latitude, longitude in session.execute(statement):
+                points.setdefault(abn, []).append(Coordinates(latitude, longitude))
+        return {abn: tuple(found) for abn, found in points.items()}
+
+    def find_by_abns(self, abns: Sequence[str]) -> tuple[Provider, ...]:
+        if not abns:
+            return ()
+        with Session(self._engine) as session:
+            providers = _load_providers(
+                session, select(ProviderRow).where(ProviderRow.abn.in_(list(abns)))
+            )
+        by_abn = {provider.abn: provider for provider in providers}
+        return tuple(by_abn[abn] for abn in abns if abn in by_abn)
 
     def find_by_website_domain(self, domain: str) -> tuple[Provider, ...]:
         with Session(self._engine) as session:
@@ -602,6 +650,49 @@ def _to_support_item(row: SupportItemRow) -> SupportItem:
         ),
         legacy=row.legacy,
     )
+
+
+class SqlAlchemyPostcodeCentroids:
+    """Stores one centroid per postcode in SQLite."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+        Base.metadata.create_all(engine)
+
+    def replace_all(self, centroids: Iterable[PostcodeCentroid]) -> None:
+        with Session(self._engine) as session, session.begin():
+            session.execute(delete(PostcodeCentroidRow))
+            for batch in batched(centroids, INSERT_BATCH_SIZE):
+                session.execute(
+                    insert(PostcodeCentroidRow),
+                    [
+                        {
+                            "postcode": centroid.postcode,
+                            "latitude": centroid.coordinates.latitude,
+                            "longitude": centroid.coordinates.longitude,
+                            "locality_count": centroid.locality_count,
+                        }
+                        for centroid in batch
+                    ],
+                )
+
+    def coordinates_for(self, postcodes: Iterable[str]) -> Mapping[str, Coordinates]:
+        wanted = sorted(set(postcodes))
+        if not wanted:
+            return {}
+        found: dict[str, Coordinates] = {}
+        with Session(self._engine) as session:
+            for batch in batched(wanted, INSERT_BATCH_SIZE):
+                rows = session.execute(
+                    select(
+                        PostcodeCentroidRow.postcode,
+                        PostcodeCentroidRow.latitude,
+                        PostcodeCentroidRow.longitude,
+                    ).where(PostcodeCentroidRow.postcode.in_(list(batch)))
+                )
+                for postcode, latitude, longitude in rows:
+                    found[postcode] = Coordinates(latitude, longitude)
+        return found
 
 
 class SqlAlchemySupportItemRepository:

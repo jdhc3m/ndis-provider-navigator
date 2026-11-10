@@ -1,8 +1,9 @@
 import type { AskOut } from '../client'
 
 /**
- * A full answer: providers with verified services, a price limit and a rule answer.
- * Every provider, ABN, URL, quote and price here is fictitious fixture data.
+ * A full answer: providers ranked by distance from 4101 (one exact, one approximate, one
+ * unmeasured) with verified services, a price limit and a rule answer. Every provider, ABN,
+ * URL, quote, distance and price here is fictitious fixture data.
  */
 export const ANSWER: AskOut = {
   question:
@@ -35,6 +36,7 @@ export const ANSWER: AskOut = {
       registration_expires_on: '2028-03-31',
       registration_groups: ['Therapeutic Supports', 'Early Childhood Supports'],
       brisbane_area: true,
+      distance: { km: 0.4, source: 'exact' },
       services: [
         {
           service: 'Speech pathology',
@@ -56,26 +58,28 @@ export const ANSWER: AskOut = {
       abn: '22222222222',
       business_name: 'Sample Allied Health Co',
       legal_name: 'The Trustee for Sample Allied Health Trust',
-      head_office: { suburb: 'SOUTH BRISBANE', state: 'QLD', postcode: '4101' },
+      head_office: { suburb: 'WOOLLOONGABBA', state: 'QLD', postcode: '4102' },
       website: 'https://example.org/sample-allied-health',
       website_domain: 'example.org',
       registration_status: 'Revoked',
       registration_expires_on: '2026-01-15',
       registration_groups: ['Therapeutic Supports'],
       brisbane_area: true,
+      distance: { km: 1.6, source: 'postcode_centroid' },
       services: [],
     },
     {
       abn: '33333333333',
       business_name: 'Placeholder Supports Ltd',
       legal_name: 'Placeholder Supports Ltd',
-      head_office: { suburb: 'HIGHGATE HILL', state: 'QLD', postcode: '4101' },
+      head_office: { suburb: 'HIGHGATE HILL', state: 'QLD', postcode: null },
       website: null,
       website_domain: null,
       registration_status: 'Approved',
       registration_expires_on: '2027-09-30',
       registration_groups: ['Assistance with Daily Life', 'Support Coordination'],
       brisbane_area: true,
+      distance: null,
       services: [
         {
           service: 'Support coordination',
@@ -87,6 +91,7 @@ export const ANSWER: AskOut = {
     },
   ],
   provider_total: 3,
+  distance_origin: '4101',
   price: {
     item_number: '15_999_0128_1_3',
     name: 'Example assessment and therapy item (fixture data)',
@@ -138,7 +143,8 @@ export const ANSWER: AskOut = {
     {
       kind: 'provider_filter',
       input_summary: 'state=QLD postcode=4101 status=Approved',
-      output_summary: '3 of 3 matching providers',
+      output_summary:
+        '3 of 3 matching providers ranked by distance from 4101: 1 exact, 1 postcode centroid, 1 without distance',
       ms: 41,
       input_tokens: null,
       output_tokens: null,

@@ -21,6 +21,7 @@ export const EMPTY: AskOut = {
   },
   providers: [],
   provider_total: 0,
+  distance_origin: null,
   price: null,
   price_error: null,
   rule: null,

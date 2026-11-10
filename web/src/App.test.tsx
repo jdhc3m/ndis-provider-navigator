@@ -76,7 +76,27 @@ describe('answer state', () => {
     expect(speech).toHaveAttribute('aria-expanded', 'false')
     expect(screen.queryByText(/our speech pathologists work/i)).not.toBeInTheDocument()
     expect(screen.getByText(/no services verified from this provider/i)).toBeInTheDocument()
-    expect(screen.getAllByText('not available yet')).toHaveLength(3)
+
+    // Distances: the origin once above the cards, one exact, one approximate, one missing,
+    // in the order the API returned them (nearest first; nothing is sorted client-side).
+    expect(screen.getByText(/distances from/i)).toHaveTextContent(
+      'Distances from 4101, straight-line, nearest first.',
+    )
+    const cards = screen.getAllByRole('article', {
+      name: /example therapy|sample allied|placeholder supports/i,
+    })
+    expect(cards.map((card) => within(card).getByRole('heading').textContent)).toEqual([
+      'Example Therapy Pty Ltd',
+      'Sample Allied Health Co',
+      'Placeholder Supports Ltd',
+    ])
+    const [exact, approximate, unmeasured] = cards as [HTMLElement, HTMLElement, HTMLElement]
+    expect(within(exact).getByText('0.4 km')).toBeInTheDocument()
+    expect(within(exact).getByText('from Maps listing')).toBeInTheDocument()
+    expect(within(approximate).getByText('1.6 km')).toBeInTheDocument()
+    expect(within(approximate).getByText('approx. — postcode centroid')).toBeInTheDocument()
+    expect(within(unmeasured).getByText('not available')).toBeInTheDocument()
+    expect(within(unmeasured).queryByText(/km/)).not.toBeInTheDocument()
 
     // Price card
     const price = screen.getByRole('article', { name: 'Price limit' })

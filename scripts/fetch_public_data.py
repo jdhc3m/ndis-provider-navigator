@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ndis.adapters.catalogue_xlsx import CatalogueFormatError, count_distinct_items
+from ndis.adapters.postcodes_csv import PostcodesFormatError, parse_postcodes
 from ndis.adapters.pricing_pdf import PricingPdfError, count_pdf_pages
 from ndis.adapters.register_csv import RegisterFormatError, count_distinct_abns
 
@@ -49,6 +50,19 @@ CATALOGUE_MIN_ITEMS = 900
 PRICING_PDF_URL = "https://www.ndis.gov.au/media/8096/download?attachment"
 PRICING_MIN_BYTES = 500 * 1024
 PRICING_MIN_PAGES = 50
+
+# Matthew Proctor's Australian postcodes database (CSV, one row per locality with lat/long),
+# https://www.matthewproctor.com/australian_postcodes — "free", "freely available" and
+# "regarded as public domain" by its author; the GitHub repository carries no LICENSE file.
+# Retrieved 2026-11-10. ``postcode``, ``lat`` and ``long`` are the columns used; the source
+# writes ``0`` for both when a locality has no location.
+POSTCODES_URL = (
+    "https://raw.githubusercontent.com/matthewproctor/australianpostcodes/master/"
+    "australian_postcodes.csv"
+)
+POSTCODES_MIN_BYTES = 1024 * 1024
+POSTCODES_MIN_COUNT = 2_500
+POSTCODES_EXPECTED = ("4000", "4101", "4350")
 
 logger = logging.getLogger("fetch_public_data")
 
@@ -185,8 +199,52 @@ def fetch_pricing_pdf(public_dir: Path = PUBLIC_DIR) -> Path:
     return destination
 
 
+def verify_postcodes(
+    path: Path, min_bytes: int = POSTCODES_MIN_BYTES, min_count: int = POSTCODES_MIN_COUNT
+) -> list[str]:
+    """Return the reasons ``path`` is not a complete postcodes download (empty = OK):
+    size, number of located postcodes, and three Queensland postcodes that must be there."""
+    problems: list[str] = []
+    size = path.stat().st_size
+    if size <= min_bytes:
+        problems.append(f"file is {size} bytes; the postcodes CSV exceeds {min_bytes} bytes")
+    try:
+        centroids, _ = parse_postcodes(path)
+    except (PostcodesFormatError, UnicodeDecodeError) as exc:
+        return problems + [f"file is not a postcodes CSV: {exc}"]
+    if len(centroids) <= min_count:
+        problems.append(
+            f"file has {len(centroids)} located postcodes; a full file exceeds {min_count}"
+        )
+    missing = sorted(set(POSTCODES_EXPECTED) - {centroid.postcode for centroid in centroids})
+    if missing:
+        problems.append(f"file lacks located rows for postcodes {missing}")
+    return problems
+
+
+def fetch_postcodes(public_dir: Path = PUBLIC_DIR) -> Path:
+    """Download the Australian postcodes CSV and verify it is complete."""
+    destination = public_dir / "australian_postcodes.csv"
+    partial = destination.with_suffix(".part")
+    logger.info("downloading %s -> %s", POSTCODES_URL, partial)
+    try:
+        size = download(POSTCODES_URL, partial)
+        logger.info("downloaded %d bytes", size)
+        problems = verify_postcodes(partial, POSTCODES_MIN_BYTES, POSTCODES_MIN_COUNT)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    if problems:
+        partial.unlink(missing_ok=True)
+        raise SystemExit("postcodes download rejected and deleted:\n  " + "\n  ".join(problems))
+    partial.replace(destination)
+    logger.info("postcodes verified: %s", destination)
+    return destination
+
+
 DATASETS: dict[str, Callable[[], Path]] = {
     "catalogue": fetch_catalogue,
+    "postcodes": fetch_postcodes,
     "pricing_pdf": fetch_pricing_pdf,
     "register": fetch_register,
 }

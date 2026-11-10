@@ -8,8 +8,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ndis.adapters.sqlite_repository import (
+    SqlAlchemyPostcodeCentroids,
+    SqlAlchemyProviderLinkRepository,
     SqlAlchemyProviderRepository,
     SqlAlchemySupportItemRepository,
+    create_sqlite_engine,
 )
 from ndis.api import app as api_app
 from ndis.api.app import create_app, get_price_limit, list_providers
@@ -20,22 +23,76 @@ from ndis.api.dependencies import (
     engine_for,
     get_price_limit_use_case,
     list_providers_use_case,
+    postcode_centroids,
+    postcode_centroids_for,
     provider_repository,
     provider_repository_for,
     support_item_repository,
     support_item_repository_for,
 )
-from ndis.api.schemas import PriceLimitOut, ProviderOut
+from ndis.api.schemas import DistanceOut, PriceLimitOut, ProviderOut
 from ndis.application.catalogue import GetPriceLimit, PriceLimitResult
-from ndis.application.providers import ListProviders
+from ndis.application.providers import ListProviders, RankedProvider
 from ndis.domain.entities import Remoteness
-from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS
+from ndis.domain.entity_resolution import (
+    EntityMatch,
+    MapsPlace,
+    MatchStatus,
+    MatchStrategy,
+    ProviderLink,
+)
+from ndis.domain.geo import Distance, DistanceSource
+from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS, make_place
+
+
+def _place(place_id: str, title: str, latitude: float, longitude: float) -> MapsPlace:
+    place = make_place(place_id, title)
+    return MapsPlace(
+        place_id=place.place_id,
+        title=place.title,
+        category=place.category,
+        website=place.website,
+        website_domain=place.website_domain,
+        suburb=place.suburb,
+        postcode=place.postcode,
+        latitude=latitude,
+        longitude=longitude,
+    )
+
+
+@pytest.fixture
+def seeded_links(db_path: Path) -> SqlAlchemyProviderLinkRepository:
+    """Alpha has two registered Maps rows (West End and a Cairns branch); Beta's row is
+    ambiguous, so Beta falls back to its head-office postcode centroid."""
+    repository = SqlAlchemyProviderLinkRepository(create_sqlite_engine(db_path))
+    repository.replace_all(
+        [
+            ProviderLink(
+                _place("place-alpha", "Alpha Therapy", -27.48, 153.01),
+                EntityMatch("place-alpha", "10000000001", MatchStatus.REGISTERED,
+                            MatchStrategy.NAME, 0.9, "Alpha Therapy"),
+            ),
+            ProviderLink(
+                _place("place-alpha-cairns", "Alpha Therapy Cairns", -16.923761, 145.742303),
+                EntityMatch("place-alpha-cairns", "10000000001", MatchStatus.REGISTERED,
+                            MatchStrategy.NAME, 0.9, "Alpha Therapy"),
+            ),
+            ProviderLink(
+                _place("place-beta", "Beta Supports", -27.47, 153.02),
+                EntityMatch("place-beta", None, MatchStatus.AMBIGUOUS, MatchStrategy.NAME,
+                            0.3, None),
+            ),
+        ]
+    )  # fmt: skip
+    return repository
 
 
 @pytest.fixture
 def client(
     seeded_repository: SqlAlchemyProviderRepository,
     seeded_support_items: SqlAlchemySupportItemRepository,
+    seeded_centroids: SqlAlchemyPostcodeCentroids,
+    seeded_links: SqlAlchemyProviderLinkRepository,
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
@@ -57,7 +114,9 @@ def test_dependencies_build_the_use_cases(
     monkeypatch.setenv(DB_PATH_ENV, str(db_path))
     repository = provider_repository()
     assert repository is provider_repository_for(db_path.resolve())
-    assert isinstance(list_providers_use_case(repository), ListProviders)
+    centroids = postcode_centroids()
+    assert centroids is postcode_centroids_for(db_path.resolve())
+    assert isinstance(list_providers_use_case(repository, centroids), ListProviders)
     catalogue = support_item_repository()
     assert catalogue is support_item_repository_for(db_path.resolve())
     assert isinstance(get_price_limit_use_case(catalogue), GetPriceLimit)
@@ -77,6 +136,9 @@ def test_list_providers_default_page(client: TestClient) -> None:
     alpha = body["items"][0]
     assert alpha == ProviderOut.from_provider(SEED_PROVIDERS[0]).model_dump(mode="json")
     assert alpha["head_office"] == {"suburb": "SOMEWHERE", "state": "QLD", "postcode": "4101"}
+    # Without ``near`` nothing is measured and nothing is invented.
+    assert body["distance_origin"] is None
+    assert all(item["distance"] is None for item in body["items"])
     assert alpha["registration_groups"] == ["Therapeutic Supports"]
     assert alpha["registration_expires_on"] == "2028-01-01"
 
@@ -109,6 +171,61 @@ def test_list_providers_pagination(client: TestClient) -> None:
     assert [item["abn"] for item in page["items"]] == ["10000000004", "10000000005"]
 
 
+def test_list_providers_near_ranks_by_distance_and_labels_the_source(
+    client: TestClient,
+) -> None:
+    """From 4101: Delta sits in 4101 itself (centroid, 0 km); Alpha is measured from the
+    nearer of its two Maps rows (exact, West End rather than Cairns); Beta's row is
+    ambiguous so it uses the 4000 centroid; Gamma and Epsilon are interstate centroids."""
+    body = client.get("/providers", params={"near": "4101"}).json()
+    assert body["distance_origin"] == "4101"
+    assert body["total"] == 5
+    assert [(item["abn"], item["distance"]) for item in body["items"]] == [
+        ("10000000004", {"km": 0.0, "source": "postcode_centroid"}),
+        ("10000000001", {"km": 0.5, "source": "exact"}),
+        ("10000000002", {"km": 2.2, "source": "postcode_centroid"}),
+        ("10000000003", {"km": 729.7, "source": "postcode_centroid"}),
+        ("10000000005", {"km": 1372.3, "source": "postcode_centroid"}),
+    ]
+    kms = [item["distance"]["km"] for item in body["items"]]
+    assert kms == sorted(kms)
+
+
+def test_list_providers_near_ranks_before_paginating_and_applies_max_km(
+    client: TestClient,
+) -> None:
+    page = client.get("/providers", params={"near": "4101", "limit": 2, "offset": 1}).json()
+    assert page["total"] == 5
+    assert [item["abn"] for item in page["items"]] == ["10000000001", "10000000002"]
+    within = client.get("/providers", params={"near": "4101", "max_km": 5}).json()
+    assert within["total"] == 3
+    assert [item["abn"] for item in within["items"]] == [
+        "10000000004",
+        "10000000001",
+        "10000000002",
+    ]
+    assert all(item["distance"]["km"] <= 5 for item in within["items"])
+    # Filters still apply before ranking.
+    qld = client.get("/providers", params={"near": "4101", "state": "NSW"}).json()
+    assert [item["abn"] for item in qld["items"]] == ["10000000003"]
+
+
+def test_list_providers_unknown_near_postcode_is_a_readable_422(client: TestClient) -> None:
+    response = client.get("/providers", params={"near": "9999"})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "postcode 9999 is not a known Australian postcode"
+
+
+def test_distance_out_rounds_to_one_decimal() -> None:
+    assert DistanceOut.from_distance(None) is None
+    out = DistanceOut.from_distance(Distance(2.1961, DistanceSource.POSTCODE_CENTROID))
+    assert out is not None and (out.km, out.source) == (2.2, "postcode_centroid")
+    ranked = ProviderOut.from_ranked(
+        RankedProvider(SEED_PROVIDERS[0], Distance(0.4741, DistanceSource.EXACT))
+    )
+    assert ranked.distance == DistanceOut(km=0.5, source="exact")
+
+
 @pytest.mark.parametrize(
     "params",
     [
@@ -118,10 +235,18 @@ def test_list_providers_pagination(client: TestClient) -> None:
         {"postcode": "abc"},
         {"brisbane_area": "x"},
         {"status": "Pending"},
+        {"near": "abc"},
+        {"near": "41011"},
+        {"max_km": 5},
+        {"near": "4101", "max_km": 0},
+        {"near": "4101", "max_km": -1},
+        {"near": "4101", "max_km": "far"},
     ],
 )
 def test_list_providers_rejects_bad_parameters(client: TestClient, params: dict[str, str]) -> None:
-    assert client.get("/providers", params=params).status_code == 422
+    response = client.get("/providers", params=params)
+    assert response.status_code == 422
+    assert response.json()["detail"]
 
 
 def test_get_price_limit_national_default(client: TestClient) -> None:

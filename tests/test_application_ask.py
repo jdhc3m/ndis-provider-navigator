@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from ndis.adapters.sqlite_repository import (
+    SqlAlchemyPostcodeCentroids,
     SqlAlchemyProviderRepository,
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
@@ -26,15 +27,16 @@ from ndis.application.ask import (
 from ndis.application.catalogue import GetPriceLimit, UnknownSupportItemError
 from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.application.pricing import RuleAnswer
-from ndis.application.providers import ListProviders, ProviderQuery
+from ndis.application.providers import ListProviders, PostcodeCentroids, ProviderQuery
 from ndis.domain.answer import CAVEAT_SERVICES, ClaimedService, ServiceMention
 from ndis.domain.catalogue import price_limit
 from ndis.domain.entities import Remoteness
 from ndis.domain.extraction import TokenBudget
+from ndis.domain.geo import DistanceSource
 from ndis.domain.intent import Intent, ProviderFilters, parse_intent
 from ndis.domain.pricing import REFUSAL_NO_CHUNKS
 from ndis.domain.taxonomy import Service
-from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS
+from tests.conftest import SEED_CENTROIDS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS
 
 
 class FakeIntentClient:
@@ -54,8 +56,10 @@ class FakeIntentClient:
 
 
 class RecordingProviders(ListProviders):
-    def __init__(self, repository: SqlAlchemyProviderRepository) -> None:
-        super().__init__(repository)
+    def __init__(
+        self, repository: SqlAlchemyProviderRepository, centroids: PostcodeCentroids | None
+    ) -> None:
+        super().__init__(repository, centroids)
         self.calls: list[ProviderQuery] = []
 
     def __call__(self, query: ProviderQuery) -> object:
@@ -134,10 +138,11 @@ def make_ask(
     evidence: FakeEvidence | None = None,
     provider_limit: int = ASK_PROVIDER_LIMIT,
     token_prices: tuple[float, float] | None = None,
+    centroids: PostcodeCentroids | None = None,
 ) -> Ask:
     return Ask(
         client,
-        RecordingProviders(repository),
+        RecordingProviders(repository, centroids),
         RecordingPriceLimit(catalogue),
         rule_answerer or FakeRuleAnswerer(),
         evidence or FakeEvidence(),
@@ -213,6 +218,52 @@ class TestFilterExecution:
         assert not answer.refused
         assert answer.provider_total == 0 and answer.providers == ()
         assert answer.caveat is None
+
+    def test_a_postcode_in_the_intent_is_the_distance_origin(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        """Both 4101 providers get a centroid distance of 0 km from 4101 and the step
+        summary says what was measured; the fixture seeds no Maps links, so no exact."""
+        providers, catalogue = repos
+        centroids = SqlAlchemyPostcodeCentroids(providers._engine)
+        centroids.replace_all(SEED_CENTROIDS)
+        client = FakeIntentClient([intent_payload(provider_filters='{"postcode": "4101"}')])
+        ask = make_ask(client, providers, catalogue, centroids=centroids)
+        answer = ask("providers in 4101")
+        assert not answer.refused
+        assert answer.distance_origin == "4101"
+        assert [provider.abn for provider in answer.providers] == ["10000000001", "10000000004"]
+        assert {abn: (d.km, d.source) for abn, d in answer.distances.items()} == {
+            "10000000001": (0.0, DistanceSource.POSTCODE_CENTROID),
+            "10000000004": (0.0, DistanceSource.POSTCODE_CENTROID),
+        }
+        assert answer.steps[1].output_summary == (
+            "2 of 2 matching providers ranked by distance from 4101: "
+            "0 exact, 2 postcode centroid, 0 without distance"
+        )
+
+    def test_an_unknown_postcode_falls_back_to_no_distances_and_says_so(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        centroids = SqlAlchemyPostcodeCentroids(providers._engine)
+        centroids.replace_all(SEED_CENTROIDS[:1])  # 4000 only
+        client = FakeIntentClient([intent_payload(provider_filters='{"postcode": "4101"}')])
+        ask = make_ask(client, providers, catalogue, centroids=centroids)
+        answer = ask("providers in 4101")
+        assert not answer.refused
+        assert answer.distance_origin is None and answer.distances == {}
+        assert [provider.abn for provider in answer.providers] == ["10000000001", "10000000004"]
+        assert answer.steps[1].output_summary == (
+            "2 of 2 matching providers; origin postcode unknown, no distances"
+        )
+        # With no centroid table at all, the same honest fallback.
+        client = FakeIntentClient([intent_payload(provider_filters='{"postcode": "4101"}')])
+        answer = make_ask(client, providers, catalogue)("providers in 4101")
+        assert answer.distance_origin is None
+        assert "origin postcode unknown, no distances" in answer.steps[1].output_summary
 
 
 class TestRefusals:
@@ -569,4 +620,5 @@ def test_combined_answer_defaults() -> None:
         question="q", refused=False, reason=None, explanation=None, intent=Intent()
     )
     assert answer.providers == ()
+    assert answer.distances == {} and answer.distance_origin is None
     assert answer.services == {}

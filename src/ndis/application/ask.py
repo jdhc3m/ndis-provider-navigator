@@ -12,7 +12,7 @@ is returned.
 
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from ndis.application.catalogue import (
@@ -23,7 +23,13 @@ from ndis.application.catalogue import (
 )
 from ndis.application.extraction import LlmClient, LlmRequest
 from ndis.application.pricing import RuleAnswer
-from ndis.application.providers import InvalidQueryError, ListProviders, ProviderQuery
+from ndis.application.providers import (
+    InvalidQueryError,
+    ListProviders,
+    ProviderQuery,
+    RankedProvider,
+    UnknownPostcodeError,
+)
 from ndis.domain.answer import (
     CAVEAT_SERVICES,
     AnswerDocument,
@@ -34,6 +40,7 @@ from ndis.domain.answer import (
     mentions_for_provider,
 )
 from ndis.domain.entities import Provider
+from ndis.domain.geo import Distance, DistanceSource
 from ndis.domain.intent import (
     DECISION_REFUSAL_EXPLANATION,
     EMPTY_INTENT_EXPLANATION,
@@ -152,6 +159,10 @@ class CombinedAnswer:
     parse_rejections: tuple[str, ...] = ()
     providers: tuple[Provider, ...] = ()
     provider_total: int = 0
+    distances: Mapping[str, Distance] = field(default_factory=dict)
+    """Distance per provider ABN, for the providers that could be measured."""
+    distance_origin: str | None = None
+    """The postcode distances were measured from, or ``None`` when none were."""
     services: Mapping[str, tuple[ServiceMention, ...]] = field(default_factory=dict)
     price: PriceLimitResult | None = None
     price_error: str | None = None
@@ -196,6 +207,35 @@ def token_cost(prices: TokenPrices, input_tokens: int, output_tokens: int) -> fl
         return None
     input_price, output_price = prices
     return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
+
+
+@dataclass(frozen=True)
+class _ProviderSection:
+    """The provider part of an answer: the page, its total and how it was ranked."""
+
+    providers: tuple[Provider, ...]
+    total: int
+    distances: Mapping[str, Distance]
+    origin: str | None
+    origin_unknown: bool
+
+    def summary(self) -> str:
+        head = f"{len(self.providers)} of {self.total} matching providers"
+        if self.origin_unknown:
+            return f"{head}; origin postcode unknown, no distances"
+        if self.origin is None:
+            return head
+        exact = sum(1 for d in self.distances.values() if d.source is DistanceSource.EXACT)
+        centroid = len(self.distances) - exact
+        unmeasured = len(self.providers) - len(self.distances)
+        return (
+            f"{head} ranked by distance from {self.origin}: {exact} exact, "
+            f"{centroid} postcode centroid, {unmeasured} without distance"
+        )
+
+
+def _distances(items: Sequence[RankedProvider]) -> Mapping[str, Distance]:
+    return {item.provider.abn: item.distance for item in items if item.distance is not None}
 
 
 def _summarise_filters(filters: ProviderFilters) -> str:
@@ -289,17 +329,17 @@ class Ask:
         if intent.empty():
             return self._refusal(text, REFUSAL_EMPTY_INTENT, EMPTY_INTENT_EXPLANATION, parsed, log)
 
-        providers: tuple[Provider, ...] = ()
-        provider_total = 0
+        section = _ProviderSection((), 0, {}, None, False)
         if intent.provider_filters is not None:
             started = log.start()
-            providers, provider_total = self._execute_filters(intent.provider_filters)
+            section = self._execute_filters(intent.provider_filters)
             log.record(
                 "provider_filter",
                 started,
                 _summarise_filters(intent.provider_filters),
-                f"{len(providers)} of {provider_total} matching providers",
+                section.summary(),
             )
+        providers = section.providers
         price: PriceLimitResult | None = None
         price_error: str | None = None
         if intent.price_query is not None:
@@ -371,7 +411,9 @@ class Ask:
             intent=intent,
             parse_rejections=parsed.rejected,
             providers=providers,
-            provider_total=provider_total,
+            provider_total=section.total,
+            distances=section.distances,
+            distance_origin=section.origin,
             services=services,
             price=price,
             price_error=price_error,
@@ -398,19 +440,33 @@ class Ask:
             steps=log.done(),
         )
 
-    def _execute_filters(self, filters: ProviderFilters) -> tuple[tuple[Provider, ...], int]:
-        page = self._providers(
-            ProviderQuery(
-                state=filters.state,
-                postcode=filters.postcode,
-                group=filters.group,
-                status=filters.status,
-                brisbane_area=filters.brisbane_area,
-                limit=self._provider_limit,
-                offset=0,
-            )
+    def _execute_filters(self, filters: ProviderFilters) -> _ProviderSection:
+        """Run the register filters; when the intent names a postcode it is also the
+        origin, so the page comes back ranked by distance. A postcode with no centroid
+        falls back to the unranked list and the step summary says so."""
+        query = ProviderQuery(
+            state=filters.state,
+            postcode=filters.postcode,
+            group=filters.group,
+            status=filters.status,
+            brisbane_area=filters.brisbane_area,
+            near=filters.postcode,
+            limit=self._provider_limit,
+            offset=0,
         )
-        return page.items, page.total
+        origin_unknown = False
+        try:
+            page = self._providers(query)
+        except UnknownPostcodeError:
+            origin_unknown = True
+            page = self._providers(replace(query, near=None))
+        return _ProviderSection(
+            providers=tuple(item.provider for item in page.items),
+            total=page.total,
+            distances=_distances(page.items),
+            origin=page.distance_origin,
+            origin_unknown=origin_unknown,
+        )
 
     def _execute_price(self, query: PriceQuery) -> tuple[PriceLimitResult | None, str | None]:
         try:

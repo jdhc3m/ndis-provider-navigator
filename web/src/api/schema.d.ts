@@ -95,7 +95,9 @@ export interface paths {
         };
         /**
          * List Providers
-         * @description List registered providers nationally, filtered and paginated.
+         * @description List registered providers nationally, filtered and paginated. With ``near`` (a
+         *     postcode) the whole matched set is ranked by straight-line distance from that
+         *     postcode's centroid before the page is cut; ``max_km`` (inclusive) requires ``near``.
          */
         get: operations["list_providers_providers_get"];
         put?: never;
@@ -166,6 +168,8 @@ export interface components {
         AskOut: {
             /** Caveat */
             caveat: string | null;
+            /** Distance Origin */
+            distance_origin: string | null;
             /** Explanation */
             explanation: string | null;
             intent: components["schemas"]["AskIntentOut"] | null;
@@ -200,7 +204,8 @@ export interface components {
         };
         /**
          * AskProviderOut
-         * @description One provider from the executed result page, with its verified service mentions.
+         * @description One provider from the executed result page, with its verified service mentions and,
+         *     when the question named a postcode, its distance from that postcode.
          */
         AskProviderOut: {
             /** Abn */
@@ -209,6 +214,7 @@ export interface components {
             brisbane_area: boolean;
             /** Business Name */
             business_name: string;
+            distance?: components["schemas"]["DistanceOut"] | null;
             head_office: components["schemas"]["AddressOut"];
             /** Legal Name */
             legal_name: string;
@@ -253,6 +259,21 @@ export interface components {
             refused: boolean;
             /** Top Similarity */
             top_similarity: number | null;
+        };
+        /**
+         * DistanceOut
+         * @description Straight-line kilometres from the origin postcode's centroid, to one decimal, and
+         *     whether it was measured from the provider's Maps listing (``exact``) or the centroid of
+         *     its head-office postcode (``postcode_centroid``, approximate).
+         */
+        DistanceOut: {
+            /** Km */
+            km: number;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "exact" | "postcode_centroid";
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -337,6 +358,7 @@ export interface components {
             brisbane_area: boolean;
             /** Business Name */
             business_name: string;
+            distance?: components["schemas"]["DistanceOut"] | null;
             head_office: components["schemas"]["AddressOut"];
             /** Legal Name */
             legal_name: string;
@@ -354,8 +376,14 @@ export interface components {
             /** Website Domain */
             website_domain: string | null;
         };
-        /** ProviderPageOut */
+        /**
+         * ProviderPageOut
+         * @description One page of providers; ``distance_origin`` is the ``near`` postcode the distances
+         *     were measured from, ``null`` when the page is in register order without distances.
+         */
         ProviderPageOut: {
+            /** Distance Origin */
+            distance_origin?: string | null;
             /** Items */
             items: components["schemas"]["ProviderOut"][];
             /** Limit */
@@ -570,6 +598,8 @@ export interface operations {
                 group?: string | null;
                 status?: string | null;
                 brisbane_area?: boolean | null;
+                near?: string | null;
+                max_km?: number | null;
                 limit?: number;
                 offset?: number;
             };
