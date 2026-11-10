@@ -13,3 +13,4 @@ One line per merged ticket: date, ticket, note, PR.
 - 2026-11-09 — 08 Evals as a CI gate, tracing, cost — [note](08-evaluation-gates.md) — [PR #37](https://github.com/jdhc3m/ndis-provider-navigator/pull/37)
 - 2026-11-10 — 09 Web front end in React/TypeScript — [note](09-web-frontend.md) — [PR #39](https://github.com/jdhc3m/ndis-provider-navigator/pull/39)
 - 2026-11-10 — 10 Geo ranking by haversine distance — [note](10-geo-ranking.md) — [PR #41](https://github.com/jdhc3m/ndis-provider-navigator/pull/41)
+- 2026-11-10 — 11 README, demo script, limitations — [note](11-demo-documentation.md) — [PR #43](https://github.com/jdhc3m/ndis-provider-navigator/pull/43)
