@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-10 (Australia/Brisbane), after ticket 10 merged. Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); ticket 09 ran on the corporate Mac.
+Updated: 2026-11-10 (Australia/Brisbane), after ticket 11 merged — all of tickets 00–11 are on `main` with green CI. Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); tickets 09–10 ran on the corporate Mac; ticket 11 ran on the second machine (user `jackson`, repo at `~/ndis-provider-navigator`).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -211,6 +211,40 @@ updated. Facts the Builder of ticket 09 needs:
   links per request (fine today). Reviewer-brief template at
   `~/NDIS/.amp/in/ticket-10/reviewer-brief.md`.
 
+- Ticket 11 — README, demo script, limitations (issue #12, PR #43, squash
+  `495009b`). Note: `docs/learning/11-demo-documentation.md`. README rewritten
+  (Mermaid diagram validated with mermaid 11; data sources + verified licences
+  incl. PyMuPDF AGPL named; public/private bootstrap steps; measured results
+  copied from `reports/`; Not-built-yet list with the six required items plus
+  the ticket 09/10 follow-ups); `docs/demo.md` (five-minute script — every
+  command actually run, shows intent chips, evidence quotes, deterministic
+  price, page-26 rule citation, two refusals, eval gate, 429→502 recovery);
+  `docs/recording-checklist.md` (8 shots, exactly 180 s). Builder verified a
+  fresh clone in `/tmp` through the whole public path (register 42.5 MB ≈ 4
+  min → 29,574 providers; catalogue 1,017; postcodes 3,173; rule index ≈ 5
+  min / ~135k tokens; `pnpm install && build` — README now documents
+  `corepack prepare pnpm@11.11.0 --activate` for pnpm-version mismatch) and
+  the key-dependent steps (`/ask`, `/ask-rule`, refusal; free-tier 429→502
+  reproduced and recovered via the STATE fallback model). Prerequisites done
+  on this machine first: `fetch_public_data.py --only postcodes` +
+  `load_postcodes.py` (3,173 centroids), LLM reachability proven (list-models
+  HTTP 200). CLOSED both "not verified live" items: `/ask` driven through the
+  built page in a real browser (ticket 09) and `/ask` distances render — 20
+  of 36 providers from 4120, 9 `exact` / 11 `postcode_centroid` (ticket 10).
+  Measured: 736 passed / 6 skipped, coverage 95%; eval 8 passed / 1 skipped
+  (~97 s). Review: REQUEST_CHANGES round 1 (must-fix: recording-checklist
+  shots sum to 180 s, not "~170 s"; nits: model-dependent chip annotation,
+  uv pin wording) → fixed `1cb7118` → APPROVE.
+  Follow-ups (not ticketed): `adapters/ask_evidence.py` never populates
+  `ClaimedService.fetched_at` (API `services[].fetched_at` always null —
+  cosmetic); the brief's showcase question ("registered OT for a 7-year-old
+  near 4101 who does home visits, and what's the hourly price limit?")
+  parses as `decision_request` and refuses under both models tried —
+  demo.md answers it as two split questions; Langfuse keys are empty in
+  `~/.config/ndis/.env` on this machine so tracing was verified only via the
+  `/ask` steps table and `/meta.tracing.configured=false` — for a live
+  Langfuse demo, ask the owner to add the keys.
+
 ## In progress
 
 - None.
@@ -292,11 +326,11 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- Ticket 11 — README, demo script, limitations (issue #12). Needs the second
-  machine for the live `/ask` walkthrough (tickets 09 and 10 each have a
-  "not verified live" item: `/ask` through the page, and `/ask` distances);
-  on that machine also run `fetch_public_data.py --only postcodes` and
-  `load_postcodes.py` once so `/ask` has centroids.
-- Ticket 12 — stretch (issue #13), only if time remains.
-- This Foreman thread has processed tickets 09 and 10 (limit 3 per thread);
-  hand off after ticket 11 at the latest.
+- All of tickets 00–11 are merged; the week's definition of done is met
+  (green CI, one note per ticket, reports present, README demo verified from
+  a fresh clone, `git log --all -- data/private` empty).
+- Ticket 12 — stretch (issue #13), only if time remains: Snowflake/Cortex
+  Search comparison → `reports/snowflake.md`. It is the only open issue.
+- This Foreman thread has processed tickets 09, 10 and 11 (limit 3 per
+  thread) — hand off now. A new Foreman starts from this file, the issue
+  list and the brief at `~/NDIS/HARNESS_PROMPT.md`.
