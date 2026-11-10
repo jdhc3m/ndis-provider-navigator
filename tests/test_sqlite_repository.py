@@ -10,13 +10,14 @@ from sqlalchemy import inspect, text
 
 from ndis.adapters.sqlite_repository import (
     FilePageStore,
+    SqlAlchemyPostcodeCentroids,
     SqlAlchemyProviderLinkRepository,
     SqlAlchemyProviderRepository,
     SqlAlchemyProviderSiteSource,
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
 )
-from ndis.application.providers import ProviderQuery
+from ndis.application.providers import ProviderLocation, ProviderQuery
 from ndis.domain.entity_resolution import (
     Candidate,
     EntityMatch,
@@ -24,8 +25,15 @@ from ndis.domain.entity_resolution import (
     MatchStrategy,
     ProviderLink,
 )
+from ndis.domain.geo import Coordinates
 from ndis.domain.pages import FetchStatus, PageMeta, PageSource, ProviderSite
-from tests.conftest import SEED_OUTLETS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS, make_place
+from tests.conftest import (
+    SEED_CENTROIDS,
+    SEED_OUTLETS,
+    SEED_PROVIDERS,
+    SEED_SUPPORT_ITEMS,
+    make_place,
+)
 
 
 def abns(repository: SqlAlchemyProviderRepository, query: ProviderQuery) -> list[str]:
@@ -43,6 +51,7 @@ def test_tables_and_indexes_exist(seeded_repository: SqlAlchemyProviderRepositor
         "page_meta",
         "service_claims",
         "provider_attributes",
+        "postcode_centroids",
     }
     assert {index["name"] for index in inspector.get_indexes("outlets")} >= {
         "ix_outlets_postcode",
@@ -154,6 +163,81 @@ def test_provider_links_round_trip(db_path: Path) -> None:
             )
         ).one()
     assert tuple(row) == (alpha.abn, "registered", "domain", -27.48, 153.01, "[]")
+
+
+def test_matched_locations_ignore_pagination_and_keep_name_order(
+    seeded_repository: SqlAlchemyProviderRepository,
+) -> None:
+    locations = seeded_repository.matched_locations(ProviderQuery(state="QLD", limit=1))
+    assert locations == (
+        ProviderLocation("10000000001", "4101"),
+        ProviderLocation("10000000002", "4000"),
+        ProviderLocation("10000000004", "4101"),
+        ProviderLocation("10000000005", "3000"),
+    )
+
+
+def test_exact_coordinates_come_from_registered_links_only(
+    seeded_repository: SqlAlchemyProviderRepository, db_path: Path
+) -> None:
+    links = SqlAlchemyProviderLinkRepository(create_sqlite_engine(db_path))
+    registered = EntityMatch(
+        "p1", "10000000001", MatchStatus.REGISTERED, MatchStrategy.NAME, 0.9, "A"
+    )
+    second = EntityMatch("p2", "10000000001", MatchStatus.REGISTERED, MatchStrategy.NAME, 0.9, "A")
+    ambiguous = EntityMatch(
+        "p3", "10000000002", MatchStatus.AMBIGUOUS, MatchStrategy.NAME, 0.3, None
+    )
+    no_coords = EntityMatch(
+        "p4", "10000000004", MatchStatus.REGISTERED, MatchStrategy.NAME, 0.9, "D"
+    )
+    links.replace_all(
+        [
+            ProviderLink(make_place("p1", "Alpha Therapy"), registered),
+            ProviderLink(make_place("p2", "Alpha Therapy North", postcode="4000"), second),
+            ProviderLink(make_place("p3", "Beta Supports"), ambiguous),
+            ProviderLink(make_place("p4", "Delta Revoked"), no_coords),
+        ]
+    )  # fmt: skip
+    with create_sqlite_engine(db_path).begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE provider_links SET latitude = -27.46, longitude = 153.02 "
+                "WHERE place_id = 'p2'"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE provider_links SET latitude = NULL, longitude = NULL WHERE place_id = 'p4'"
+            )
+        )
+    assert seeded_repository.exact_coordinates() == {
+        "10000000001": (Coordinates(-27.48, 153.01), Coordinates(-27.46, 153.02)),
+    }
+
+
+def test_find_by_abns_keeps_the_given_order_and_skips_unknown(
+    seeded_repository: SqlAlchemyProviderRepository,
+) -> None:
+    providers = seeded_repository.find_by_abns(["10000000005", "99999999999", "10000000001"])
+    assert [provider.abn for provider in providers] == ["10000000005", "10000000001"]
+    assert providers[1].registration_groups == SEED_PROVIDERS[0].registration_groups
+    assert seeded_repository.find_by_abns([]) == ()
+
+
+def test_postcode_centroids_round_trip_and_replace(db_path: Path) -> None:
+    repository = SqlAlchemyPostcodeCentroids(create_sqlite_engine(db_path))
+    repository.replace_all(SEED_CENTROIDS)
+    found = repository.coordinates_for(["4101", "4101", "9999", "3000"])
+    assert found == {
+        "4101": Coordinates(-27.484254, 153.009661),
+        "3000": Coordinates(-37.8142, 144.9632),
+    }
+    repository.replace_all(SEED_CENTROIDS[:1])
+    assert repository.coordinates_for(["4000", "4101"]) == {"4000": SEED_CENTROIDS[0].coordinates}
+    with create_sqlite_engine(db_path).connect() as connection:
+        row = connection.execute(text("SELECT * FROM postcode_centroids")).one()
+    assert tuple(row) == ("4000", -27.468448, 153.023002, 10)
 
 
 def test_support_items_round_trip_exact_decimals(

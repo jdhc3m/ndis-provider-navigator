@@ -15,6 +15,7 @@ import openpyxl
 import pytest
 
 from ndis.adapters.sqlite_repository import (
+    SqlAlchemyPostcodeCentroids,
     SqlAlchemyProviderRepository,
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
@@ -29,6 +30,7 @@ from ndis.domain.entities import (
     SupportItem,
 )
 from ndis.domain.entity_resolution import MapsPlace
+from ndis.domain.geo import Coordinates, PostcodeCentroid
 from ndis.domain.register import website_domain
 
 REGISTER_HEADER = (
@@ -170,6 +172,66 @@ def db_path(tmp_path: Path) -> Path:
 def seeded_repository(db_path: Path) -> SqlAlchemyProviderRepository:
     repository = SqlAlchemyProviderRepository(create_sqlite_engine(db_path))
     repository.replace_all(SEED_PROVIDERS, SEED_OUTLETS)
+    return repository
+
+
+# --- Postcode centroids ------------------------------------------------------------------
+
+# The header of ``australian_postcodes.csv`` (only ``postcode``, ``lat`` and ``long`` matter).
+POSTCODES_HEADER = (
+    "id,postcode,locality,state,long,lat,dc,type,status,sa3,sa3name,sa4,sa4name,region,"
+    "Lat_precise,Long_precise,SA1_MAINCODE_2011,SA1_MAINCODE_2016,SA2_MAINCODE_2016,"
+    "SA2_NAME_2016,SA3_CODE_2016,SA3_NAME_2016,SA4_CODE_2016,SA4_NAME_2016,RA_2011,RA_2016,"
+    "MMM_2015,MMM_2019,ced,altitude,chargezone,phn_code,phn_name,lgaregion,lgacode,electorate,"
+    "electoraterating,sed_code,sed_name,SA1_MAINCODE_2021,SA2_CODE_2021,SA2_NAME_2021,"
+    "SA3_CODE_2021,SA3_NAME_2021,SA4_CODE_2021,SA4_NAME_2021,RA_2021,MMM_2021,"
+    "VIC_LGA_CODE_2021,VIC_LGA_NAME_2021"
+)
+_POSTCODE_TRAILER = "," * (POSTCODES_HEADER.count(",") - 5)
+
+# Real locality rows: Brisbane City (two localities), South Brisbane and West End (the same
+# point, as in the source), Toowoomba (two), Cairns, Sydney, Parramatta and Melbourne (one
+# each), plus a PO box row with no location, which the source writes as ``0,0``.
+POSTCODE_ROWS = [
+    f"1,4000,BRISBANE,QLD,153.0281,-27.4679{_POSTCODE_TRAILER}",
+    f"2,4000,BRISBANE CITY,QLD,153.0178,-27.4689{_POSTCODE_TRAILER}",
+    f"3,4001,BRISBANE GPO BOXES,QLD,0,0{_POSTCODE_TRAILER}",
+    f"4,4101,SOUTH BRISBANE,QLD,153.009661,-27.484254{_POSTCODE_TRAILER}",
+    f"5,4101,WEST END,QLD,153.009661,-27.484254{_POSTCODE_TRAILER}",
+    f"6,4350,TOOWOOMBA,QLD,151.9539,-27.5598{_POSTCODE_TRAILER}",
+    f"7,4350,WESTBROOK,QLD,151.7515,-27.5928{_POSTCODE_TRAILER}",
+    f"8,4870,CAIRNS,QLD,145.742303,-16.923761{_POSTCODE_TRAILER}",
+    f"9,2000,SYDNEY,NSW,151.2099,-33.8697{_POSTCODE_TRAILER}",
+    f"10,2150,PARRAMATTA,NSW,151.0,-33.815{_POSTCODE_TRAILER}",
+    f"11,3000,MELBOURNE,VIC,144.9632,-37.8142{_POSTCODE_TRAILER}",
+]
+
+
+def write_postcodes(path: Path, rows: list[str]) -> Path:
+    path.write_text("\n".join([POSTCODES_HEADER, *rows]) + "\n", encoding="utf-8-sig")
+    return path
+
+
+@pytest.fixture
+def postcodes_csv(tmp_path: Path) -> Path:
+    return write_postcodes(tmp_path / "australian_postcodes.csv", POSTCODE_ROWS)
+
+
+# Centroids the seeded providers and tests measure from (4000, 4101, 4350 from the real
+# file's means; 2150 Parramatta and 3000 Melbourne so interstate providers get a distance).
+SEED_CENTROIDS = [
+    PostcodeCentroid("4000", Coordinates(-27.468448, 153.023002), 10),
+    PostcodeCentroid("4101", Coordinates(-27.484254, 153.009661), 7),
+    PostcodeCentroid("4350", Coordinates(-27.576308, 151.852689), 52),
+    PostcodeCentroid("2150", Coordinates(-33.815, 151.000), 3),
+    PostcodeCentroid("3000", Coordinates(-37.8142, 144.9632), 1),
+]
+
+
+@pytest.fixture
+def seeded_centroids(db_path: Path) -> SqlAlchemyPostcodeCentroids:
+    repository = SqlAlchemyPostcodeCentroids(create_sqlite_engine(db_path))
+    repository.replace_all(SEED_CENTROIDS)
     return repository
 
 
