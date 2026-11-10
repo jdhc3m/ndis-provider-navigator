@@ -1,327 +1,278 @@
 # NDIS Provider Navigator
 
-A portfolio project for grounded NDIS provider discovery and deterministic pricing
-in Brisbane. **This repository currently contains tooling, register ingestion,
-catalogue price limits, Maps-to-register entity resolution and polite website page
-collection only, not a working provider navigator.** Python 3.12, FastAPI,
-Pydantic v2, SQLAlchemy 2 and uv; the front end (ticket 09) is React/TypeScript in `web/`.
-
-## Development
-
-```sh
-uv sync --locked
-uv run pre-commit install
-uv run ruff check . && uv run ruff format --check .
-uv run mypy && uv run lint-imports && uv run pytest
-uv run python scripts/check_no_stubs.py
-uv run python scripts/check_private_data.py --tracked
-pnpm --dir web check   # when web/ changed: typecheck, lint, format, test, build
-```
-
-Requires uv ≥ 0.13.7, the version CI pins; older uv cannot read the lockfile.
-`uv.lock` is always resolved against PyPI by the CI `quality` job, which uploads
-it as the `uv-lock` artifact and fails when the committed file differs. If your
-machine resolves through a package mirror, do not commit the lock it writes:
-run `git update-index --skip-worktree uv.lock` in your checkout, and after a
-dependency change download the artifact from the failing run and commit that
-(`git update-index --no-skip-worktree uv.lock` first).
-
-Run `uv run pytest -m eval --no-cov` once model-backed evaluation tests are added (the 80% coverage gate applies to the unit/integration run only, matching CI). CI gives
-a visible notice when the suite or a usable model/key is unavailable. No LLM key
-is required for tickets 00–04. Personal model configuration belongs in
-`~/.config/ndis/.env` (see `.env.example`); environment-file loading is not built yet.
-Never use workplace credentials.
-
-## Web front end
-
-`web/` is the page over `POST /ask`: React 19, TypeScript strict, Vite, Tailwind v4,
-built and checked with pnpm. Design decisions follow `web/design-system/MASTER.md`
-(generated with the `ui-ux-pro-max` skill); the tokens it defines live in
-`web/src/styles/tokens.css`, and every component colour references a token. The page
-hard-codes no model, vendor or data date: the header reads them from `GET /meta`.
-
-Prerequisites: Node 22 and pnpm 11 (Corepack picks the version from the
-`packageManager` field).
-
-```sh
-pnpm --dir web install
-
-# Develop against the API (two terminals). The dev server runs on :5173, which the
-# API allows through CORS; use CORS_ORIGINS=http://localhost:5175 (comma-separated)
-# if yours runs elsewhere.
-NDIS_DB_PATH=data/ndis.db uv run uvicorn ndis.api.app:app --port 8000
-pnpm --dir web dev
-
-# Without a model endpoint: fixtures for the answer, refusal, empty and error states.
-VITE_MOCK_API=1 pnpm --dir web dev        # then open /?mock=answer|refusal|empty|error
-
-# Build and serve from FastAPI: the bundle in web/dist is mounted at / after the
-# API routes (WEB_DIST_DIR overrides the location), so http://localhost:8000/ is the page.
-pnpm --dir web build
-uv run uvicorn ndis.api.app:app --port 8000
-
-# Regenerate the typed client after an API change. openapi.json is ignored; the
-# committed artefact is web/src/api/schema.d.ts, and CI fails if it is stale.
-uv run python scripts/export_openapi.py openapi.json && pnpm --dir web gen:schema
-
-pnpm --dir web check                     # typecheck + lint + format:check + test + build
-```
-
-`web/.env.development` points the dev server at `http://localhost:8000`; a production
-build uses the same origin it is served from. Screenshots of the fixture-backed states
-are under `docs/screenshots/`.
-
-## Register ingestion
-
-```sh
-uv run python scripts/fetch_public_data.py --only register   # -> data/public/register.csv
-uv run python scripts/load_register.py                        # -> data/ndis.db, logs counts
-uv run python scripts/fetch_public_data.py --only postcodes  # -> data/public/australian_postcodes.csv
-uv run python scripts/load_postcodes.py                       # -> data/ndis.db (postcode_centroids), logs counts
-uv run uvicorn ndis.api.app:app                               # GET /providers?state=&postcode=&group=&status=&brisbane_area=&near=&max_km=&limit=&offset=
-```
-
-The fetch script rejects (and deletes) a download that is not over 30 MB with more
-than 25,000 distinct ABNs, which catches the truncated file the Commission's server
-returns to non-browser user agents. The loader reads the CSV row by row and holds the
-parsed providers/outlets in memory before one atomic write (~85 MB peak for the full
-register); it stores one provider per ABN and one outlet per row nationally, and flags
-`brisbane_area` when a head office or outlet postcode is in 4000–4207 or 4300–4305.
-`NDIS_DB_PATH` overrides the database path.
-
-### Distance ranking
-
-`GET /providers?near=4101` ranks the whole matched set by straight-line distance from
-the centroid of postcode 4101 before the page is cut (nearest first, providers without a
-distance last); `&max_km=5` keeps only providers within 5 km inclusive and requires
-`near`; the cut-off is applied to the one-decimal `km` the response shows, so a provider
-listed at 5.0 km is kept by `max_km=5` and one at 5.1 km is not. Each item carries
-`distance: {km, source}` and the page carries `distance_origin`; an unknown `near`
-postcode is a 422 with a readable `detail`, and `max_km` without `near` is a 422.
-`POST /ask` uses the intent's postcode, when there is one, as the origin in the same way
-and reports the exact/centroid/unmeasured counts in the `provider_filter` step; an
-unknown postcode falls back to the unranked list and says so.
-
-**Distance is approximate.** A provider whose Google Maps listing resolved to its ABN
-(`match_status = registered` in `provider_links`) is measured from that listing's
-coordinates (`source: "exact"`; with several listings, the nearest one). Every other
-provider is measured from the centroid of its head-office postcode
-(`source: "postcode_centroid"`), which can be tens of kilometres off in large rural
-postcodes; a provider with neither has `distance: null` and is dropped by `max_km`. All
-distances are great-circle (haversine) kilometres, not driving distances.
-
-Postcode centroids come from Matthew Proctor's Australian postcodes database
-(<https://www.matthewproctor.com/australian_postcodes>, CSV at
-<https://github.com/matthewproctor/australianpostcodes>), one row per locality with
-`lat`/`long`; retrieved 2026-11-10 (18,559 rows, 3,173 postcodes with a location). The
-author describes it as free and "regarded as public domain"; the repository carries no
-LICENSE file. The loader takes the mean of every located row per postcode (the source
-writes `0,0` when a locality has no location and those rows are skipped) and replaces
-the `postcode_centroids` table with one row per postcode. It also drops Australia Post
-codes that are not places (`NON_GEOGRAPHIC_POSTCODES` in `domain/geo.py`, currently
-only 9999 "NORTH POLE", the Santa-mail address): the file geocodes 9999 to Melbourne
-GPO as an ordinary `Delivery Area` row, so no column distinguishes it and an explicit
-list is the only clean rule — it removes 1 of 3,174 postcodes, and `near=9999` is a 422.
-PO-box and large-volume-receiver postcodes (`type` `Post Office Boxes`/`LVR`, 423
-postcodes, 19 registered providers list one as their head office) are kept: they are
-geocoded to the post office or mail centre that serves the boxes, a real place in the
-same city, which is the best origin available for a provider whose only address is a
-box (its distance is still labelled `postcode_centroid`, approximate). The fetch script
-rejects a download that is not over 1 MB with more than 2,500 located postcodes
-including 4000, 4101 and 4350.
-
-## Support catalogue and price limits
-
-```sh
-uv run python scripts/fetch_public_data.py --only catalogue  # -> data/public/support_catalogue.xlsx
-uv run python scripts/load_catalogue.py                       # -> data/ndis.db (support_items), logs counts
-uv run uvicorn ndis.api.app:app                               # GET /price-limits?item=&state=&remoteness=
-```
-
-**Source.** "NDIS Support Catalogue 2026-27" (XLSX), linked from the NDIA page
-<https://www.ndis.gov.au/providers/pricing-and-payments/pricing/what-support-catalogue>
-(reached from the Pricing Arrangements page) as
-<https://www.ndis.gov.au/media/8038/download?attachment>. The server names the file
-`NDIS-Support-Catalogue-2026-27 v1_1.xlsx` (128,678 bytes); the workbook's core
-properties carry no title or version, only a last-modified stamp of 2026-07-02T04:45:32Z.
-Every row has a start date of 1–3 July 2026. The ndis.gov.au server answers only
-browser-like user agents, so the fetch script sends one; it never relaxes TLS or proxy
-settings. The XLSX is downloaded under the ignored `data/public/` and never committed. No
-LLM is involved anywhere in this path.
-
-**Verification.** The download is written to `.part` and kept only if it is over 100 KB and
-contains more than 900 distinct support item numbers whose start date falls in 2026-27, so
-an HTML error page, a truncated workbook or an older catalogue is deleted instead of kept.
-The loader additionally refuses to write when fewer than 95% of rows parse.
-
-**Sheets and columns.** Both sheets, `Current Support Items` (976 rows) and
-`Legacy Support Items` (41 rows, items that end during 2026-27), share one header. The
-columns used are:
-
-| Column header | Field |
-| --- | --- |
-| `Support Item Number` | `item_number` (primary key) |
-| `Support Item Name` | `name` |
-| `Registration Group Number` | `registration_group_number` (text, keeps the leading zero) |
-| `Registration Group Name` | `registration_group_name` |
-| `Unit` | `unit` (`H`, `E`, `D`, `WK`, `MON`, `YR`) |
-| `Quote` | `quotable` (`Yes`/`No`) |
-| `Start date` | `start_date` (`YYYYMMDD`; must fall in 2026-27) |
-| `End Date` | `end_date` (`99991231` → `null`, open-ended) |
-| `National` | `limits.national` |
-| `Remote` | `limits.remote` |
-| `Very Remote` | `limits.very_remote` |
-
-Support category, claim-type flags (`Non-Face-to-Face Support Provision`, `Provider
-Travel`, …) and `Type` are not loaded. The sheet is read in order and the first row for an
-item number wins, so a current item shadows a legacy duplicate (none exist in v1.1).
-
-**Prices.** The 2026-27 catalogue publishes one `National` limit plus `Remote` and
-`Very Remote` tiers; unlike earlier catalogues it has no per-state columns, so every
-state shares the national figure. `price_limit(item, state, remoteness)` in `domain/`
-still validates the state and returns the tier's `Decimal`, or `None` for quotable and
-unpriced items (SIL weekly items, for example). Excel stores the prices as doubles
-(`271.58999999999997` for 271.59); the parser takes Python's shortest round-trip text of
-the cell and rejects anything that is not whole cents, so no rounding ever happens.
-Limits are stored in SQLite as decimal text (`"82.57"`) and returned by the API as
-strings. `GET /price-limits?item=01_002_0107_1_1&state=QLD` returns the national limit
-with all three tiers; `remoteness=remote|very_remote` selects a tier; an unknown item is
-404, an invalid state or remoteness is 422. Item numbers are matched exactly and
-case-sensitively after trimming whitespace, because the catalogue contains the mixed-case
-item number `Bereavement` alongside the usual `01_002_0107_1_1` form.
-
-## Pricing rules RAG
-
-```sh
-uv run python scripts/fetch_public_data.py --only pricing_pdf  # -> data/public/pricing_arrangements.pdf
-uv run python scripts/build_rule_index.py                      # -> data/rule_index.db, embeds with cache
-uv run python scripts/rule_retrieval_report.py --answers       # -> reports/retrieval.md
-uv run uvicorn ndis.api.app:app                                # POST /ask-rule {"question": "..."}
-```
-
-**Source.** "NDIS Pricing Arrangements and Price Limits 2025-26 v1.1" (PDF, 104 pages),
-linked from
-<https://www.ndis.gov.au/providers/pricing-and-payments/pricing/pricing-arrangements>
-as <https://www.ndis.gov.au/media/8096/download?attachment>. The 2026-27 "pricing
-schedules" on that page are price tables only; the written pricing rules (cancellations,
-travel, GST, non-face-to-face claiming, …) live in this document, so this is the one the
-index is built from. The media id changes with each new version; update
-`PRICING_PDF_URL` in `scripts/fetch_public_data.py` and the README when a later release
-is published. The download is kept only if it is a readable PDF of at least 50 pages over
-500 KB; the site answers only browser-like user agents (and, on some networks, rejects
-curl outright while a plain `urllib` request with the same header passes).
-
-**Index.** `scripts/build_rule_index.py` chunks every page with two strategies — fixed
-600-estimated-token windows and heading-aware chunks cut at the document's
-table-of-contents section boundaries — and embeds each chunk once through the bounded
-adapter, keyed by content hash in `data/private/embedding_cache.db`, so a rerun or a
-resumed run never re-embeds a chunk. Chunks and vectors live in `data/rule_index.db`
-(sqlite-vec, one vec0 table per strategy). The whole corpus is ~460 chunks and builds in
-a few paced minutes on the free tier.
-
-**Asking.** `POST /ask-rule` embeds the question, retrieves the top chunks of the
-configured strategy (`RULE_CHUNK_STRATEGY`, default `heading`), refuses with
-`refused: true` and a reason when the top similarity is under the threshold
-(`RULE_SIMILARITY_THRESHOLD`, default 0.65 — see `reports/retrieval.md` for the measured
-spread), or asks the judge model, which must claim support and cite pages. Every citation
-is checked in `domain` to be a verbatim span of a retrieved chunk from the cited page; an
-answer with no surviving citation is refused, never returned. The API answers only from
-the built index (503 until `build_rule_index.py` has run); it never quotes a span the
-document does not contain and never gives funding advice.
-
-## Entity resolution (Maps places → register)
-
-```sh
-uv run python scripts/resolve_entities.py   # reads data/private/maps_brisbane.db, writes provider_links,
-                                            # evals/er_sample.yaml and reports/entity_resolution.md
-```
-
-The script stops with an error when the private Maps export is missing. Each place is
-linked by website domain first, then by normalised name, then by a `rapidfuzz` ratio over
-the Brisbane-area subset with threshold 92. When a shared franchise domain or a common name
-maps to several ABNs, only an exact name agreement or the place's postcode may break the
-tie; otherwise the place is `ambiguous` with the candidates listed, and a lone name hit far
-from Brisbane is `ambiguous` too. `gov.au` websites and Google categories on an explicit
-non-provider deny list get `not_a_provider` unless the register knows them. Results go
-to the `provider_links` table in `data/ndis.db` with `match_status` ∈ {registered,
-unregistered, revoked_or_banned, ambiguous, not_a_provider}, a strategy and a confidence.
-Fuzzy matches are never treated as registration evidence. The 50-row sample is stratified
-by (status, strategy) and holds only Maps titles and register names/ABNs; the owner fills
-`verdict:` and `uv run pytest -m eval --no-cov` reports precision over the filled labels
-(and skips visibly when none are filled). See [the report](reports/entity_resolution.md).
-
-## Website evidence (polite page collection)
-
-```sh
-uv run python scripts/collect_pages.py [--refresh] [--limit N] [--dry-run]
-# seeds data/private/pages/ + page_meta from the Maps crawl, then fetches the gap live
-```
-
-For every `provider_links` row that is not `not_a_provider` (keyed by ABN when linked, by
-place id otherwise) the script picks one website, the register's `Website` column first and
-the Maps URL second, after normalising both (scheme added, host lower-cased, fragment and
-`utm_*`/`gclid` parameters dropped, mangled values such as `https://188 George Street`
-rejected). It first seeds the cache from the `ok` rows of the private Maps crawl's `pages`
-table (blank text is stored as `empty`), skipping any `(provider_key, url)` the database
-already holds so a crawl row never overwrites a later live result, then fetches live only
-for providers with no `ok` page stored, or for all of them with `--refresh`. `--dry-run`
-writes nothing: it counts the seeding and lists the fetches. Cleaned text is written to
-`data/private/pages/<sha256(url)[:16]>.txt` (ignored by Git); the `page_meta` table in
-`data/ndis.db` holds only `url`, `provider_key`, `fetched_at`, `status`, `text_hash`,
-`source` (`maps_crawl` or `live`), `text_path` and `title`.
-
-The fetcher sends `User-Agent: ndis-provider-navigator/0.1 (+repo URL)`, reads `robots.txt`
-once per host (a 4xx means no rules; a 5xx, timeout or dropped connection means the rules are
-unknown and the site is recorded `robots_unavailable`, not fetched), keeps requests to one
-host at least 1 s apart (or the site's `Crawl-delay` if longer; over 30 s the site is
-recorded `crawl_delay_too_long` and left alone), times out after 10 s, abandons bodies over
-2 MB as `too_large`, records non-HTML answers as `empty` without reading them, and retries
-exactly once on a timeout, failed or dropped connection or 5xx, never on 4xx or a robots
-decision. Redirects are followed by hand for up to 5 hops, each hop through the robots check
-and pacing of its own host. `trafilatura` strips navigation, footers and comments. Statuses:
-`ok`, `empty`, `robots_disallowed`, `robots_unavailable`, `crawl_delay_too_long`, `timeout`,
-`http_error`, `connection_error`, `too_large`. No LLM is involved; nothing from the pages is
-published.
+Answers plain-language questions about NDIS providers and pricing over the real NDIS
+Commission provider register: a question is parsed into a structured intent and executed
+deterministically — register filters as SQL, price limits as a pure lookup in the official
+support catalogue, pricing-rule questions answered only with citations that are verbatim
+spans of the Pricing Arrangements document — and it refuses rather than guess. Where the
+model is used to read a provider's website, every service claim ships with the verbatim
+quote from that page and the register's own caveat that it does not record profession.
+Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, uv; the front end (`web/`, ticket 09) is
+React 19 + TypeScript strict + Vite + Tailwind v4 with pnpm.
 
 ## Architecture
 
-- `src/ndis/domain/`: pure entities and rules, no frameworks.
-- `src/ndis/application/`: ports and use cases, depends inward on domain.
-- `src/ndis/adapters/`: database, HTTP, model and tracing implementations.
-- `src/ndis/api/`: FastAPI composition; `web/`: React/TypeScript front end (ticket 09; replaces the Streamlit page and the `src/ndis/ui/` package).
+```mermaid
+flowchart TD
+    Web["web/ — React + TypeScript single page<br/>HTTP only; typed client generated from the OpenAPI schema"]
+    API["adapters/api — FastAPI<br/>/providers · /price-limits · /ask · /ask-rule · /meta"]
 
-Import-linter enforces inward dependencies and forbids framework dependencies in
-the inner layers. Standard-library imports are allowed. Strict typing covers
-domain and application; tests enforce at least 80% coverage of those layers.
-Empty layers in ticket 00 contain no business behavior to measure.
+    subgraph L["src/ndis — enforced inward: domain ← application ← adapters/api"]
+        APP["application — use cases over ports:<br/>Ask (intent → deterministic sections → output guard)<br/>AskRule (retrieve → judge → citation check)<br/>ListProviders (filter → rank by distance → page)<br/>GetPriceLimit · extraction use cases"]
+        DOM["domain — pure code, no frameworks:<br/>intent schema (total parser) · answer output guard<br/>citation span check · chunking · price_limit()<br/>haversine + postcode centroids · extraction confidence floor"]
+        ADP["adapters — SQLite repositories · sqlite-vec rule store<br/>OpenAI-compatible LLM client · caches · Langfuse tracing (optional)"]
+    end
 
-## Data sources and privacy
+    DB[("data/ndis.db<br/>providers · outlets · support items<br/>provider_links · page_meta · postcode_centroids")]
+    IDX[("data/rule_index.db<br/>sqlite-vec, fixed + heading chunks")]
+    PRIV[("data/private/<br/>embedding, extraction and page caches<br/>never committed")]
 
-The NDIS Commission public provider register is the provider source of record.
-Services will be supported by quotes from providers' websites, not inferred from
-registration groups. Pricing will come from the official support catalogue and
-Pricing Arrangements and Price Limits PDF. Download scripts, not source data,
-will be committed in subsequent tickets.
+    Web -->|"POST /ask"| API --> APP
+    APP --> DOM
+    APP --> ADP
+    ADP --> DB
+    ADP --> IDX
+    ADP --> PRIV
+```
 
-Maps exports are local bootstrap material only. Keep them and fetched page text
-under ignored `data/private/`; never stage them. The pre-commit hook blocks staged
-private data, and CI checks all tracked private paths. Database files, public
-downloads, local environment files and scraper directories are also ignored.
-The existing parent-directory exports must stay outside this repository.
+Four call sites go to the model — everything else is deterministic code:
 
-## Delivery harness
+| # | Call site | Where | Deterministic check behind it |
+| --- | --- | --- | --- |
+| 1 | Intent parse (question → JSON intent) | `POST /ask` | Total parser in `domain/intent.py`: an invalid part is dropped whole; `domain/answer.py`'s output guard re-checks the composed answer |
+| 2 | Service extraction (provider website → service claims) | `scripts/extract_services.py` (cache, then served by `/ask`) | Confidence floor `MIN_SERVED_CONFIDENCE` in `domain/extraction.py`; every quote re-verified verbatim against the stored page at answer time |
+| 3 | Rule judge (chunks → grounded answer or refusal) | `POST /ask-rule`, and the rule part of `POST /ask` | Similarity threshold refusal; every citation checked in `domain/pricing.py` to be a verbatim span of a retrieved chunk from the cited page |
+| 4 | Embeddings (rule-index build, per-question retrieval) | `scripts/build_rule_index.py`, `AskRule` | Content-hash disk cache; cosine-similarity gate before any judge call |
 
-One issue, worktree, branch and squash-merged PR per ticket. CI must be green and
-an independent Reviewer agent must post `APPROVE` as a PR comment before merge.
-`main` is protected with the required `quality` status check; no GitHub approving
-review is required because the project has a single account.
-See [resume state](docs/harness/STATE.md) for progress and next actions.
-Learning notes are added after each merge under `docs/learning/`.
+Import-linter enforces the layering; `web/` reaches the API only over HTTP. Tracing
+(Langfuse) wraps every model call site and is a no-op without keys.
+
+## Data sources and licences
+
+| Source | Used for | Licence / credit (checked 2026-11-10) |
+| --- | --- | --- |
+| [NDIS Commission registered provider CSV](https://www.ndiscommission.gov.au/provider-registration/find-registered-provider/download-csv) | Provider source of record (providers, outlets, registration groups, status) | [CC BY 4.0 Australia](https://www.ndiscommission.gov.au/copyright-and-disclaimer) — "© Commonwealth of Australia" |
+| [NDIS Support Catalogue 2026-27 (XLSX)](https://www.ndis.gov.au/providers/pricing-and-payments/pricing/what-support-catalogue) | Price limits, support item numbers, registration groups | NDIA website material under CC Attribution–NonCommercial 3.0 ([NDIA copyright page](https://www.ndis.gov.au/policies-rules-and-legal/using-our-websites-and-social-media/copyright)); attribute the NDIA |
+| [NDIS Pricing Arrangements and Price Limits 2025-26 v1.1 (PDF)](https://www.ndis.gov.au/providers/pricing-and-payments/pricing/pricing-arrangements) | The pricing-rule text the RAG index is built from | Same NDIA CC BY-NC 3.0 terms |
+| [Australian postcodes CSV](https://github.com/matthewproctor/australianpostcodes) (Matthew Proctor) | Postcode centroids for distance ranking | The source repository carries no licence file; the author describes the dataset as free and "regarded as public domain" |
+| Google Maps export of Brisbane providers (private) | Local bootstrap only: entity resolution and the page-collection seed | Owner's own export; lives under git-ignored `data/private/`, never committed |
+
+The register is the provider source of record; the register does not record profession, so
+services come from the provider's own website and are only ever shown with the quoted
+evidence and the caveat sentence. Downloaded source data is never committed — only the
+fetch scripts are.
+
+Two Python dependencies are worth naming: `pymupdf` (PDF chunking) is dual-licensed
+AGPL-3.0 or Artifex commercial — the only AGPL dependency — and `sqlite-vec` (the vector
+index) is MIT/Apache-2.0. Both read from the installed package metadata. The rest of the
+runtime stack (FastAPI, pydantic, SQLAlchemy, uvicorn, httpx, openpyxl, rapidfuzz,
+trafilatura, langfuse) is MIT/BSD/Apache.
+
+## Setup
+
+Prerequisites: Python 3.12 with [uv](https://docs.astral.sh/uv/) (CI pins ≥ 0.13.7), Node
+22 and pnpm (Corepack picks the exact version — if a global pnpm newer than the
+`packageManager` pin refuses to run, `corepack prepare pnpm@11.11.0 --activate` once). No
+key is needed to install, to run the unit/integration tests, or for the
+register/catalogue/postcode bootstrap.
+
+**Environment.** Copy `.env.example` to `~/.config/ndis/.env` and fill in
+`LLM_BASE_URL` (a hosted OpenAI-compatible chat endpoint), `LLM_MODEL`, `EMBED_MODEL` and
+`LLM_API_KEY`. The config module reads plain environment variables — there is no dotenv
+loader — so source it per shell before any key-dependent command:
+
+```sh
+set -a; source ~/.config/ndis/.env; set +a
+```
+
+Optional: `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` enable tracing; `RULE_*`,
+`NDIS_DB_PATH`, `WEB_DIST_DIR`, `EXTRACTION_DIR`, `PAGES_DIR` override defaults (see
+`src/ndis/config.py` and `src/ndis/api/dependencies.py`).
+
+**Public data** (downloads land in git-ignored `data/public/`, databases in `data/`):
+
+```sh
+uv sync --locked
+
+uv run python scripts/fetch_public_data.py --only register    # ~85 MB CSV; browser-UA guarded
+uv run python scripts/load_register.py                        # -> data/ndis.db (29,574 providers, 64,734 outlets)
+uv run python scripts/fetch_public_data.py --only catalogue   # NDIS Support Catalogue 2026-27
+uv run python scripts/load_catalogue.py                       # -> support_items (1,017)
+uv run python scripts/fetch_public_data.py --only postcodes   # Matthew Proctor CSV
+uv run python scripts/load_postcodes.py                       # -> postcode_centroids (3,173)
+```
+
+Every fetch is verified (minimum size, minimum distinct rows) and a bad download is
+deleted, not kept. **Key-dependent:** the rule index needs the embedding endpoint:
+
+```sh
+uv run python scripts/fetch_public_data.py --only pricing_pdf
+uv run python scripts/build_rule_index.py                     # ~460 chunks, paced minutes, pennies
+```
+
+**Private data (optional, local-only).** These steps fill in what the public sources
+cannot: which Maps places are register providers (exact coordinates for distance), and
+what each provider's website says it offers. All of them need the owner's Maps export as
+`data/private/maps_brisbane.db` and write only into `data/private/` plus two tables in
+`data/ndis.db` (`provider_links`, `page_meta`):
+
+```sh
+cp /path/to/maps-export.db data/private/maps_brisbane.db
+uv run python scripts/resolve_entities.py                     # -> provider_links (see reports/entity_resolution.md)
+uv run python scripts/collect_pages.py                        # polite fetch of provider pages (robots-aware)
+uv run python scripts/extract_services.py                     # LLM extraction, cached per provider; key + quota
+```
+
+Without these, everything still runs: provider cards carry register facts and distances
+only, and service evidence is simply absent (never invented). The full ~300-provider
+extraction run has not been done — the measured results below are over ten labelled sites.
+
+**Run:**
+
+```sh
+uv run uvicorn ndis.api.app:app --port 8000     # API on :8000; register_snapshot_date from data/public/register.csv
+pnpm --dir web install
+pnpm --dir web build                            # once, then restart uvicorn — the page is served at /
+```
+
+Then check, in order: `GET /meta` (configured models and data dates), `GET
+/providers?near=4101&max_km=5&limit=5` (ranked by distance), `GET
+/price-limits?item=15_056_0128_1_3&state=QLD` (catalogue limit, no model involved), and
+`POST /ask` with a question (needs the key; the rule part degrades to a refusal with
+reason `no_chunks` until `build_rule_index.py` has run). `POST /ask` with
+`"Which provider is best for my autistic child? Recommend one."` must refuse with reason
+`decision_request` — that refusal is the product.
+
+`docs/demo.md` is a five-minute demo script over these endpoints; `docs/recording-checklist.md`
+turns it into a 3-minute screen recording.
+
+**Tests and evals:**
+
+```sh
+uv run pytest                     # unit + integration; LLM mocked; no key, no data
+uv run pytest -m eval --no-cov    # the eval gate; replays committed captures, no quota
+```
+
+The eval gate enforces the floors in `evals/thresholds.yaml`. Suites that need `data/`
+(the register DB, the rule index, the private caches) skip with a visible notice when it
+is absent — CI never claims they passed. The gate spends no model quota: it replays
+committed captures and disk caches. Model calls made outside the gate (serving, index
+build) go through the hosted free tier, which throttles per minute and per day; the
+adapter retries and then fails loudly (HTTP 502), never degrades silently. Known wart:
+`evals/test_extraction.py` creates an
+empty `data/ndis.db` as a side effect, which can un-skip the register-backed suites on a
+later data-less run (listed under "Not built yet").
+
+**Development gates** (run before finishing any change; see `AGENTS.md`):
+
+```sh
+uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest
+uv run python scripts/check_no_stubs.py
+uv run python scripts/check_private_data.py --tracked
+pnpm --dir web check   # when web/ changed
+```
+
+`uv.lock` is resolved against PyPI by CI, which fails when the committed file differs; on
+a machine that resolves through a mirror, `git update-index --skip-worktree uv.lock` and
+restore the CI artifact (details in `docs/harness/STATE.md`).
+
+## Measured results
+
+Numbers are copied from the reports; each table names its source. Thresholds live in
+`evals/thresholds.yaml` and are never lowered to make a run green.
+
+**Service extraction** — per-service macro precision/recall over ten hand-labelled
+provider sites, LLM vs the earlier regex baseline (source:
+[reports/extraction.md](reports/extraction.md), 2026-11-09 run):
+
+| | LLM | regex baseline |
+| --- | --- | --- |
+| macro precision | **84%** | 56% |
+| macro recall | 90% | 93% |
+
+The baseline is scored on a different corpus (the Maps crawl's slug hits), so its higher
+recall partly measures the crawler's reach. Serve time applies the measured
+confidence floor (`MIN_SERVED_CONFIDENCE` = 0.75 in `domain/extraction.py`): every claim
+below the floor on the labelled set was an expression of interest, not an offered service;
+without the floor precision is 73.2% and recall identical.
+
+**Pricing-rule retrieval** — hit@3 over ten golden questions whose cited page was verified
+against the PDF (source: [reports/retrieval.md](reports/retrieval.md)):
+
+| chunking strategy | chunks | hit@3 |
+| --- | --- | --- |
+| fixed 600-token windows | 175 | 10/10 |
+| heading-aware | 284 | 10/10 |
+
+Refusal gate: the on-topic floor is top-1 similarity 0.751 (weakest golden question), the
+off-topic band tops out at 0.620; the threshold is 0.65, with the judge and the verbatim
+citation check behind it.
+
+**Eval gate** (source: `evals/thresholds.yaml` header notes; enforced by `pytest -m eval --no-cov`):
+
+| metric | floor | measured |
+| --- | --- | --- |
+| filter accuracy (12 golden /ask filter cases, exact match) | 0.85 | 12/12 = 1.0 |
+| rule hit@3 | 0.7 | 1.0 (both strategies) |
+| extraction macro precision (labelled sites, served claims) | 0.8 | 0.840 |
+| refusal recall (5 golden refusal/adversarial cases) | 1.0 | 5/5 = 1.0 |
+
+**Latency and cost** (source: [reports/cost.md](reports/cost.md), 2026-11-09 runs through
+the free tier of the configured hosted endpoint; dollars are what the measured usage would
+cost at published list prices):
+
+| pipeline step | n | p50 s | p95 s |
+| --- | --- | --- | --- |
+| intent parse (`POST /ask`) | 3 | 1.3 | 1.8 |
+| rule judge + answer (`POST /ask-rule`) | 3 | 1.7 | 2.6 |
+| question embedding (retrieval gate) | 2 | 0.7 | 2.2 |
+| service extraction (per page) | 3 | 1.4 | 1.6 |
+
+Cost over the golden set: intent parse $0.0056, rule-judge calls $0.0478 (measured, 50
+calls), extraction over the ten labelled sites $0.0484 (46 page calls), embeddings
+$0.0001. The eval gate itself costs nothing at run time — it replays committed captures.
+Judge-faithfulness agreement (agent labels vs the model judge on served answers):
+7/10 = 0.70, with 10 of 20 template rows still awaiting owner labels — full judge
+validation is not done (below).
 
 ## Not built yet
 
-Pricing Arrangements PDF rule retrieval; evidence-backed extraction; intent parsing and
-refusal guards; measured model evaluations; tracing; and the fresh-clone demo. No service
-or rule answer should be considered available at this stage; the provider endpoint lists
-register facts and straight-line distances only and the price-limit endpoint returns
-catalogue limits only.
+Honest list; nothing here should be assumed from the demo:
+
+- Fuzzy vector name match — provider names are matched exactly (domain, normalised name,
+  registered-Maps links); no fuzzy/vector name search for "something like".
+- Model routing — one configured model serves every step; no cheap/fast routing or
+  fallback selection.
+- Multi-turn conversations — `POST /ask` is one question in, one answer out.
+- Auth and rate limits — the API is unauthenticated and unthrottled; not for deployment.
+- PAPL version tracking — the rule index is built from PAPL 2025-26 v1.1; a new release
+  means re-fetching and rebuilding by hand (`PRICING_PDF_URL` in
+  `scripts/fetch_public_data.py`).
+- Full judge validation — 10 of the 20 `evals/judge_verdicts.yaml` rows await owner
+  labels; agreement is 0.70 over the agent-labelled ten only.
+- Nearest-outlet distance origin — a provider matched via a Brisbane outlet but with an
+  interstate head office is measured from the head-office postcode centroid; nearest
+  outlet would be better.
+- `exact_coordinates()` loads all registered provider links per request (fine at 223, an
+  obvious per-request query otherwise).
+- `/providers` SQL latency is ~3–9 s/query (register-scale join, pre-existing; `near`
+  ranking itself is ≈8 ms over 29,574 providers).
+- `evals/test_extraction.py` creates an empty `data/ndis.db` as a side effect, which can
+  un-skip the register-backed eval suites on a later data-less run.
+- Textarea border contrast 1.23:1 vs WCAG 1.4.11 in the web form.
+- The full ~300-provider extraction run is pending (≈ $1.34 at list prices, paced after
+  quota resets).
+
+## Learning notes
+
+One note per ticket under `docs/learning/` — decisions, rejected alternatives, numbers:
+[start here](docs/learning/LEARNING_LOG.md). Repo/harness state:
+[docs/harness/STATE.md](docs/harness/STATE.md).
+
+## Delivery harness
+
+One issue, worktree, branch and squash-merged PR per ticket; CI must be green and an
+independent Reviewer agent posts `APPROVE` on the PR before merge (`main` requires the
+`quality` and `web` checks). Nothing under `data/private/` is ever committed — the
+pre-commit hook blocks staging it and CI checks tracked paths; `git log --all -- data/private`
+must stay empty.
