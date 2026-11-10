@@ -29,9 +29,23 @@ A matcher that links each of the 415 Google Maps places in the private export to
 
 ## Check yourself
 
-1. Why is website domain a better first match key than business name, and when does it fail?
-2. Two Approved register rows share `rightathome.com.au`; the Maps title is `Right at Home Australia`, postcode 4064, and neither row is at 4064. What status does the matcher emit and why?
-3. Jackson fills 20 verdicts: 15 `correct`, 3 `incorrect`, 2 `unsure`. What precision does the eval report?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
+
+**Say it**
+
+1. In two sentences: what problem does entity resolution solve here, and why is it needed at all?
+2. Name the three matching strategies in the order they are tried.
+
+**Spot it**
+
+3. Which function decides the `match_status` of one Maps place, and which layer is it in?
+4. Where is the fuzzy threshold 92 defined, and which file does the actual `rapidfuzz` call?
+
+**Defend it**
+
+5. Why is website domain a better first match key than business name, and when does it fail?
+6. Two Approved register rows share `rightathome.com.au`; the Maps title is `Right at Home Australia`, postcode 4064, and neither row is at 4064. What status does the matcher emit and why?
+7. Jackson fills 20 verdicts: 15 `correct`, 3 `incorrect`, 2 `unsure`. What precision does the eval report?
 
 ## Numbers
 
@@ -44,4 +58,4 @@ A matcher that links each of the 415 Google Maps places in the private export to
 
 ---
 
-Answers: 1. A domain is chosen by the business and is unique per host, so an exact host match is strong evidence; names are shared (`Disability Support Services`) and spelt inconsistently. It fails on shared hosts (`facebook.com`, `wixsite.com`, bare `com.au`, which are excluded as evidence) and on franchises where one domain serves many ABNs (handled by the tie-break or `ambiguous`). 2. `ambiguous`, confidence 0.30, with both ABNs as candidates: neither candidate's normalised name equals the title, neither postcode matches, and being Brisbane-area is deliberately not a tie-breaker. 3. 15 ÷ (15 + 3) = 0.833; the 2 `unsure` rows are excluded from the denominator, and the eval prints "18 of 50 verdicts filled (2 unsure); precision 0.833 (15/18)". The provisional ≥ 0.9 bar would fail, which is the point of the gate.
+Answers: 1. The Google Maps export has 415 Brisbane places with names and websites but no ABN; the register has ABNs but no idea which Maps place is which business. Entity resolution decides which register row (if any) each Maps place is, so the app can show registration status for real places. 2. Website domain (strongest: one host, one business), then normalised name with postcode as tie-break, then `rapidfuzz` fuzzy ratio ≥ 92 over the Brisbane-area subset only. 3. `resolve_place()` in `src/ndis/domain/entity_resolution.py` — pure domain code; the SQLite reads happen outside it. 4. `FUZZY_THRESHOLD = 92.0` in `src/ndis/domain/entity_resolution.py`; the `rapidfuzz` import lives only in `src/ndis/adapters/fuzzy.py`, injected through the `FuzzyScorer` Protocol in `application/entity_resolution.py`. 5. A domain is chosen by the business and is unique per host, so an exact host match is strong evidence; names are shared (`Disability Support Services`) and spelt inconsistently. It fails on shared hosts (`facebook.com`, `wixsite.com`, bare `com.au`, which are excluded as evidence) and on franchises where one domain serves many ABNs (handled by the tie-break or `ambiguous`). 6. `ambiguous`, confidence 0.30, with both ABNs as candidates: neither candidate's normalised name equals the title, neither postcode matches, and being Brisbane-area is deliberately not a tie-breaker. 7. 15 ÷ (15 + 3) = 0.833; the 2 `unsure` rows are excluded from the denominator, and the eval prints "18 of 50 verdicts filled (2 unsure); precision 0.833 (15/18)". The provisional ≥ 0.9 bar would fail, which is the point of the gate.
