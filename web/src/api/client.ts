@@ -10,6 +10,7 @@ import type { components, paths } from './schema'
 
 export type AskOut = components['schemas']['AskOut']
 export type AskProviderOut = components['schemas']['AskProviderOut']
+export type DistanceOut = components['schemas']['DistanceOut']
 export type AskIntentOut = components['schemas']['AskIntentOut']
 export type ServiceMentionOut = components['schemas']['ServiceMentionOut']
 export type PriceLimitOut = components['schemas']['PriceLimitOut']

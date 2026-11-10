@@ -8,7 +8,8 @@ interface ProvidersColumnProps {
   examples: readonly string[]
 }
 
-/** Left column: the caveat line, then the provider cards or the empty state. */
+/** Left column: the caveat line, the distance origin (once, when the API ranked by it), then
+ * the provider cards in the order the API returned them, or the empty state. */
 export function ProvidersColumn({ answer, onPickExample, examples }: ProvidersColumnProps) {
   const filters = answer.intent?.provider_filters ?? null
   if (filters === null) {
@@ -33,6 +34,12 @@ export function ProvidersColumn({ answer, onPickExample, examples }: ProvidersCo
           showing {answer.providers.length} of {answer.provider_total} matched
         </p>
       </div>
+      {answer.distance_origin && answer.providers.length > 0 && (
+        <p className="text-sm text-muted-foreground">
+          Distances from <span className="font-bold text-foreground">{answer.distance_origin}</span>
+          , straight-line, nearest first.
+        </p>
+      )}
       {answer.caveat ? (
         <p className="rounded-md border-l-4 border-warning bg-warning-tint px-3 py-2 text-sm text-warning">
           <span className="font-bold">Caveat: </span>

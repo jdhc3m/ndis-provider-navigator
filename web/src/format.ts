@@ -1,4 +1,4 @@
-import type { AskIntentOut } from './api/client'
+import type { AskIntentOut, DistanceOut } from './api/client'
 
 /** `11111111111` → `11 111 111 111`, the way the ABR prints it. */
 export function formatAbn(abn: string): string {
@@ -25,6 +25,22 @@ export function formatDate(iso: string): string {
   return DATE_FORMAT.format(
     new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))),
   )
+}
+
+const KM_FORMAT = new Intl.NumberFormat('en-AU', {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+})
+
+/** `3.2` → `3.2 km`; the API already rounds to one decimal. */
+export function formatKm(km: number): string {
+  return `${KM_FORMAT.format(km)} km`
+}
+
+/** The muted label beside a distance: how it was measured. */
+export const DISTANCE_SOURCE_LABEL: Record<DistanceOut['source'], string> = {
+  exact: 'from Maps listing',
+  postcode_centroid: 'approx. — postcode centroid',
 }
 
 const MONEY_FORMAT = new Intl.NumberFormat('en-AU', {
