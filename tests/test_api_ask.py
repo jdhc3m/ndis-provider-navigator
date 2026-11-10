@@ -107,6 +107,7 @@ def test_ask_returns_the_combined_answer(
         },
         "providers": [],
         "provider_total": 1,
+        "distance_origin": None,
         "price": None,
         "price_error": None,
         "rule": None,
@@ -227,7 +228,9 @@ def test_ask_dependency_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv(RULE_INDEX_PATH_ENV, str(tmp_path / "absent-index.db"))
     monkeypatch.setattr(dependencies, "question_llm_client", lambda: StubCompleter())
     use_case = dependencies.ask_use_case(
-        dependencies.list_providers_use_case(dependencies.provider_repository()),
+        dependencies.list_providers_use_case(
+            dependencies.provider_repository(), dependencies.postcode_centroids()
+        ),
         dependencies.get_price_limit_use_case(dependencies.support_item_repository()),
         claim_evidence_source(),
     )
@@ -309,7 +312,9 @@ def test_ask_use_case_prices_tokens_for_the_configured_model(
 
     def build() -> Ask:
         return dependencies.ask_use_case(
-            dependencies.list_providers_use_case(dependencies.provider_repository()),
+            dependencies.list_providers_use_case(
+                dependencies.provider_repository(), dependencies.postcode_centroids()
+            ),
             dependencies.get_price_limit_use_case(dependencies.support_item_repository()),
             claim_evidence_source(),
         )

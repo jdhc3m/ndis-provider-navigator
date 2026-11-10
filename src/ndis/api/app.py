@@ -75,16 +75,22 @@ def list_providers(
     group: str | None = None,
     status: str | None = None,
     brisbane_area: bool | None = None,
+    near: str | None = None,
+    max_km: Annotated[float | None, Query(gt=0)] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = DEFAULT_PAGE_SIZE,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ProviderPageOut:
-    """List registered providers nationally, filtered and paginated."""
+    """List registered providers nationally, filtered and paginated. With ``near`` (a
+    postcode) the whole matched set is ranked by straight-line distance from that
+    postcode's centroid before the page is cut; ``max_km`` (inclusive) requires ``near``."""
     query = ProviderQuery(
         state=state,
         postcode=postcode,
         group=group,
         status=status,
         brisbane_area=brisbane_area,
+        near=near,
+        max_km=max_km,
         limit=limit,
         offset=offset,
     )
@@ -93,10 +99,11 @@ def list_providers(
     except InvalidQueryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return ProviderPageOut(
-        items=[ProviderOut.from_provider(provider) for provider in page.items],
+        items=[ProviderOut.from_ranked(ranked) for ranked in page.items],
         total=page.total,
         limit=page.limit,
         offset=page.offset,
+        distance_origin=page.distance_origin,
     )
 
 

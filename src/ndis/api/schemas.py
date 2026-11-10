@@ -2,15 +2,18 @@
 
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from ndis.application.ask import CombinedAnswer, Step
 from ndis.application.catalogue import PriceLimitResult
 from ndis.application.pricing import RuleAnswer
+from ndis.application.providers import RankedProvider
 from ndis.domain.answer import ServiceMention
 from ndis.domain.catalogue import CATALOGUE_TITLE
 from ndis.domain.entities import Provider
+from ndis.domain.geo import Distance
 from ndis.domain.intent import Intent
 
 
@@ -18,6 +21,21 @@ class AddressOut(BaseModel):
     suburb: str | None
     state: str | None
     postcode: str | None
+
+
+class DistanceOut(BaseModel):
+    """Straight-line kilometres from the origin postcode's centroid, to one decimal, and
+    whether it was measured from the provider's Maps listing (``exact``) or the centroid of
+    its head-office postcode (``postcode_centroid``, approximate)."""
+
+    km: float
+    source: Literal["exact", "postcode_centroid"]
+
+    @classmethod
+    def from_distance(cls, distance: Distance | None) -> "DistanceOut | None":
+        if distance is None:
+            return None
+        return cls(km=round(distance.km, 1), source=distance.source.value)
 
 
 class ProviderOut(BaseModel):
@@ -31,9 +49,14 @@ class ProviderOut(BaseModel):
     registration_expires_on: date
     registration_groups: list[str]
     brisbane_area: bool
+    distance: DistanceOut | None = None
 
     @classmethod
-    def from_provider(cls, provider: Provider) -> "ProviderOut":
+    def from_ranked(cls, ranked: RankedProvider) -> "ProviderOut":
+        return cls.from_provider(ranked.provider, ranked.distance)
+
+    @classmethod
+    def from_provider(cls, provider: Provider, distance: Distance | None = None) -> "ProviderOut":
         return cls(
             abn=provider.abn,
             business_name=provider.business_name,
@@ -49,14 +72,19 @@ class ProviderOut(BaseModel):
             registration_expires_on=provider.registration_expires_on,
             registration_groups=[group.name for group in provider.registration_groups],
             brisbane_area=provider.brisbane_area,
+            distance=DistanceOut.from_distance(distance),
         )
 
 
 class ProviderPageOut(BaseModel):
+    """One page of providers; ``distance_origin`` is the ``near`` postcode the distances
+    were measured from, ``null`` when the page is in register order without distances."""
+
     items: list[ProviderOut]
     total: int
     limit: int
     offset: int
+    distance_origin: str | None = None
 
 
 class PriceLimitsOut(BaseModel):
@@ -219,7 +247,8 @@ class ServiceMentionOut(BaseModel):
 
 
 class AskProviderOut(ProviderOut):
-    """One provider from the executed result page, with its verified service mentions."""
+    """One provider from the executed result page, with its verified service mentions and,
+    when the question named a postcode, its distance from that postcode."""
 
     services: list[ServiceMentionOut]
 
@@ -261,6 +290,7 @@ class AskOut(BaseModel):
     intent: AskIntentOut | None
     providers: list[AskProviderOut]
     provider_total: int
+    distance_origin: str | None
     price: PriceLimitOut | None
     price_error: str | None
     rule: AskRuleOut | None
@@ -279,7 +309,9 @@ class AskOut(BaseModel):
             else AskIntentOut.from_intent(result.intent, result.parse_rejections),
             providers=[
                 AskProviderOut(
-                    **ProviderOut.from_provider(provider).model_dump(),
+                    **ProviderOut.from_provider(
+                        provider, result.distances.get(provider.abn)
+                    ).model_dump(),
                     services=[
                         ServiceMentionOut.from_mention(mention)
                         for mention in result.services.get(provider.abn, ())
@@ -288,6 +320,7 @@ class AskOut(BaseModel):
                 for provider in result.providers
             ],
             provider_total=result.provider_total,
+            distance_origin=result.distance_origin,
             price=None if result.price is None else PriceLimitOut.from_result(result.price),
             price_error=result.price_error,
             rule=None if result.rule is None else AskRuleOut.from_result(result.rule),

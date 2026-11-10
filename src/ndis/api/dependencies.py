@@ -15,6 +15,7 @@ from ndis.adapters.embedding_cache import EmbeddingCache
 from ndis.adapters.llm_client import OpenAICompatibleClient
 from ndis.adapters.rule_vector_store import SqliteVecRuleStore
 from ndis.adapters.sqlite_repository import (
+    SqlAlchemyPostcodeCentroids,
     SqlAlchemyProviderRepository,
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
@@ -24,7 +25,7 @@ from ndis.application.ask import Ask, ClaimEvidenceSource, MissingIndexRuleAnswe
 from ndis.application.catalogue import GetPriceLimit, SupportItemRepository
 from ndis.application.extraction import TokenBudget
 from ndis.application.pricing import AskRule, EmbeddingClient
-from ndis.application.providers import ListProviders, ProviderRepository
+from ndis.application.providers import ListProviders, PostcodeCentroids, ProviderRepository
 from ndis.config import (
     embed_model,
     llm_api_key,
@@ -116,8 +117,17 @@ def support_item_repository_for(path: Path) -> SqlAlchemySupportItemRepository:
     return SqlAlchemySupportItemRepository(engine_for(path))
 
 
+@lru_cache(maxsize=8)
+def postcode_centroids_for(path: Path) -> SqlAlchemyPostcodeCentroids:
+    return SqlAlchemyPostcodeCentroids(engine_for(path))
+
+
 def provider_repository() -> ProviderRepository:
     return provider_repository_for(database_path().resolve())
+
+
+def postcode_centroids() -> PostcodeCentroids:
+    return postcode_centroids_for(database_path().resolve())
 
 
 def support_item_repository() -> SupportItemRepository:
@@ -126,8 +136,9 @@ def support_item_repository() -> SupportItemRepository:
 
 def list_providers_use_case(
     repository: Annotated[ProviderRepository, Depends(provider_repository)],
+    centroids: Annotated[PostcodeCentroids, Depends(postcode_centroids)],
 ) -> ListProviders:
-    return ListProviders(repository)
+    return ListProviders(repository, centroids)
 
 
 def get_price_limit_use_case(
