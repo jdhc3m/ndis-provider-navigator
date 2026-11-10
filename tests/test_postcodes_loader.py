@@ -32,11 +32,14 @@ def test_iter_postcode_rows_rejects_wrong_header(tmp_path: Path) -> None:
 
 def test_parse_postcodes_averages_localities_and_counts_rejections(postcodes_csv: Path) -> None:
     centroids, report = parse_postcodes(postcodes_csv)
-    assert report.input_rows == 11
+    assert report.input_rows == 12
     assert report.parsed_rows == 10
     assert dict(report.rejection_reasons) == {"missing_coordinates": 1}
+    assert report.excluded_rows == 1
+    assert report.parse_ratio == pytest.approx(10 / 11)
     by_postcode = {centroid.postcode: centroid for centroid in centroids}
-    # 4001 (PO boxes only, no location) has no centroid; the others have one each.
+    # 4001 (PO boxes only, no location) and 9999 (NORTH POLE, located but not a place) have
+    # no centroid; the others have one each.
     assert sorted(by_postcode) == ["2000", "2150", "3000", "4000", "4101", "4350", "4870"]
     brisbane = by_postcode["4000"]
     assert brisbane.locality_count == 2
@@ -45,6 +48,7 @@ def test_parse_postcodes_averages_localities_and_counts_rejections(postcodes_csv
     assert by_postcode["4870"].locality_count == 1
     assert "postcodes_persisted=0" in report.summary()
     assert "missing_coordinates=1" in report.summary()
+    assert "excluded_rows=1" in report.summary()
 
 
 def test_load_postcodes_persists_and_replaces(
@@ -54,7 +58,7 @@ def test_load_postcodes_persists_and_replaces(
     with caplog.at_level(logging.INFO):
         report = load_postcodes(postcodes_csv, repository)
     assert report.postcodes_persisted == 7
-    assert "postcode load: input_rows=11" in caplog.text
+    assert "postcode load: input_rows=12" in caplog.text
     found = repository.coordinates_for(["4101", "4870", "4001", "9999"])
     assert sorted(found) == ["4101", "4870"]
     assert found["4101"].latitude == pytest.approx(-27.484254)

@@ -289,7 +289,8 @@ def test_small_postcodes_fixture_is_rejected_for_size_and_count(postcodes_csv: P
 
 
 def test_postcodes_without_the_expected_queensland_rows_are_rejected(tmp_path: Path) -> None:
-    cairns_only = write_postcodes(tmp_path / "p.csv", [POSTCODE_ROWS[-1]])
+    cairns = next(row for row in POSTCODE_ROWS if "CAIRNS" in row)
+    cairns_only = write_postcodes(tmp_path / "p.csv", [cairns])
     problems = verify_postcodes(cairns_only, min_bytes=0, min_count=0)
     assert problems == ["file lacks located rows for postcodes ['4000', '4101', '4350']"]
 

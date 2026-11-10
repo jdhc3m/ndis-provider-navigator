@@ -119,6 +119,18 @@ class TestRanking:
         kept = [name for name, _ in rank_by_distance(self.ITEMS, max_km=4.999)]
         assert kept == ["near"]
 
+    def test_max_km_cuts_on_the_shown_one_decimal_value(self) -> None:
+        # 5.04 km is shown as 5.0 and kept; 5.06 km is shown as 5.1 and dropped. (5.05 is
+        # also shown as 5.0 — its binary float is just under 5.05 — and so is kept too.)
+        items = (
+            ("shown-5.0", Distance(5.04, DistanceSource.EXACT)),
+            ("shown-5.1", Distance(5.06, DistanceSource.EXACT)),
+            ("shown-5.0-too", Distance(5.05, DistanceSource.POSTCODE_CENTROID)),
+        )
+        assert [item.shown_km for _, item in items] == [5.0, 5.1, 5.0]
+        kept = [name for name, _ in rank_by_distance(items, max_km=5.0)]
+        assert kept == ["shown-5.0", "shown-5.0-too"]
+
     def test_max_km_drops_unmeasured_items(self) -> None:
         assert all(distance is not None for _, distance in rank_by_distance(self.ITEMS, 100.0))
         assert rank_by_distance((), max_km=1.0) == ()
@@ -162,6 +174,8 @@ class TestParsePostcodeRow:
             ({"postcode": "4101", "lat": "-95", "long": "153"}, "invalid_coordinates"),
             ({"postcode": "410", "lat": "-27", "long": "153"}, "invalid_postcode"),
             ({"postcode": None, "lat": "-27", "long": "153"}, "invalid_postcode"),
+            # NORTH POLE, geocoded to Melbourne GPO in the source but not a place.
+            ({"postcode": "9999", "lat": "-37.817403", "long": "144.956776"}, "non_geographic"),
         ],
     )
     def test_unusable_rows_are_rejected_with_a_reason(

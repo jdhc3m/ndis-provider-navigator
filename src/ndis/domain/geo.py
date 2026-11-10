@@ -11,6 +11,18 @@ from enum import StrEnum
 # b = 6356.7523 km), as recommended by the IUGG; the usual choice for haversine distances.
 EARTH_RADIUS_KM = 6371.0088
 
+# Australia Post codes that are not places. The postcode CSV geocodes them to the sorting
+# centre that handles the mail (9999 "NORTH POLE", the Santa-mail address, sits on Melbourne
+# GPO typed as an ordinary "Delivery Area"), so no column marks them: this explicit list is
+# the only clean rule. PO-box and large-volume-receiver postcodes are *not* listed — they
+# are geocoded to the real post office that holds the boxes, which is a fair origin for the
+# providers whose head office is a box there.
+NON_GEOGRAPHIC_POSTCODES = frozenset({"9999"})
+NON_GEOGRAPHIC_REASON = "non_geographic"
+
+# Kilometres are shown to one decimal; ``max_km`` is compared against that shown value.
+KM_DECIMALS = 1
+
 
 @dataclass(frozen=True)
 class Coordinates:
@@ -57,6 +69,12 @@ class Distance:
     km: float
     source: DistanceSource
 
+    @property
+    def shown_km(self) -> float:
+        """``km`` rounded to the decimals the API shows; ``max_km`` cuts on this value so a
+        provider displayed as 5.0 km is never dropped by ``max_km=5``."""
+        return round(self.km, KM_DECIMALS)
+
 
 @dataclass(frozen=True)
 class PostcodeCentroid:
@@ -87,11 +105,14 @@ def parse_postcode_row(row: Mapping[str, str | None]) -> tuple[str, Coordinates]
     The source writes ``0`` for ``lat``/``long`` when a locality has no location, so a zero
     pair is ``missing_coordinates``, not a point in the Gulf of Guinea. A postcode that is
     not four digits is ``invalid_postcode``; text that is not a number, or a number outside
-    the WGS 84 ranges, is ``invalid_coordinates``.
+    the WGS 84 ranges, is ``invalid_coordinates``; a code in ``NON_GEOGRAPHIC_POSTCODES``
+    is ``non_geographic`` even though the source gives it coordinates.
     """
     postcode = (row.get(COLUMN_POSTCODE) or "").strip()
     if not (postcode.isdigit() and len(postcode) == 4):
         raise PostcodeRowError("invalid_postcode")
+    if postcode in NON_GEOGRAPHIC_POSTCODES:
+        raise PostcodeRowError(NON_GEOGRAPHIC_REASON)
     try:
         latitude = float((row.get(COLUMN_LATITUDE) or "").strip())
         longitude = float((row.get(COLUMN_LONGITUDE) or "").strip())
@@ -156,14 +177,15 @@ def rank_by_distance[T](
 
     The sort is stable: items at the same distance, and all unmeasured items, keep the
     order they arrived in (the repository's business-name-then-ABN order). ``max_km`` is
-    inclusive — an item at exactly ``max_km`` is kept, one a hair further is dropped — and
-    it drops unmeasured items too, because nothing says they are within range.
+    inclusive and compared against the shown (one-decimal) kilometres — an item displayed
+    as 5.0 km is kept by ``max_km=5``, one displayed as 5.1 km is dropped — and it drops
+    unmeasured items too, because nothing says they are within range.
     """
     kept = items
     if max_km is not None:
         kept = [
             (item, distance)
             for item, distance in items
-            if distance is not None and distance.km <= max_km
+            if distance is not None and distance.shown_km <= max_km
         ]
     return tuple(sorted(kept, key=lambda pair: (pair[1] is None, pair[1].km if pair[1] else 0.0)))

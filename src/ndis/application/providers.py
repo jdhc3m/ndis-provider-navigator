@@ -222,11 +222,16 @@ class ListProviders:
         ]
         ranked = rank_by_distance(measured, query.max_km)
         page = ranked[query.offset : query.offset + query.limit]
-        providers = self._repository.find_by_abns([abn for abn, _ in page])
+        providers = {
+            provider.abn: provider
+            for provider in self._repository.find_by_abns([abn for abn, _ in page])
+        }
         return ProviderPage(
+            # A provider reloaded between the two reads is skipped rather than failing the page.
             items=tuple(
-                RankedProvider(provider, distance)
-                for provider, (_, distance) in zip(providers, page, strict=True)
+                RankedProvider(providers[abn], distance)
+                for abn, distance in page
+                if abn in providers
             ),
             total=len(ranked),
             limit=query.limit,

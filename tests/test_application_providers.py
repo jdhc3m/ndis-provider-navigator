@@ -42,7 +42,7 @@ class FakeRepository:
 
     def find_by_abns(self, abns: Sequence[str]) -> tuple[Provider, ...]:
         by_abn = {provider.abn: provider for provider in self.providers}
-        return tuple(by_abn[abn] for abn in abns)
+        return tuple(by_abn[abn] for abn in abns if abn in by_abn)
 
 
 class FakeCentroids:
@@ -108,6 +108,20 @@ def test_max_km_drops_far_and_unmeasured_providers_from_the_total() -> None:
     assert page.total == 3
     assert [r.provider.abn for r in page.items] == ["10000000004", "10000000001", "10000000002"]
     assert all(r.distance is not None and r.distance.km <= 2.5 for r in page.items)
+
+
+def test_a_provider_that_vanishes_between_the_two_reads_is_skipped() -> None:
+    repository = FakeRepository(EXACT)
+    repository.replace_all(SEED_PROVIDERS, [])
+    locations = repository.matched_locations(ProviderQuery(near="4101"))
+    # The register is reloaded after the ranking read: 4101's provider is gone.
+    repository.matched_locations = lambda query: locations  # type: ignore[method-assign]
+    repository.providers = [p for p in SEED_PROVIDERS if p.abn != "10000000004"]
+    page = ListProviders(repository, FakeCentroids(SEED_CENTROIDS))(
+        ProviderQuery(near="4101", limit=2)
+    )
+    assert page.total == 5
+    assert [r.provider.abn for r in page.items] == ["10000000001"]
 
 
 def test_unknown_or_unavailable_origin_is_an_error() -> None:

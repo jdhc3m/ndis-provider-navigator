@@ -35,7 +35,7 @@ class DistanceOut(BaseModel):
     def from_distance(cls, distance: Distance | None) -> "DistanceOut | None":
         if distance is None:
             return None
-        return cls(km=round(distance.km, 1), source=distance.source.value)
+        return cls(km=distance.shown_km, source=distance.source.value)
 
 
 class ProviderOut(BaseModel):

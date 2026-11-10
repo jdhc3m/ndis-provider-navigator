@@ -94,12 +94,13 @@ register); it stores one provider per ABN and one outlet per row nationally, and
 `GET /providers?near=4101` ranks the whole matched set by straight-line distance from
 the centroid of postcode 4101 before the page is cut (nearest first, providers without a
 distance last); `&max_km=5` keeps only providers within 5 km inclusive and requires
-`near`. Each item carries `distance: {km, source}` and the page carries
-`distance_origin`; an unknown `near` postcode is a 422 with a readable `detail`, and
-`max_km` without `near` is a 422. `POST /ask` uses the intent's postcode, when there is
-one, as the origin in the same way and reports the exact/centroid/unmeasured counts in
-the `provider_filter` step; an unknown postcode falls back to the unranked list and says
-so.
+`near`; the cut-off is applied to the one-decimal `km` the response shows, so a provider
+listed at 5.0 km is kept by `max_km=5` and one at 5.1 km is not. Each item carries
+`distance: {km, source}` and the page carries `distance_origin`; an unknown `near`
+postcode is a 422 with a readable `detail`, and `max_km` without `near` is a 422.
+`POST /ask` uses the intent's postcode, when there is one, as the origin in the same way
+and reports the exact/centroid/unmeasured counts in the `provider_filter` step; an
+unknown postcode falls back to the unranked list and says so.
 
 **Distance is approximate.** A provider whose Google Maps listing resolved to its ABN
 (`match_status = registered` in `provider_links`) is measured from that listing's
@@ -112,12 +113,22 @@ distances are great-circle (haversine) kilometres, not driving distances.
 Postcode centroids come from Matthew Proctor's Australian postcodes database
 (<https://www.matthewproctor.com/australian_postcodes>, CSV at
 <https://github.com/matthewproctor/australianpostcodes>), one row per locality with
-`lat`/`long`; retrieved 2026-11-10 (18,559 rows, 3,174 postcodes with a location). The
+`lat`/`long`; retrieved 2026-11-10 (18,559 rows, 3,173 postcodes with a location). The
 author describes it as free and "regarded as public domain"; the repository carries no
 LICENSE file. The loader takes the mean of every located row per postcode (the source
-writes `0,0` when a locality has no location and those rows are skipped) and stores one
-`postcode_centroids` row per postcode. The fetch script rejects a download that is not
-over 1 MB with more than 2,500 located postcodes including 4000, 4101 and 4350.
+writes `0,0` when a locality has no location and those rows are skipped) and replaces
+the `postcode_centroids` table with one row per postcode. It also drops Australia Post
+codes that are not places (`NON_GEOGRAPHIC_POSTCODES` in `domain/geo.py`, currently
+only 9999 "NORTH POLE", the Santa-mail address): the file geocodes 9999 to Melbourne
+GPO as an ordinary `Delivery Area` row, so no column distinguishes it and an explicit
+list is the only clean rule — it removes 1 of 3,174 postcodes, and `near=9999` is a 422.
+PO-box and large-volume-receiver postcodes (`type` `Post Office Boxes`/`LVR`, 423
+postcodes, 19 registered providers list one as their head office) are kept: they are
+geocoded to the post office or mail centre that serves the boxes, a real place in the
+same city, which is the best origin available for a provider whose only address is a
+box (its distance is still labelled `postcode_centroid`, approximate). The fetch script
+rejects a download that is not over 1 MB with more than 2,500 located postcodes
+including 4000, 4101 and 4350.
 
 ## Support catalogue and price limits
 
