@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-10 (Australia/Brisbane), after ticket 11 merged — all of tickets 00–11 are on `main` with green CI. Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); tickets 09–10 ran on the corporate Mac; ticket 11 ran on the second machine (user `jackson`, repo at `~/ndis-provider-navigator`).
+Updated: 2026-11-18 (Australia/Brisbane), after ticket 12 merged — **all of tickets 00–12, including the stretch, are on `main` with green CI; the week's brief is complete.** Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); tickets 09–10 ran on the corporate Mac; ticket 11 ran on the second machine (user `jackson`, repo at `~/ndis-provider-navigator`); ticket 12 was built on 2026-11-10 and its review/merge/bookkeeping ran on 2026-11-18 on the second machine. As of 2026-11-18 the second machine is the only available computer; nothing remaining depends on the corporate Mac — its proxy/mirror workarounds are irrelevant here, and every data input already exists on this machine (see "Done — ticket 11" and "Machine handoff"; the private bundle came via `jdhc3m/ndis-handoff`).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -243,7 +243,33 @@ updated. Facts the Builder of ticket 09 needs:
   demo.md answers it as two split questions; Langfuse keys are empty in
   `~/.config/ndis/.env` on this machine so tracing was verified only via the
   `/ask` steps table and `/meta.tracing.configured=false` — for a live
-  Langfuse demo, ask the owner to add the keys.
+   Langfuse demo, ask the owner to add the keys.
+
+- Ticket 12 — Snowflake Cortex Search comparison, stretch (issue #13, PR #45,
+  squash `46179d7`). Note: `docs/learning/12-snowflake.md`; report:
+  `reports/snowflake.md`. The 284 served heading chunks + their 3072-dim
+  vectors were read out of the local `sqlite-vec` index and uploaded to a
+  personal Snowflake trial (`wt38369.ap-southeast-2`, key-pair service user
+  `NDIS_SERVICE`, no private data, no workplace credentials); a Cortex Search
+  service was created over a `VECTOR(FLOAT, 3072)` column and queried with
+  `SNOWFLAKE.CORTEX.SEARCH_PREVIEW` on the identical 10 golden questions +
+  off-topic case, same cached query embeddings. Trial accounts cannot run the
+  managed-embedding AI functions (`EMBED_TEXT_768 not available`), so
+  embeddings were pinned on both sides — a controlled serving-engine
+  comparison. Measured: hit@3 10/10 on both engines with identical top-3
+  ordering; off-topic case refused locally (0.620 < 0.65) but Cortex Search
+  has no refusal gate; latency median 283 ms Snowflake vs ~5 ms local;
+  0.1994 XSMALL credits + 0.0003 cloud-services credits for the whole
+  session (trial balance still $400/$400). Review: APPROVE, 0 must-fix
+  (approval record: PR comment 6974929604). Follow-ups (not ticketed):
+  hardcoded session constants in `scripts/snowflake_compare.py`'s report
+  block; no-op `TRUNCATE` + non-atomic DROP→CREATE in
+  `scripts/snowflake_load.py`; `snowflake_configured()` should also require
+  `SNOWFLAKE_DATABASE`/`SNOWFLAKE_SCHEMA`; bare KeyError when the PDF and
+  the built index drift; `.env.example` lacks the `SNOWFLAKE_*` keys;
+  "180–725 ms observed" in the note could say "individual runs". The trial
+  expires 28 days from 2026-11-10 — recreate user/warehouse/service if the
+  comparison is ever re-run.
 
 ## In progress
 
@@ -326,11 +352,20 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- All of tickets 00–11 are merged; the week's definition of done is met
-  (green CI, one note per ticket, reports present, README demo verified from
-  a fresh clone, `git log --all -- data/private` empty).
-- Ticket 12 — stretch (issue #13), only if time remains: Snowflake/Cortex
-  Search comparison → `reports/snowflake.md`. It is the only open issue.
-- This Foreman thread has processed tickets 09, 10 and 11 (limit 3 per
-  thread) — hand off now. A new Foreman starts from this file, the issue
-  list and the brief at `~/NDIS/HARNESS_PROMPT.md`.
+- **Nothing ticketed remains.** All of tickets 00–12 are merged (green CI, one
+  note per ticket, reports present, README demo verified from a fresh clone,
+  `git log --all -- data/private` empty). The week's definition of done is met
+  and the stretch closed. Issue #13 closed 2026-11-18; no open PRs.
+- Optional, not ticketed (owner decisions needed):
+  - The pending ~300-provider extraction run from ticket 08 (≈ $1.34 est.) —
+    CAN run on this machine (it reaches Gemini); pace it after the daily
+    free-tier quota resets, cache makes a rerun cheap.
+  - Fill the ER sample verdicts (`evals/er_sample.yaml`) and the remaining 10
+    judge verdicts — owner hand-labelling.
+  - Langfuse keys for a live-tracing demo (owner adds to `~/.config/ndis/.env`).
+  - Snowflake trial expires ~2026-12-08; only relevant if the comparison is
+    re-run.
+- This Foreman thread finished ticket 12's review/merge/bookkeeping
+  (1 ticket on this thread). A new Foreman starts from this file, the issue
+  list and the brief at `~/NDIS/HARNESS_PROMPT.md` — only if new work is
+  ticketed; there is none open.
