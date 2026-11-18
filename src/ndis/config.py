@@ -97,3 +97,56 @@ def rule_top_k() -> int:
         return max(1, int(raw))
     except ValueError:
         return 6
+
+
+def snowflake_account() -> str:
+    """The Snowflake account identifier, e.g. ``abcd1234.ap-southeast-2``."""
+    return os.environ.get("SNOWFLAKE_ACCOUNT", "").strip()
+
+
+def snowflake_user() -> str:
+    """The key-pair service user on the account."""
+    return os.environ.get("SNOWFLAKE_USER", "").strip()
+
+
+def snowflake_private_key_path() -> str:
+    """Path to the unencrypted PEM private key for the service user."""
+    return os.environ.get("SNOWFLAKE_PRIVATE_KEY", "").strip()
+
+
+def snowflake_role() -> str:
+    """The role the service session assumes."""
+    return os.environ.get("SNOWFLAKE_ROLE", "").strip()
+
+
+def snowflake_warehouse() -> str:
+    """The warehouse load/index queries run on."""
+    return os.environ.get("SNOWFLAKE_WAREHOUSE", "").strip()
+
+
+def snowflake_database() -> str:
+    """The database holding the rule chunks table and search service."""
+    return os.environ.get("SNOWFLAKE_DATABASE", "").strip()
+
+
+def snowflake_schema() -> str:
+    """The schema inside ``snowflake_database()``."""
+    return os.environ.get("SNOWFLAKE_SCHEMA", "").strip()
+
+
+def snowflake_search_service() -> str:
+    """The Cortex Search service name the comparison queries."""
+    return os.environ.get("SNOWFLAKE_SEARCH_SERVICE", "").strip()
+
+
+def snowflake_configured() -> bool:
+    """True when account, user, key, role and warehouse are all set."""
+    return all(
+        (
+            snowflake_account(),
+            snowflake_user(),
+            snowflake_private_key_path(),
+            snowflake_role(),
+            snowflake_warehouse(),
+        )
+    )

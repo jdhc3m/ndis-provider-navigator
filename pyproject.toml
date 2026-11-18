@@ -18,6 +18,11 @@ dependencies = [
     "langfuse>=5.2.0",
 ]
 
+[project.optional-dependencies]
+snowflake = [
+    "snowflake-connector-python>=3,<4",
+]
+
 [dependency-groups]
 dev = [
     "httpx>=0.27,<1",
