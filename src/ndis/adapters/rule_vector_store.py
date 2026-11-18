@@ -9,6 +9,7 @@ tables use the default L2 distance, so a cosine similarity is recovered as
 import math
 import sqlite3
 import struct
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -48,26 +49,35 @@ def similarity_from_distance(distance: float) -> float:
 
 
 class SqliteVecRuleStore:
-    """Read/write port over the rule index; the extension is loaded per connection."""
+    """Read/write port over the rule index; the extension is loaded per connection.
+
+    The API hands one store instance to every request, while FastAPI runs sync endpoints
+    on different threadpool workers, so the connection is opened with
+    ``check_same_thread=False`` and every statement — the schema setup, the reads and the
+    writes — is serialised through one re-entrant lock owned by the store.
+    """
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path)
+        self._lock = threading.RLock()
+        self._connection = sqlite3.connect(path, check_same_thread=False)
         self._connection.enable_load_extension(True)
         sqlite_vec.load(self._connection)
         self._connection.enable_load_extension(False)
-        with self._connection:
+        with self._lock, self._connection:
             self._connection.executescript(_SCHEMA)
 
     def close(self) -> None:
-        self._connection.close()
+        with self._lock:
+            self._connection.close()
 
     def dimension(self) -> int | None:
         """The embedding dimension the index was built with, or ``None`` when empty."""
-        row = self._connection.execute(
-            "SELECT value FROM rule_meta WHERE key = 'dimension'"
-        ).fetchone()
-        return int(row[0]) if row else None
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT value FROM rule_meta WHERE key = 'dimension'"
+            ).fetchone()
+            return int(row[0]) if row else None
 
     def replace_strategy(
         self, strategy: str, chunks: Sequence[PricingChunk], vectors: Sequence[Sequence[float]]
@@ -77,39 +87,43 @@ class SqliteVecRuleStore:
         The first build fixes the dimension in ``rule_meta``; a later build with a
         different dimension raises, because the virtual table cannot be re-dimensioned
         in place — delete the index file to rebuild for a different embedder."""
-        if len(chunks) != len(vectors):
-            raise ValueError("one vector per chunk required")
-        if not chunks:
-            self._drop_strategy(strategy)
-            return
-        dim = len(vectors[0])
-        known = self.dimension()
-        if known is not None and known != dim:
-            raise ValueError(f"index dimension {known} does not match embedding dimension {dim}")
-        table = self._vec_table(strategy)
-        with self._connection:
-            self._drop_strategy(strategy)
-            self._connection.execute(
-                f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING vec0(chunk_vector float[{dim}])"
-            )
-            if known is None:
+        with self._lock:
+            if len(chunks) != len(vectors):
+                raise ValueError("one vector per chunk required")
+            if not chunks:
+                self._drop_strategy(strategy)
+                return
+            dim = len(vectors[0])
+            known = self.dimension()
+            if known is not None and known != dim:
+                raise ValueError(
+                    f"index dimension {known} does not match embedding dimension {dim}"
+                )
+            table = self._vec_table(strategy)
+            with self._connection:
+                self._drop_strategy(strategy)
                 self._connection.execute(
-                    "INSERT INTO rule_meta (key, value) VALUES ('dimension', ?)", (str(dim),)
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} "
+                    f"USING vec0(chunk_vector float[{dim}])"
                 )
-            chunk_ids: list[int] = []
-            for chunk in chunks:
-                cursor = self._connection.execute(
-                    "INSERT INTO rule_chunks (strategy, page, text) VALUES (?, ?, ?)",
-                    (chunk.strategy, chunk.page, chunk.text),
+                if known is None:
+                    self._connection.execute(
+                        "INSERT INTO rule_meta (key, value) VALUES ('dimension', ?)", (str(dim),)
+                    )
+                chunk_ids: list[int] = []
+                for chunk in chunks:
+                    cursor = self._connection.execute(
+                        "INSERT INTO rule_chunks (strategy, page, text) VALUES (?, ?, ?)",
+                        (chunk.strategy, chunk.page, chunk.text),
+                    )
+                    chunk_ids.append(int(cursor.lastrowid))
+                self._connection.executemany(
+                    f"INSERT INTO {table} (rowid, chunk_vector) VALUES (?, ?)",
+                    [
+                        (chunk_id, struct.pack(f"{dim}f", *normalize(vector)))
+                        for chunk_id, vector in zip(chunk_ids, vectors, strict=True)
+                    ],
                 )
-                chunk_ids.append(int(cursor.lastrowid))
-            self._connection.executemany(
-                f"INSERT INTO {table} (rowid, chunk_vector) VALUES (?, ?)",
-                [
-                    (chunk_id, struct.pack(f"{dim}f", *normalize(vector)))
-                    for chunk_id, vector in zip(chunk_ids, vectors, strict=True)
-                ],
-            )
 
     def _drop_strategy(self, strategy: str) -> None:
         self._connection.execute("DELETE FROM rule_chunks WHERE strategy = ?", (strategy,))
@@ -125,36 +139,38 @@ class SqliteVecRuleStore:
         return f"rule_vec_{strategy}"
 
     def count(self, strategy: str) -> int:
-        row = self._connection.execute(
-            "SELECT COUNT(*) FROM rule_chunks WHERE strategy = ?", (strategy,)
-        ).fetchone()
-        return int(row[0]) if row else 0
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) FROM rule_chunks WHERE strategy = ?", (strategy,)
+            ).fetchone()
+            return int(row[0]) if row else 0
 
     def search(
         self, strategy: str, query_vector: Sequence[float], k: int
     ) -> tuple[ScoredChunk, ...]:
         """The ``k`` chunks of ``strategy`` nearest to the (normalised) query vector,
         nearest first; empty when the index holds no chunks of that strategy."""
-        if not self.count(strategy):
-            return ()
-        table = self._vec_table(strategy)
-        dim = self.dimension()
-        if dim is None:
-            return ()
-        if len(query_vector) != dim:
-            raise ValueError(f"query vector must have the index dimension {dim}")
-        query = struct.pack(f"{dim}f", *normalize(query_vector))
-        rows = self._connection.execute(
-            f"SELECT c.chunk_id, c.page, c.text, v.distance "
-            f"FROM {table} v JOIN rule_chunks c ON c.chunk_id = v.rowid "
-            f"WHERE c.strategy = ? AND v.chunk_vector MATCH ? AND k = ? "
-            f"ORDER BY v.distance",
-            (strategy, query, k),
-        ).fetchall()
-        return tuple(
-            ScoredChunk(
-                chunk=PricingChunk(strategy, page, text),
-                similarity=similarity_from_distance(distance),
+        with self._lock:
+            if not self.count(strategy):
+                return ()
+            table = self._vec_table(strategy)
+            dim = self.dimension()
+            if dim is None:
+                return ()
+            if len(query_vector) != dim:
+                raise ValueError(f"query vector must have the index dimension {dim}")
+            query = struct.pack(f"{dim}f", *normalize(query_vector))
+            rows = self._connection.execute(
+                f"SELECT c.chunk_id, c.page, c.text, v.distance "
+                f"FROM {table} v JOIN rule_chunks c ON c.chunk_id = v.rowid "
+                f"WHERE c.strategy = ? AND v.chunk_vector MATCH ? AND k = ? "
+                f"ORDER BY v.distance",
+                (strategy, query, k),
+            ).fetchall()
+            return tuple(
+                ScoredChunk(
+                    chunk=PricingChunk(strategy, page, text),
+                    similarity=similarity_from_distance(distance),
+                )
+                for _chunk_id, page, text, distance in rows
             )
-            for _chunk_id, page, text, distance in rows
-        )
