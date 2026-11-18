@@ -2,6 +2,8 @@
 
 import math
 import struct
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -122,6 +124,41 @@ def test_vectors_are_stored_unit_normalised(tmp_path: Path) -> None:
 def test_rule_index_missing_error_is_importable_and_raised_by_callers() -> None:
     """The error exists for the API layer; constructing it is enough here."""
     assert RuleIndexMissing("no index").args == ("no index",)
+
+
+# --- Thread safety (the API shares one store across request worker threads) ------------------
+
+
+def test_store_built_in_one_thread_is_usable_from_another(tmp_path: Path) -> None:
+    with ThreadPoolExecutor(max_workers=1) as builder:
+        store = builder.submit(SqliteVecRuleStore, tmp_path / "index.db").result()
+        builder.submit(store.replace_strategy, STRATEGY_FIXED, CHUNKS[:2], VECTORS[:2]).result()
+    with ThreadPoolExecutor(max_workers=1) as reader:
+        assert reader.submit(store.dimension).result() == 2
+        assert reader.submit(store.count, STRATEGY_FIXED).result() == 2
+        hits = reader.submit(store.search, STRATEGY_FIXED, (1.0, 0.0), 2).result()
+    assert [hit.chunk.text for hit in hits] == ["cancellation fee rule", "travel claim rule"]
+    store.close()
+
+
+def test_concurrent_reads_on_one_store_are_serialised(tmp_path: Path) -> None:
+    store = SqliteVecRuleStore(tmp_path / "index.db")
+    store.replace_strategy(STRATEGY_FIXED, CHUNKS[:2], VECTORS[:2])
+    workers = 4
+    barrier = threading.Barrier(workers)
+
+    def hammer() -> int:
+        barrier.wait()
+        for _ in range(25):
+            assert store.count(STRATEGY_FIXED) == 2
+            hits = store.search(STRATEGY_FIXED, (1.0, 0.0), 2)
+            assert [hit.chunk.page for hit in hits] == [12, 13]
+        return store.count(STRATEGY_FIXED)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(hammer) for _ in range(workers)]
+        assert {future.result() for future in futures} == {2}
+    store.close()
 
 
 # --- Embedding cache -----------------------------------------------------------------------
