@@ -26,11 +26,25 @@ The service extractor and its referee. `scripts/extract_services.py` walks each 
 
 ## Check yourself
 
-1. Why must the evidence-quote check live in `domain` rather than the prompt or the adapter?
-2. What happens when the token budget runs out mid-provider, and why is that provider not cached?
-3. Why do the report script and the eval test share `comparison_rows()`?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
 
-**Answers:** 1. The prompt is a suggestion the model can ignore and the adapter is infrastructure; a deterministic, framework-free function is the only place the invariant can be enforced and tested against adversarial input. 2. `BudgetExhausted` stops the run before the provider is written, so a resume re-extracts it whole instead of caching partial claims — cache-on-success-only. 3. One code path means the table in the report and the number CI gates on cannot disagree; two implementations would drift on the first refactor.
+**Say it**
+
+1. In two sentences: what does the LLM extract from a provider's website, and what stops it inventing services?
+2. What is the regex baseline, and what was the headline comparison?
+
+**Spot it**
+
+3. Which function checks that an evidence quote really appears in the page text, and which layer is it in?
+4. Where is the `LlmClient` interface declared, and what do unit tests pass in its place?
+
+**Defend it**
+
+5. Why must the evidence-quote check live in `domain` rather than the prompt or the adapter?
+6. What happens when the token budget runs out mid-provider, and why is that provider not cached?
+7. Why do the report script and the eval test share `comparison_rows()`?
+
+**Answers:** 1. A list of `ServiceClaim(service, evidence_quote, confidence)` plus age groups, telehealth, home visits and languages, as JSON. Every quote must be a verbatim substring of the page — checked by plain code, so a claim without real evidence is dropped no matter what the model says. 2. The Maps export already had a 36-pattern keyword matcher (`provider_services`). On the same 10 hand-labelled sites the regex scored precision 56% / recall 93%; the LLM scored 73% / 88% — higher precision at similar recall, both measured. 3. `quote_supported()` in `src/ndis/domain/extraction.py` — `domain`, so no framework and testable against adversarial quotes. 4. `LlmClient` is a `Protocol` in `src/ndis/application/extraction.py`; tests inject a fake that returns canned JSON, and the real httpx adapter (`adapters/llm_client.py`) runs only in evals and extraction runs. 5. The prompt is a suggestion the model can ignore and the adapter is infrastructure; a deterministic, framework-free function is the only place the invariant can be enforced and tested against adversarial input. 6. `BudgetExhausted` stops the run before the provider is written, so a resume re-extracts it whole instead of caching partial claims — cache-on-success-only. 7. One code path means the table in the report and the number CI gates on cannot disagree; two implementations would drift on the first refactor.
 
 ## Numbers
 

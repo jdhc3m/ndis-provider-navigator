@@ -26,11 +26,25 @@ The rule-answering pipeline. `scripts/fetch_public_data.py` downloads the Pricin
 
 ## Check yourself
 
-1. Why unit-normalise the embedding vectors?
-2. Why two refusal gates instead of one?
-3. Why is the embedding cache keyed by a hash of model *and* text?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
 
-**Answers:** 1. With unit vectors, squared Euclidean distance converts exactly to cosine similarity (`1 − d²/2`), which is what sqlite-vec's vec0 tables compute — no approximation, and it is testable against a plain function. 2. The similarity gate is cheap, deterministic and model-free (it must catch off-topic input without spending quota), while the judge gate catches the case where retrieved chunks are on-topic but don't actually support the draft answer. 3. Embeddings are model-specific: the same text under a different model (or model version) yields an incompatible vector, so the model name must be part of the cache key.
+**Say it**
+
+1. In two sentences: what does `POST /ask-rule` do, and when does it refuse?
+2. What is the "score" the first gate looks at — a property of the question, or of the retrieval?
+
+**Spot it**
+
+3. Which method runs the whole pipeline, and on which line does it refuse before any LLM call?
+4. Which function checks that a cited quote is really on the cited page, and what happens to a citation that fails?
+
+**Defend it**
+
+5. Why unit-normalise the embedding vectors?
+6. Why two refusal gates instead of one?
+7. Why is the embedding cache keyed by a hash of model *and* text?
+
+**Answers:** 1. It embeds the question, retrieves the most similar chunks of the Pricing Arrangements PDF, and asks the model for an answer with page citations. It refuses when the best chunk's similarity is below 0.65, when the judge says the chunks do not support an answer, or when no citation survives the verbatim check. 2. Of the retrieval: it is the cosine similarity of the single best chunk to the question (0.877 for "Are NDIS supports GST-free?", 0.620 for "What is the capital of France?"). Nothing scores the question on its own. 3. `AskRule.__call__` in `src/ndis/application/pricing.py`; the `if top_similarity < self._threshold` branch returns `below_similarity_threshold` straight after `self._store.search(...)`, before `self._client.complete(...)`. 4. `check_citations()` → `quote_in_text()` in `src/ndis/domain/pricing.py`; a failing citation is dropped with a reason (`citation_quote_not_in_page`, `citation_page_unknown`, too short/long), and if none survive the answer is refused with `no_valid_citation`. 5. With unit vectors, squared Euclidean distance converts exactly to cosine similarity (`1 − d²/2`), which is what sqlite-vec's vec0 tables compute — no approximation, and it is testable against a plain function. 6. The similarity gate is cheap, deterministic and model-free (it must catch off-topic input without spending quota), while the judge gate catches the case where retrieved chunks are on-topic but don't actually support the draft answer. 7. Embeddings are model-specific: the same text under a different model (or model version) yields an incompatible vector, so the model name must be part of the cache key.
 
 ## Numbers
 

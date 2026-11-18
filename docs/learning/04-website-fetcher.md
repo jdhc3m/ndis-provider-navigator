@@ -31,9 +31,23 @@ The evidence collector. For every Maps place linked in ticket 03 (except `not_a_
 
 ## Check yourself
 
-1. A provider's site answers `robots.txt` with HTTP 503. Does the fetcher request the page? Why?
-2. Why does the pacing test inject a fake clock instead of sleeping for real, and what does it still assert against the local server?
-3. After `--refresh` re-fetched a provider's page, the next plain run of `collect_pages.py` is started. What happens to that page?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
+
+**Say it**
+
+1. In two sentences: what does the fetcher do, and what does "polite" mean here?
+2. Why does the fetcher seed from the existing Maps crawl before touching the network?
+
+**Spot it**
+
+3. Which pure function is the only rule that decides whether a provider's page is fetched live?
+4. Which test fixture stands in for a real website, and what does it let tests assert that a mock could not?
+
+**Defend it**
+
+5. A provider's site answers `robots.txt` with HTTP 503. Does the fetcher request the page? Why?
+6. Why does the pacing test inject a fake clock instead of sleeping for real, and what does it still assert against the local server?
+7. After `--refresh` re-fetched a provider's page, the next plain run of `collect_pages.py` is started. What happens to that page?
 
 ## Numbers
 
@@ -46,4 +60,4 @@ The evidence collector. For every Maps place linked in ticket 03 (except `not_a_
 
 ---
 
-Answers: 1. No. 5xx means the rules are unknown, so the result is `robots_unavailable` and no page request is made (after one retry of the robots fetch itself); only a 4xx on `robots.txt` means "no rules, allowed". 2. Real sleeps measured server-side had jitter on both sides of 1.0 s, so the assertion flaked on an idle Mac and would flake more on a shared CI runner; the test now asserts the fetcher asked its clock to wait exactly `[1.0, 1.0]` seconds and that the server saw `/robots.txt`, `/page`, `/other` in that order. 3. Nothing: seeding skips `(provider_key, url)` pairs the store already holds, the provider has a cached `ok` page, so it is counted as `skipped_cached` and the live row and its text file survive.
+Answers: 1. It downloads each provider's website once, strips boilerplate and stores cleaned text under `data/private/pages/` with a public-safe `page_meta` row. Polite: read `robots.txt` first, identify yourself, one request per second per host, never retry a 4xx. 2. About 392 sites were already crawled in the Maps export; importing those as cached pages covers ~290 providers without re-hitting anyone's server, so live fetches happen only for providers with no cached `ok` page or when `--refresh` is passed. 3. `should_fetch(has_cached_ok, refresh)` in `src/ndis/domain/pages.py`; `CollectPages` in `application/pages.py` calls it and nothing else decides. 4. `LocalSite` in `tests/conftest.py`, a real `ThreadingHTTPServer` with a request log; tests assert which paths the server actually saw and in which order (`/robots.txt` before `/page`), not what the fetcher claims it did — like OkHttp's `MockWebServer`. 5. No. 5xx means the rules are unknown, so the result is `robots_unavailable` and no page request is made (after one retry of the robots fetch itself); only a 4xx on `robots.txt` means "no rules, allowed". 6. Real sleeps measured server-side had jitter on both sides of 1.0 s, so the assertion flaked on an idle Mac and would flake more on a shared CI runner; the test now asserts the fetcher asked its clock to wait exactly `[1.0, 1.0]` seconds and that the server saw `/robots.txt`, `/page`, `/other` in that order. 7. Nothing: seeding skips `(provider_key, url)` pairs the store already holds, the provider has a cached `ok` page, so it is counted as `skipped_cached` and the live row and its text file survive.

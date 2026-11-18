@@ -28,9 +28,23 @@ The deterministic price path. `scripts/fetch_public_data.py --only catalogue` do
 
 ## Check yourself
 
-1. Why `Decimal(str(cell))` rather than `Decimal(cell)` or `round(cell, 2)` for an openpyxl float?
-2. A user asks for item `01_003_0107_1_1` in NSW. The response is 200 with `price_limit: null`. Why not 404, and what should the answer layer say?
-3. The import-linter contract reported "KEPT" even when `openpyxl` was imported in `domain/`. Why, and what is the general lesson?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
+
+**Say it**
+
+1. In two sentences: where do price limits come from in this project, and is an LLM involved?
+2. Why are prices stored as `Decimal` and not `float`?
+
+**Spot it**
+
+3. Which function answers "what is the price limit for this item in this remoteness tier", and what does it return when the item is quote-based?
+4. Which test file holds the ten hand-checked values, and where did the expected numbers come from?
+
+**Defend it**
+
+5. Why `Decimal(str(cell))` rather than `Decimal(cell)` or `round(cell, 2)` for an openpyxl float?
+6. A user asks for item `01_003_0107_1_1` in NSW. The response is 200 with `price_limit: null`. Why not 404, and what should the answer layer say?
+7. The import-linter contract reported "KEPT" even when `openpyxl` was imported in `domain/`. Why, and what is the general lesson?
 
 ## Numbers
 
@@ -42,4 +56,4 @@ The deterministic price path. `scripts/fetch_public_data.py --only catalogue` do
 
 ---
 
-Answers: 1. `Decimal(cell)` keeps the full binary expansion (`271.58999999999997…`), and `round` would silently accept and hide a genuinely wrong value like `82.575`; `str()` gives the shortest repr that round-trips, which is the number the spreadsheet author typed, and the whole-cent check turns anything else into a loud rejection. 2. The item exists in the catalogue; it is quote-based (`quotable: true`), so the price is agreed per plan. The answer layer should say "quote required under the catalogue" rather than refuse or invent a figure. 3. The contract is a `forbidden_modules` denylist, so any package not listed is allowed; every time a new third-party dependency is adopted it must be added, or the "no external dependencies" rule is only a convention again.
+Answers: 1. From the NDIS Support Catalogue spreadsheet (2026-27), loaded into a `support_items` table and answered by a pure function. No LLM: the number on the price card is read from the catalogue, never generated. 2. A float cannot hold `271.59` exactly (Excel stores `271.58999999999997`); `Decimal(str(cell))` recovers the typed value and a whole-cent check rejects anything like `82.575`. Money must be exact, like `BigDecimal` in Kotlin. 3. `price_limit()` in `src/ndis/domain/catalogue.py`; it returns `None` for quote-based or unpriced items, and the API still answers 200 with `price_limit: null` and `quotable: true`. 4. `tests/test_domain_catalogue.py`; each case cites sheet, row, column and the raw cell, and the expected value was typed from the spreadsheet — not copied from running the code. 5. `Decimal(cell)` keeps the full binary expansion (`271.58999999999997…`), and `round` would silently accept and hide a genuinely wrong value like `82.575`; `str()` gives the shortest repr that round-trips, which is the number the spreadsheet author typed, and the whole-cent check turns anything else into a loud rejection. 6. The item exists in the catalogue; it is quote-based (`quotable: true`), so the price is agreed per plan. The answer layer should say "quote required under the catalogue" rather than refuse or invent a figure. 7. The contract is a `forbidden_modules` denylist, so any package not listed is allowed; every time a new third-party dependency is adopted it must be added, or the "no external dependencies" rule is only a convention again.

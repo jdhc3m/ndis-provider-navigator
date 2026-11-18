@@ -25,11 +25,25 @@ The finishing ticket: a README that makes the project reproducible and interview
 
 ## Check yourself
 
-1. Why must the demo script contain only commands that were actually run?
-2. Why is "Not built yet" a first-class README section sourced from ticket notes?
-3. Why verify docs in a fresh `/tmp` clone instead of the working checkout?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
 
-**Answers:** 1. An untested command is a live failure during the interview; the script's value is that every step, its duration and its failure mode were observed. 2. Generic disclaimer lists read as boilerplate; each item traceable to a ticket's follow-up note makes the limitations concrete and shows the engineering judgement behind what was deferred. 3. The working checkout has accumulated state (data, caches, env vars) that hides exactly the gaps a new user hits; reproducibility means reaching a working demo from nothing.
+**Say it**
+
+1. In two sentences: what does ticket 11 deliver, and how was it verified?
+2. Why does the demo script deliberately include a refusal?
+
+**Spot it**
+
+3. Where in the README is the list of things that were not built, and where did each item come from?
+4. Which three `application/` files contain the project's only LLM call sites?
+
+**Defend it**
+
+5. Why must the demo script contain only commands that were actually run?
+6. Why is "Not built yet" a first-class README section sourced from ticket notes?
+7. Why verify docs in a fresh `/tmp` clone instead of the working checkout?
+
+**Answers:** 1. The README (architecture diagram, data sources and licences, how to run, eval tables, limitations), a five-minute demo script and a recording checklist. Verified by following the README literally in a fresh `/tmp` clone until the demo worked — an unrun command counts as a bug. 2. Because refusing is a feature, not a failure: the brief's showcase question parses as a decision request and is refused, so the script splits it into two answerable questions and keeps the refusal as the honesty moment the interviewer should see. 3. The "Not built yet" section; every item is traced to a ticket's follow-up note (fuzzy vector name match, model routing, multi-turn, auth/rate limits, PAPL version tracking, full judge validation, head-office-centroid distance origin) rather than invented as boilerplate. 4. `application/ask.py` (intent parse), `application/extraction.py` (service extraction), `application/pricing.py` (rule judge and embeddings). Everything else is deterministic and each LLM output passes a check in `domain/`. 5. An untested command is a live failure during the interview; the script's value is that every step, its duration and its failure mode were observed. 6. Generic disclaimer lists read as boilerplate; each item traceable to a ticket's follow-up note makes the limitations concrete and shows the engineering judgement behind what was deferred. 7. The working checkout has accumulated state (data, caches, env vars) that hides exactly the gaps a new user hits; reproducibility means reaching a working demo from nothing.
 
 ## Numbers
 

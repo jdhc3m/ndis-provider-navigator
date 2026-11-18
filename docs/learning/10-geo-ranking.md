@@ -26,11 +26,25 @@ Provider results can now be ranked by straight-line distance from a postcode. `G
 
 ## Check yourself
 
-1. Why must distance ranking happen before `limit`/`offset` rather than on the returned page?
-2. Why does the API label every distance with `exact` or `postcode_centroid` instead of just returning a number?
-3. Why were the haversine test values computed with a different formula instead of running `haversine_km` once and pasting its output?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
 
-**Answers:** 1. Pagination is defined over the ranked order; sorting a SQL page (ordered by name) by distance would show the alphabetically-first providers' nearest subset, not the nearest providers overall, and each page would be independently "nearest". 2. A centroid distance can be tens of kilometres wrong in large postcodes; a plain number would present an approximation as a measurement, which contradicts the product's rule that every claim shows its evidence. 3. A test whose expected value comes from the code under test only proves the code is self-consistent; an independent derivation (law of cosines, hand check) would catch a wrong radius, swapped lat/long, or degrees-vs-radians bug.
+**Say it**
+
+1. In two sentences: how does a provider get a distance, and why are there two kinds?
+2. What does the API tell the user when a distance is only approximate?
+
+**Spot it**
+
+3. Which function computes the distance between two coordinates, and which layer is it in?
+4. Where is postcode 9999 excluded, and why is it a named constant rather than a filter buried in the loader?
+
+**Defend it**
+
+5. Why must distance ranking happen before `limit`/`offset` rather than on the returned page?
+6. Why does the API label every distance with `exact` or `postcode_centroid` instead of just returning a number?
+7. Why were the haversine test values computed with a different formula instead of running `haversine_km` once and pasting its output?
+
+**Answers:** 1. Providers matched to a Maps row use its exact latitude/longitude; register-only providers use the centroid of their postcode from a public Australian postcode CSV. Two kinds because the register has no coordinates, only postcodes. 2. `Distance.source` is `exact` or `postcode_centroid` all the way to the card, so an approximation that may be tens of kilometres off in a rural postcode is never shown as a measurement. 3. `haversine_km()` in `src/ndis/domain/geo.py` — pure `domain`, four numbers in, kilometres out, tested against values computed by a different formula. 4. `NON_GEOGRAPHIC_POSTCODES = frozenset({"9999"})` in `src/ndis/domain/geo.py` (Australia Post's "North Pole" geocoded to Melbourne GPO); a named, commented constant is visible, tested, counted separately in the load report and easy to reverse. 5. Pagination is defined over the ranked order; sorting a SQL page (ordered by name) by distance would show the alphabetically-first providers' nearest subset, not the nearest providers overall, and each page would be independently "nearest". 6. A centroid distance can be tens of kilometres wrong in large postcodes; a plain number would present an approximation as a measurement, which contradicts the product's rule that every claim shows its evidence. 7. A test whose expected value comes from the code under test only proves the code is self-consistent; an independent derivation (law of cosines, hand check) would catch a wrong radius, swapped lat/long, or degrees-vs-radians bug.
 
 ## Numbers
 

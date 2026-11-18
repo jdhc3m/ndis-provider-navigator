@@ -26,9 +26,23 @@ An empty Python project where every quality rule is already enforced by a machin
 
 ## Check yourself
 
-1. Why does `domain/` forbid importing `pydantic` when Pydantic is the project's validation library?
-2. What breaks if `api`, `ui` and `adapters` are declared as independent siblings (`|`) in import-linter?
-3. Why can't the lockfile written on the dev Mac simply be committed?
+Three tiers. **Say it** is the level the interview needs; **Spot it** proves you can navigate the code; **Defend it** is optional stretch — justify a design decision.
+
+**Say it**
+
+1. In two sentences: what does ticket 00 build, and why does it come before any feature code?
+2. Name three of the CI checks and say in one phrase what each one catches.
+
+**Spot it**
+
+3. Which file declares the rule "`domain` may not import `fastapi` or `sqlalchemy`", and which tool enforces it?
+4. Where is the 80% coverage floor written down?
+
+**Defend it**
+
+5. Why does `domain/` forbid importing `pydantic` when Pydantic is the project's validation library?
+6. What breaks if `api`, `ui` and `adapters` are declared as independent siblings (`|`) in import-linter?
+7. Why can't the lockfile written on the dev Mac simply be committed?
 
 ## Numbers
 
@@ -40,4 +54,4 @@ An empty Python project where every quality rule is already enforced by a machin
 
 ---
 
-Answers: 1. The domain must stay portable and framework-free so its rules can be tested and reused without any library; Pydantic models live at the edges (`api`, `adapters`) and are converted to plain domain objects. 2. The FastAPI composition root in `api` cannot import the SQLite repositories in `adapters` to wire them, so the app cannot be assembled without breaking the contract. 3. It records the mirror's URLs and a patched `certifi` version that do not exist on PyPI, so CI cannot download anything and an internal hostname would land in a public repo.
+Answers: 1. It builds the toolchain and CI gates (lint, format, types, layer rules, coverage, stub guard, private-data guard) with no feature code; it comes first so every later ticket is checked by the same rules from its first commit, instead of retrofitting them. 2. Any three of: ruff (style and simple bugs), mypy (type errors in `domain`/`application`), import-linter (a layer importing outward or a framework), coverage floor (untested inner-layer code), `check_no_stubs.py` (`pass`-only bodies, `NotImplementedError`, TODOs), private-data guard (anything under `data/private/` staged). 3. `pyproject.toml`, `[tool.importlinter]` contract "Domain and application have no external dependencies" (a `forbidden_modules` list); `uv run lint-imports` enforces it in CI. 4. `pyproject.toml`, `[tool.pytest.ini_options] addopts` → `--cov-fail-under=80`. 5. The domain must stay portable and framework-free so its rules can be tested and reused without any library; Pydantic models live at the edges (`api`, `adapters`) and are converted to plain domain objects. 6. The FastAPI composition root in `api` cannot import the SQLite repositories in `adapters` to wire them, so the app cannot be assembled without breaking the contract. 7. It records the mirror's URLs and a patched `certifi` version that do not exist on PyPI, so CI cannot download anything and an internal hostname would land in a public repo.
