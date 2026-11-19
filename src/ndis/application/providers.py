@@ -13,6 +13,12 @@ from ndis.domain.geo import (
     nearest_to,
     rank_by_distance,
 )
+from ndis.domain.locality import (
+    Locality,
+    LocalityResolution,
+    normalise_locality,
+    resolve_locality,
+)
 from ndis.domain.register import REGISTRATION_STATUSES
 
 MAX_PAGE_SIZE = 200
@@ -85,6 +91,52 @@ class PostcodeCentroids(Protocol):
     def coordinates_for(self, postcodes: Iterable[str]) -> Mapping[str, Coordinates]:
         """Centroid coordinates keyed by postcode, for the postcodes that are known."""
         ...
+
+
+class LocalityStore(Protocol):
+    """Persistence port for the locality gazetteer the loaders fill."""
+
+    def replace_all_localities(self, localities: Iterable[Locality]) -> None:
+        """Replace every stored locality with the given ones atomically."""
+        ...
+
+
+class LocalityDirectory(Protocol):
+    """Read port over the locality gazetteer, keyed by the normalised name."""
+
+    def localities_for(self, name_key: str) -> tuple[Locality, ...]:
+        """Every gazetteer locality whose normalised name equals ``name_key``."""
+        ...
+
+
+class PostcodeLocalities(PostcodeCentroids, LocalityStore, LocalityDirectory, Protocol):
+    """Everything the postcode loader and the locality resolver need from one store."""
+
+
+class LocalityResolver:
+    """Use case: turn one locality name into a resolution against the gazetteer.
+
+    The lookup key is the domain's normalisation; the narrowing and the three outcomes
+    are the domain resolver's, so the application layer only moves rows behind the port.
+    """
+
+    def __init__(self, directory: LocalityDirectory) -> None:
+        self._directory = directory
+
+    def __call__(
+        self,
+        name: str,
+        *,
+        state: str | None = None,
+        brisbane_area: bool | None = None,
+    ) -> LocalityResolution:
+        """The resolution of ``name``: resolved, ``locality_unknown``, or ambiguous."""
+        return resolve_locality(
+            name,
+            self._directory.localities_for(normalise_locality(name)),
+            state=state,
+            brisbane_area=brisbane_area,
+        )
 
 
 class ProviderRepository(Protocol):

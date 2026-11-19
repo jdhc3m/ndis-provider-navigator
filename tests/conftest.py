@@ -5,7 +5,7 @@ a synthetic Maps export with crawled pages, and a local HTTP site for the fetche
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import date
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +31,7 @@ from ndis.domain.entities import (
 )
 from ndis.domain.entity_resolution import MapsPlace
 from ndis.domain.geo import Coordinates, PostcodeCentroid
+from ndis.domain.locality import Locality, normalise_locality
 from ndis.domain.register import website_domain
 
 REGISTER_HEADER = (
@@ -177,7 +178,8 @@ def seeded_repository(db_path: Path) -> SqlAlchemyProviderRepository:
 
 # --- Postcode centroids ------------------------------------------------------------------
 
-# The header of ``australian_postcodes.csv`` (only ``postcode``, ``lat`` and ``long`` matter).
+# The header of ``australian_postcodes.csv`` (``postcode``, ``lat`` and ``long`` matter for
+# the centroids; ``locality``, ``state`` and ``type`` for the locality gazetteer).
 POSTCODES_HEADER = (
     "id,postcode,locality,state,long,lat,dc,type,status,sa3,sa3name,sa4,sa4name,region,"
     "Lat_precise,Long_precise,SA1_MAINCODE_2011,SA1_MAINCODE_2016,SA2_MAINCODE_2016,"
@@ -187,25 +189,31 @@ POSTCODES_HEADER = (
     "SA3_CODE_2021,SA3_NAME_2021,SA4_CODE_2021,SA4_NAME_2021,RA_2021,MMM_2021,"
     "VIC_LGA_CODE_2021,VIC_LGA_NAME_2021"
 )
-_POSTCODE_TRAILER = "," * (POSTCODES_HEADER.count(",") - 5)
+_POSTCODE_TRAILER = "," * (POSTCODES_HEADER.count(",") - 8)
 
-# Real locality rows: Brisbane City (two localities), South Brisbane and West End (the same
-# point, as in the source), Toowoomba (two), Cairns, Sydney, Parramatta and Melbourne (one
-# each), plus a PO box row with no location, which the source writes as ``0,0``.
+# Real locality rows of the shapes the source has: ``type`` is the column the locality
+# step filters on — only ``Delivery Area`` rows are places; PO-box and LVR rows are not.
+# Brisbane City (two localities), South Brisbane and West End (the same point, as in the
+# source), Toowoomba (two), Cairns, Sydney, Parramatta and Melbourne (one each), a PO-box
+# row with no location (the source writes ``0,0`` there) and the Santa-mail code: located
+# (Melbourne GPO) and typed as an ordinary ``Delivery Area`` by the source, but rejected
+# as non_geographic by both steps.
 POSTCODE_ROWS = [
-    f"1,4000,BRISBANE,QLD,153.0281,-27.4679{_POSTCODE_TRAILER}",
-    f"2,4000,BRISBANE CITY,QLD,153.0178,-27.4689{_POSTCODE_TRAILER}",
-    f"3,4001,BRISBANE GPO BOXES,QLD,0,0{_POSTCODE_TRAILER}",
-    f"4,4101,SOUTH BRISBANE,QLD,153.009661,-27.484254{_POSTCODE_TRAILER}",
-    f"5,4101,WEST END,QLD,153.009661,-27.484254{_POSTCODE_TRAILER}",
-    f"6,4350,TOOWOOMBA,QLD,151.9539,-27.5598{_POSTCODE_TRAILER}",
-    f"7,4350,WESTBROOK,QLD,151.7515,-27.5928{_POSTCODE_TRAILER}",
-    f"8,4870,CAIRNS,QLD,145.742303,-16.923761{_POSTCODE_TRAILER}",
-    f"9,2000,SYDNEY,NSW,151.2099,-33.8697{_POSTCODE_TRAILER}",
-    f"10,2150,PARRAMATTA,NSW,151.0,-33.815{_POSTCODE_TRAILER}",
-    f"11,3000,MELBOURNE,VIC,144.9632,-37.8142{_POSTCODE_TRAILER}",
-    # The Santa-mail code: located (Melbourne GPO) but not a place, rejected as non_geographic.
-    f"12,9999,NORTH POLE,VIC,144.956776,-37.817403{_POSTCODE_TRAILER}",
+    f"1,4000,BRISBANE,QLD,153.0281,-27.4679,,Delivery Area{_POSTCODE_TRAILER}",
+    f"2,4000,BRISBANE CITY,QLD,153.0178,-27.4689,,Delivery Area{_POSTCODE_TRAILER}",
+    f"3,4001,BRISBANE GPO BOXES,QLD,0,0,,Post Office Boxes{_POSTCODE_TRAILER}",
+    f"4,4101,SOUTH BRISBANE,QLD,153.009661,-27.484254,,Delivery Area{_POSTCODE_TRAILER}",
+    f"5,4101,WEST END,QLD,153.009661,-27.484254,,Delivery Area{_POSTCODE_TRAILER}",
+    f"6,4350,TOOWOOMBA,QLD,151.9539,-27.5598,,Delivery Area{_POSTCODE_TRAILER}",
+    f"7,4350,WESTBROOK,QLD,151.7515,-27.5928,,Delivery Area{_POSTCODE_TRAILER}",
+    f"8,4870,CAIRNS,QLD,145.742303,-16.923761,,Delivery Area{_POSTCODE_TRAILER}",
+    f"9,2000,SYDNEY,NSW,151.2099,-33.8697,,Delivery Area{_POSTCODE_TRAILER}",
+    f"10,2150,PARRAMATTA,NSW,151.0,-33.815,,Delivery Area{_POSTCODE_TRAILER}",
+    f"11,3000,MELBOURNE,VIC,144.9632,-37.8142,,Delivery Area{_POSTCODE_TRAILER}",
+    # A large-volume receiver: located, so the postcode keeps its centroid, but the row
+    # names a mail route, not a place, so it never becomes a locality.
+    f"12,4002,BRISBANE MAIL CENTRE,QLD,152.823141,-27.603479,,LVR{_POSTCODE_TRAILER}",
+    f"13,9999,NORTH POLE,VIC,144.956776,-37.817403,,Delivery Area{_POSTCODE_TRAILER}",
 ]
 
 
@@ -217,6 +225,51 @@ def write_postcodes(path: Path, rows: list[str]) -> Path:
 @pytest.fixture
 def postcodes_csv(tmp_path: Path) -> Path:
     return write_postcodes(tmp_path / "australian_postcodes.csv", POSTCODE_ROWS)
+
+
+# The ticket-13 locality fixture: the real CSV rows (ids included) for the names the
+# resolver tests ask about, plus a PO-box row and an LVR row for names that also appear
+# there — the resolver must never see them.
+LOCALITY_ROWS = [
+    '4753,3006,SOUTHBANK,VIC,144.965926,-37.823258,,"Delivery Area","Updated 3-Dec-2022"',
+    '8525,4000,BRISBANE,QLD,153.022126,-27.468391,,"Delivery Area","Updated 3-Dec-2022"',
+    '21016,4000,BRISBANE CITY,QLD,153.0251227,-27.46977074,,"Delivery Area","Updated 3-Dec-2022"',
+    '8193,4101,SOUTH BANK,QLD,153.009661,-27.484254,,"Delivery Area","Updated 3-Dec-2022"',
+    '8196,4101,WEST END,QLD,153.009661,-27.484254,,"Delivery Area","Updated 3-Dec-2022"',
+    '14190,4810,WEST END,QLD,146.764659,-19.227783,,"Delivery Area","Updated 3-Dec-2022"',
+    '10850,6530,WEST END,WA,114.862505,-28.802491,,"Delivery Area","Updated 3-Dec-2022"',
+    '8048,4152,WHITES HILL,QLD,153.096812,-27.501349,,"Delivery Area","Updated 3-Dec-2022"',
+    '12144,4217,SURFERS PARADISE,QLD,153.412197,-28.008783,,"Delivery Area","Updated 3-Dec-2022"',
+    '8267,4006,FORTITUDE VALLEY,QLD,153.175242,-27.36618,,"Delivery Area","Updated 3-Dec-2022"',
+    # The same locality names on rows that are not places.
+    '11334,9000,BRISBANE,QLD,152.823141,-27.603479,,"LVR","Updated 3-Dec-2022"',
+    '8533,4001,BRISBANE,QLD,152.823141,-27.603479,,"Post Office Boxes","Updated 3-Dec-2022"',
+]
+
+
+def write_localities(path: Path, rows: list[str]) -> Path:
+    """A postcodes CSV with the same header, carrying the given rows verbatim."""
+    path.write_text("\n".join([POSTCODES_HEADER, *rows]) + "\n", encoding="utf-8-sig")
+    return path
+
+
+@pytest.fixture
+def localities_csv(tmp_path: Path) -> Path:
+    return write_localities(tmp_path / "localities.csv", LOCALITY_ROWS)
+
+
+class LocalityDirectoryStub:
+    """An in-memory ``LocalityDirectory`` for use-case tests: rows are looked up by the
+    domain's normalised key, exactly as the SQLite adapter does."""
+
+    def __init__(self, localities: Sequence[Locality]) -> None:
+        index: dict[str, list[Locality]] = {}
+        for locality in localities:
+            index.setdefault(normalise_locality(locality.name), []).append(locality)
+        self._index = {key: tuple(rows) for key, rows in index.items()}
+
+    def localities_for(self, name_key: str) -> tuple[Locality, ...]:
+        return self._index.get(name_key, ())
 
 
 # Centroids the seeded providers and tests measure from (4000, 4101, 4350 from the real

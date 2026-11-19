@@ -50,6 +50,7 @@ from ndis.domain.entity_resolution import (
     normalise_name,
 )
 from ndis.domain.geo import Coordinates, PostcodeCentroid
+from ndis.domain.locality import Locality, normalise_locality
 from ndis.domain.pages import FetchStatus, PageMeta, PageSource, ProviderSite
 
 INSERT_BATCH_SIZE = 1000
@@ -224,6 +225,23 @@ class PostcodeCentroidRow(Base):
     latitude: Mapped[float] = mapped_column(Float)
     longitude: Mapped[float] = mapped_column(Float)
     locality_count: Mapped[int] = mapped_column(Integer)
+
+
+class LocalityRow(Base):
+    """One gazetteer locality (suburb) from the Delivery Area rows of the postcodes CSV.
+
+    ``name`` is the source spelling; ``name_key`` is the domain's normalised lookup key,
+    indexed because the resolver looks localities up by it.
+    """
+
+    __tablename__ = "localities"
+
+    name: Mapped[str] = mapped_column(String, primary_key=True)
+    state: Mapped[str] = mapped_column(String(3), primary_key=True)
+    postcode: Mapped[str] = mapped_column(String(4), primary_key=True)
+    name_key: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (Index("ix_localities_name_key", "name_key"),)
 
 
 def create_sqlite_engine(path: Path) -> Engine:
@@ -693,6 +711,44 @@ class SqlAlchemyPostcodeCentroids:
                 for postcode, latitude, longitude in rows:
                     found[postcode] = Coordinates(latitude, longitude)
         return found
+
+    def replace_all_localities(self, localities: Iterable[Locality]) -> None:
+        """Replace every stored locality with the given ones atomically. Rows that share
+        ``(name, state, postcode)`` — the source repeats a few — are stored once."""
+        unique: dict[tuple[str, str, str], Locality] = {}
+        for locality in localities:
+            unique.setdefault((locality.name, locality.state, locality.postcode), locality)
+        with Session(self._engine) as session, session.begin():
+            session.execute(delete(LocalityRow))
+            for batch in batched(
+                sorted(unique.values(), key=lambda item: (item.name, item.state, item.postcode)),
+                INSERT_BATCH_SIZE,
+            ):
+                session.execute(
+                    insert(LocalityRow),
+                    [
+                        {
+                            "name": locality.name,
+                            "state": locality.state,
+                            "postcode": locality.postcode,
+                            "name_key": normalise_locality(locality.name),
+                        }
+                        for locality in batch
+                    ],
+                )
+
+    def localities_for(self, name_key: str) -> tuple[Locality, ...]:
+        """Every locality whose normalised name equals ``name_key``, in a stable
+        (state, postcode, name) order; empty for a key nothing matches."""
+        if not name_key:
+            return ()
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(LocalityRow.name, LocalityRow.state, LocalityRow.postcode)
+                .where(LocalityRow.name_key == name_key)
+                .order_by(LocalityRow.state, LocalityRow.postcode, LocalityRow.name)
+            )
+            return tuple(Locality(name, state, postcode) for name, state, postcode in rows)
 
 
 class SqlAlchemySupportItemRepository:
