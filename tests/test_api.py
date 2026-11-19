@@ -42,7 +42,12 @@ from ndis.domain.entity_resolution import (
     ProviderLink,
 )
 from ndis.domain.geo import Distance, DistanceSource
-from ndis.domain.locality import Locality, LocalityOutcome, LocalityResolution
+from ndis.domain.locality import (
+    REJECTION_LOCALITY_POSTCODE_MISMATCH,
+    Locality,
+    LocalityOutcome,
+    LocalityResolution,
+)
 from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS, make_place
 
 
@@ -340,7 +345,11 @@ def test_list_providers_locality_contradicting_the_postcode_is_a_422(
         "/providers", params={"locality": "South Bank", "state": "QLD", "postcode": "4000"}
     )
     assert mismatch.status_code == 422
-    assert mismatch.json()["detail"]["reason"] == "locality_postcode_mismatch"
+    detail = mismatch.json()["detail"]
+    assert detail["reason"] == "locality_postcode_mismatch"
+    assert detail["message"] == (
+        "the locality 'South Bank' is QLD 4101, not the stated postcode 4000"
+    )
 
 
 def test_the_locality_422_payload_carries_the_reason_and_candidates() -> None:
@@ -364,6 +373,32 @@ def test_the_locality_422_payload_carries_the_reason_and_candidates() -> None:
         "message": "the locality 'Gotham City' is not in the loaded gazetteer",
         "candidates": [],
     }
+    mismatch = _locality_422(
+        LocalityResolution(
+            LocalityOutcome.RESOLVED,
+            "South Bank",
+            Locality("SOUTH BANK", "QLD", "4101"),
+            (),
+        ),
+        REJECTION_LOCALITY_POSTCODE_MISMATCH,
+        "4000",
+    )
+    assert mismatch.detail == {
+        "reason": "locality_postcode_mismatch",
+        "message": "the locality 'South Bank' is QLD 4101, not the stated postcode 4000",
+        "candidates": [],
+    }
+    # The mismatch message never lies when the postcode is somehow not handed over.
+    bare = _locality_422(
+        LocalityResolution(
+            LocalityOutcome.RESOLVED, "South Bank", Locality("SOUTH BANK", "QLD", "4101"), ()
+        ),
+        REJECTION_LOCALITY_POSTCODE_MISMATCH,
+    )
+    assert bare.detail["message"] == (
+        "the locality 'South Bank' is QLD 4101; ask again with that postcode"
+    )
+    assert "not in the loaded gazetteer" not in bare.detail["message"]
 
 
 def test_the_locality_schema_echoes_the_resolution() -> None:

@@ -54,19 +54,40 @@ from ndis.domain.locality import (
 from ndis.domain.pricing import PRICING_DOCUMENT_TITLE
 
 
-def _locality_422(resolution: LocalityResolution, reason: str) -> HTTPException:
+def _locality_422(
+    resolution: LocalityResolution, reason: str, postcode: str | None = None
+) -> HTTPException:
     """The 422 an unresolved locality name answers with: the machine reason, the full
     candidate list (empty for an unknown name) and a readable message."""
     candidates = [
         LocalityCandidateOut(name=item.name, state=item.state, postcode=item.postcode)
         for item in resolution.candidates
     ]
-    message = (
-        f"the locality {resolution.name!r} matches several postcodes; "
-        "name the state or ask again with one candidate's postcode"
-        if reason == LocalityOutcome.AMBIGUOUS.value
-        else f"the locality {resolution.name!r} is not in the loaded gazetteer"
-    )
+    if (
+        reason == REJECTION_LOCALITY_POSTCODE_MISMATCH
+        and resolution.locality is not None
+        and postcode is not None
+    ):
+        point = resolution.locality
+        message = (
+            f"the locality {resolution.name!r} is {point.state} {point.postcode}, "
+            f"not the stated postcode {postcode}"
+        )
+    elif reason == LocalityOutcome.AMBIGUOUS.value:
+        message = (
+            f"the locality {resolution.name!r} matches several postcodes; "
+            "name the state or ask again with one candidate's postcode"
+        )
+    elif resolution.locality is not None:
+        # A resolved locality never deserves the "not in the gazetteer" message, however
+        # the reason got here.
+        point = resolution.locality
+        message = (
+            f"the locality {resolution.name!r} is {point.state} {point.postcode}; "
+            "ask again with that postcode"
+        )
+    else:
+        message = f"the locality {resolution.name!r} is not in the loaded gazetteer"
     return HTTPException(
         status_code=422,
         detail={
@@ -125,7 +146,7 @@ def list_providers(
         if resolved.outcome is not LocalityOutcome.RESOLVED or resolved.locality is None:
             raise _locality_422(resolved, resolved.outcome.value)
         if postcode is not None and postcode != resolved.locality.postcode:
-            raise _locality_422(resolved, REJECTION_LOCALITY_POSTCODE_MISMATCH)
+            raise _locality_422(resolved, REJECTION_LOCALITY_POSTCODE_MISMATCH, postcode)
         postcode = resolved.locality.postcode
         resolution = LocalityOut.from_resolution(resolved)
     query = ProviderQuery(
