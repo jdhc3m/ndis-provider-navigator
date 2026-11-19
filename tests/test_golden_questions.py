@@ -62,15 +62,25 @@ def test_committed_golden_file_parses() -> None:
     assert len(golden.questions) == 10
     assert all(site.verified_by == "agent" for site in golden.questions)
     assert len({site.topic for site in golden.questions}) >= 8  # two cancellation questions
-    # Ticket 07: twelve filter cases and five refusal/adversarial cases.
+    # Ticket 07: twelve filter cases; ticket 13: seven locality cases and six refusals.
     assert len(golden.filter_cases) == 12
-    assert len(golden.refusal_cases) == 5
+    assert len(golden.locality_cases) == 7
+    assert len(golden.refusal_cases) == 6
     assert sum(case.adversarial for case in golden.refusal_cases) == 2
     assert {case.expected_reason for case in golden.refusal_cases} <= {
         "decision_request",
         "empty_intent",
         "intent_unparseable",
     }
+    # The locality cases: five resolve with register totals, one ambiguous, one unknown.
+    outcomes = [case.outcome for case in golden.locality_cases]
+    assert outcomes.count("resolved") == 5
+    assert outcomes.count("locality_ambiguous") == 1
+    assert outcomes.count("locality_unknown") == 1
+    ambiguous = golden.locality_cases[outcomes.index("locality_ambiguous")]
+    assert ambiguous.candidates == (("QLD", "4101"), ("QLD", "4810"), ("WA", "6530"))
+    resolved = golden.locality_cases[outcomes.index("resolved")]
+    assert resolved.total is not None and resolved.first
 
 
 def test_read_golden_parses_filter_and_refusal_sections(tmp_path: Path) -> None:
@@ -95,6 +105,58 @@ def test_read_golden_parses_filter_and_refusal_sections(tmp_path: Path) -> None:
     assert golden.filter_cases[0].first == ("Alpha", "Beta")
     assert golden.refusal_cases[0].expected_reason == "empty_intent"
     assert golden.refusal_cases[0].adversarial is True
+
+
+def test_read_golden_parses_the_locality_section(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        "questions:\n"
+        '- question: "q"\n  page: 1\n  topic: t\n  evidence: "e"\n  verified_by: agent\n'
+        'off_topic:\n  question: "off"\n  reason_expected: below_similarity_threshold\n'
+        "locality_cases:\n"
+        '- question: "Which providers are in South Bank, Queensland?"\n'
+        '  filters: {"locality": "South Bank", "state": "QLD"}\n'
+        "  outcome: resolved\n"
+        "  total: 44\n"
+        '  first: ["Alpha"]\n'
+        '- question: "Show me providers in West End."\n'
+        '  filters: {"locality": "West End"}\n'
+        "  outcome: locality_ambiguous\n"
+        '  candidates: ["QLD 4101", "WA 6530"]\n'
+        '- question: "Which providers are in Gotham City?"\n'
+        '  filters: {"locality": "Gotham City"}\n'
+        "  outcome: locality_unknown\n",
+    )
+    golden = read_golden(path)
+    resolved = golden.locality_cases[0]
+    assert resolved.filters == ProviderFilters(locality="South Bank", state="QLD")
+    assert (resolved.outcome, resolved.total, resolved.first) == ("resolved", 44, ("Alpha",))
+    assert resolved.candidates == ()
+    ambiguous = golden.locality_cases[1]
+    assert (ambiguous.outcome, ambiguous.total) == ("locality_ambiguous", None)
+    assert ambiguous.candidates == (("QLD", "4101"), ("WA", "6530"))
+    unknown = golden.locality_cases[2]
+    assert (unknown.outcome, unknown.candidates) == ("locality_unknown", ())
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'locality_cases:\n- question: "x"\n  filters: {"locality": "Y"}\n'
+        '  outcome: maybe\noff_topic:\n  question: "o"\n  reason_expected: r\n',
+        'locality_cases:\n- question: "x"\n  filters: {"locality": "Y"}\n'
+        '  outcome: resolved\noff_topic:\n  question: "o"\n  reason_expected: r\n',
+        'locality_cases:\n- question: "x"\n  filters: {"locality": "Y"}\n'
+        "  outcome: locality_unknown\n  total: 3\n"
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',
+        'locality_cases:\n- question: "x"\n  filters: {"locality": "Y"}\n'
+        '  outcome: locality_ambiguous\n  candidates: ["4101"]\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',
+    ],
+)
+def test_read_golden_rejects_bad_locality_sections(tmp_path: Path, body: str) -> None:
+    with pytest.raises(GoldenFormatError):
+        read_golden(write(tmp_path, body))
 
 
 @pytest.mark.parametrize(

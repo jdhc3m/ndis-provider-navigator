@@ -112,3 +112,25 @@ def test_refusal_cases_parse_to_the_expected_refusal(payloads: Mapping[str, str]
             contained += 1
     recall = contained / len(golden.refusal_cases)
     assert recall >= read_thresholds(THRESHOLDS).refusal_recall, "\n".join(failures)
+
+
+@pytest.mark.eval
+def test_locality_cases_parse_to_the_verified_filters(payloads: Mapping[str, str]) -> None:
+    """The suburb questions are captured like the filter ones: the model must copy the
+    name verbatim and set the state only when the question states it. This runs on every
+    machine with the capture, so a drift shows even where the register suite skips."""
+    golden = read_golden(GOLDEN)
+    matched = 0
+    failures: list[str] = []
+    for case in golden.locality_cases:
+        if case.question not in payloads:
+            failures.append(f"{case.question}: no captured payload")
+            continue
+        parsed = parse_intent(payloads[case.question])
+        if parsed.intent is None:
+            failures.append(f"{case.question}: unparseable payload: {parsed.rejected}")
+        elif parsed.intent.provider_filters != case.filters:
+            failures.append(f"{case.question}: {parsed.intent.provider_filters}")
+        else:
+            matched += 1
+    assert matched == len(golden.locality_cases), "\n".join(failures)

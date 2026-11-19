@@ -40,6 +40,7 @@ def main() -> int:
         raise SystemExit("LLM_BASE_URL, LLM_MODEL and LLM_API_KEY must be set")
     golden = read_golden(GOLDEN)
     questions = [case.question for case in golden.filter_cases]
+    questions += [case.question for case in golden.locality_cases]
     questions += [case.question for case in golden.refusal_cases]
     client = traced(
         OpenAICompatibleClient(

@@ -37,6 +37,10 @@ THRESHOLDS = Path(__file__).with_name("thresholds.yaml")
 def test_extraction_per_service_metrics_on_labelled_sites() -> None:
     sites = labelled(read_labels(DEFAULT_LABELS))
     assert sites, "no agent-labelled sites in the extraction label template"
+    # Skip before the engine exists: opening the default database file would create an
+    # empty one, which un-skips the register-backed golden suites on a later data-less run.
+    if not DEFAULT_DB.is_file():
+        pytest.skip(f"register database not loaded yet: {DEFAULT_DB} is missing")
     store = CachedExtractionStore(create_sqlite_engine(DEFAULT_DB), DEFAULT_EXTRACTION_DIR)
     missing = [site.provider_key for site in sites if store.load(site.provider_key) is None]
     if missing:
