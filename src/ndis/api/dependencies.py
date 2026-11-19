@@ -25,7 +25,12 @@ from ndis.application.ask import Ask, ClaimEvidenceSource, MissingIndexRuleAnswe
 from ndis.application.catalogue import GetPriceLimit, SupportItemRepository
 from ndis.application.extraction import TokenBudget
 from ndis.application.pricing import AskRule, EmbeddingClient
-from ndis.application.providers import ListProviders, PostcodeCentroids, ProviderRepository
+from ndis.application.providers import (
+    ListProviders,
+    LocalityResolver,
+    PostcodeCentroids,
+    ProviderRepository,
+)
 from ndis.config import (
     embed_model,
     llm_api_key,
@@ -139,6 +144,11 @@ def list_providers_use_case(
     centroids: Annotated[PostcodeCentroids, Depends(postcode_centroids)],
 ) -> ListProviders:
     return ListProviders(repository, centroids)
+
+
+def locality_resolver() -> LocalityResolver:
+    """The suburb resolver over the loaded gazetteer (same database as the register)."""
+    return LocalityResolver(postcode_centroids_for(database_path().resolve()))
 
 
 def get_price_limit_use_case(
@@ -256,6 +266,7 @@ def ask_use_case(
     providers: Annotated[ListProviders, Depends(list_providers_use_case)],
     catalogue: Annotated[GetPriceLimit, Depends(get_price_limit_use_case)],
     evidence: Annotated[ClaimEvidenceSource, Depends(claim_evidence_source)],
+    localities: Annotated[LocalityResolver, Depends(locality_resolver)],
 ) -> Ask:
     """One use case per question; the intent-parse client and its token budget are
     fresh per request, the rule answerer degrades to refusals without an index."""
@@ -265,6 +276,7 @@ def ask_use_case(
         catalogue,
         rule_answerer_for(rule_store_maybe()),
         evidence,
+        locality_resolver=localities,
         token_prices=token_price(llm_model()),
     )
 

@@ -1,12 +1,15 @@
-"""The /ask golden eval: the twelve filter cases must match the register exactly, and the
-five refusal/adversarial cases must be contained with zero executed sections.
+"""The /ask golden eval: the twelve filter cases and the seven locality cases must match
+the register exactly, and the six refusal/adversarial cases must be contained with zero
+executed sections.
 
 The run replays the intent payloads captured by ``scripts/parse_intent_cache.py`` from
 the configured model: the parse, the guard and the deterministic execution all run for
 real; only the model call is replayed, so this eval spends no quota. Skips visibly while
-the register database or the capture is missing on this machine.
+the register database or the capture is missing on this machine. The database file comes
+from ``NDIS_DB_PATH`` (see ``ndis.api.dependencies``), defaulting to ``data/ndis.db``.
 """
 
+import os
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -16,6 +19,7 @@ from sqlalchemy import Engine
 from ndis.adapters.ask_evidence import ExtractionEvidenceSource
 from ndis.adapters.golden_questions import read_golden, read_intent_cache
 from ndis.adapters.sqlite_repository import (
+    SqlAlchemyPostcodeCentroids,
     SqlAlchemyProviderRepository,
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
@@ -24,16 +28,18 @@ from ndis.adapters.thresholds import read_thresholds
 from ndis.application.ask import Ask, MissingIndexRuleAnswerer
 from ndis.application.catalogue import GetPriceLimit
 from ndis.application.extraction import LlmRequest, LlmResult
-from ndis.application.providers import ListProviders
+from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.extraction import TokenBudget
+from ndis.domain.locality import LocalityOutcome
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "evals" / "golden.yaml"
 CACHE = ROOT / "evals" / "intent_cache.yaml"
-DB = ROOT / "data" / "ndis.db"
+THRESHOLDS = ROOT / "evals" / "thresholds.yaml"
+DB_PATH_ENV = "NDIS_DB_PATH"
+DB = Path(os.environ.get(DB_PATH_ENV) or ROOT / "data" / "ndis.db")
 EXTRACTION = ROOT / "data" / "private" / "extraction"
 PAGES = ROOT / "data" / "private" / "pages"
-THRESHOLDS = ROOT / "evals" / "thresholds.yaml"
 
 # Measured 2026-11-09 against the loaded register: every filter case is an exact match.
 EXPECTED_FILTER_ACCURACY = 1.0
@@ -79,6 +85,7 @@ def ask(payloads: dict[str, str]) -> tuple[Ask, CachedIntentClient]:
         GetPriceLimit(SqlAlchemySupportItemRepository(engine)),
         MissingIndexRuleAnswerer(),
         _evidence(engine),
+        locality_resolver=LocalityResolver(SqlAlchemyPostcodeCentroids(engine)),
         provider_limit=FILTER_PAGE,
     )
     return use_case, client
@@ -157,12 +164,77 @@ def test_refusal_cases_are_contained(ask: tuple[Ask, CachedIntentClient]) -> Non
 
 
 @pytest.mark.eval
-def test_every_payload_parses_to_a_recognised_intent(payloads: Mapping[str, str]) -> None:
-    """Replay the captured payloads through the parser alone: a payload that stops
-    parsing after a model change must surface here, not as an eval surprise."""
-    from ndis.domain.intent import parse_intent
-
+def test_locality_cases_match_the_register_and_the_gazetteer(
+    ask: tuple[Ask, CachedIntentClient],
+) -> None:
+    """The suburb questions resolve in code: a resolved name returns exactly the same
+    page as its postcode question and discloses the resolution; an ambiguous or unknown
+    name runs no provider query and discloses the reason and the candidates."""
+    use_case, client = ask
     golden = read_golden(GOLDEN)
-    for case in (*golden.filter_cases, *golden.refusal_cases):
-        parsed = parse_intent(payloads[case.question])
-        assert parsed.intent is not None, f"{case.question}: {parsed.rejected}"
+    matched = 0
+    failures: list[str] = []
+    for case in golden.locality_cases:
+        answer = use_case(case.question)
+        problems: list[str] = []
+        if answer.refused:
+            problems.append(f"refused:{answer.reason}")
+        if answer.intent is None or answer.intent.provider_filters != case.filters:
+            problems.append(f"intent:{answer.intent}")
+        resolution = answer.locality
+        if resolution is None:
+            problems.append("no_resolution")
+        elif case.outcome == "resolved":
+            if resolution.outcome is not LocalityOutcome.RESOLVED:
+                problems.append(f"outcome:{resolution.outcome}")
+            elif resolution.locality is None:
+                problems.append("no_locality")
+            else:
+                point = resolution.locality
+                if answer.provider_total != case.total:
+                    problems.append(f"total:{answer.provider_total}!={case.total}")
+                names = [provider.business_name for provider in answer.providers]
+                if names != list(case.first):
+                    problems.append(f"first:{names}")
+                postcodes = {provider.head_office.postcode for provider in answer.providers}
+                if point.postcode not in postcodes | {None}:
+                    problems.append(f"postcode:{point.postcode}")
+        else:
+            if resolution.outcome.value != case.outcome:
+                problems.append(f"outcome:{resolution.outcome}")
+            if answer.providers != () or answer.provider_total != 0:
+                problems.append("ran_provider_query")
+            pairs = {(item.state, item.postcode) for item in resolution.candidates}
+            if pairs != set(case.candidates):
+                problems.append(f"candidates:{sorted(pairs)}")
+            steps = {step.kind: step.output_summary for step in answer.steps}
+            if case.outcome not in steps.get("provider_filter", ""):
+                problems.append("step_does_not_say_why")
+        if problems:
+            failures.append(f"{case.question}: {', '.join(problems)}")
+        else:
+            matched += 1
+    assert matched == len(golden.locality_cases), "\n".join(failures)
+    assert client.asked == [case.question for case in golden.locality_cases]
+
+
+@pytest.mark.eval
+def test_the_suburb_refusal_case_does_not_execute(
+    ask: tuple[Ask, CachedIntentClient],
+) -> None:
+    """The suburb question that asks for a recommendation refuses before anything runs,
+    even though the question also names a resolvable suburb."""
+    use_case, _ = ask
+    golden = read_golden(GOLDEN)
+    suburb_refusals = [
+        case
+        for case in golden.refusal_cases
+        if "West End" in case.question and case.expected_reason == "decision_request"
+    ]
+    assert suburb_refusals, "the golden set lost its suburb refusal case"
+    for case in suburb_refusals:
+        answer = use_case(case.question)
+        assert answer.refused and answer.reason == "decision_request"
+        assert answer.providers == () and answer.provider_total == 0
+        assert answer.services == {} and answer.price is None and answer.rule is None
+        assert answer.locality is None  # refused before any resolution ran

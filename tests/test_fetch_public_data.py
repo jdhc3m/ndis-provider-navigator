@@ -284,8 +284,8 @@ def test_small_postcodes_fixture_is_rejected_for_size_and_count(postcodes_csv: P
     assert len(problems) == 2
     assert f"exceeds {POSTCODES_MIN_BYTES} bytes" in problems[0]
     assert f"a full file exceeds {POSTCODES_MIN_COUNT}" in problems[1]
-    assert verify_postcodes(postcodes_csv, min_bytes=0, min_count=6) == []
-    assert "7 located postcodes" in verify_postcodes(postcodes_csv, min_bytes=0, min_count=7)[0]
+    assert verify_postcodes(postcodes_csv, min_bytes=0, min_count=7) == []
+    assert "8 located postcodes" in verify_postcodes(postcodes_csv, min_bytes=0, min_count=8)[0]
 
 
 def test_postcodes_without_the_expected_queensland_rows_are_rejected(tmp_path: Path) -> None:

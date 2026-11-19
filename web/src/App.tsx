@@ -115,6 +115,10 @@ export function App({ client, initialQuestion }: AppProps) {
             onPickExample={(example) => {
               setQuestion(example)
             }}
+            onAsk={(text) => {
+              setQuestion(text)
+              ask(text)
+            }}
           />
         )}
       </main>
@@ -127,14 +131,21 @@ interface ResultProps {
   answer: AskOut
   meta: MetaOut | null
   onPickExample: (question: string) => void
+  /** Re-asks a new question (the locality candidate buttons use it). */
+  onAsk: (question: string) => void
 }
 
-function Result({ answer, meta, onPickExample }: ResultProps) {
+function Result({ answer, meta, onPickExample, onAsk }: ResultProps) {
   const hasRightColumn =
     answer.price !== null || answer.price_error !== null || answer.rule !== null
   return (
     <div className="flex flex-col gap-6">
-      <IntentRow intent={answer.intent} />
+      <IntentRow
+        intent={answer.intent}
+        locality={answer.locality ?? null}
+        question={answer.question}
+        onPickCandidate={onAsk}
+      />
       {answer.refused ? (
         <RefusalBanner answer={answer} />
       ) : (

@@ -209,7 +209,7 @@ def verify_postcodes(
     if size <= min_bytes:
         problems.append(f"file is {size} bytes; the postcodes CSV exceeds {min_bytes} bytes")
     try:
-        centroids, _ = parse_postcodes(path)
+        centroids, _, _ = parse_postcodes(path)
     except (PostcodesFormatError, UnicodeDecodeError) as exc:
         return problems + [f"file is not a postcodes CSV: {exc}"]
     if len(centroids) <= min_count:

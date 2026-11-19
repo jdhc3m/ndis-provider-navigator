@@ -4,9 +4,25 @@
  * a normal production build never includes this module.
  */
 import { ApiError, type NavigatorApi } from './client'
-import { ANSWER, EMPTY, ERROR_DETAIL, ERROR_STATUS, META, REFUSAL } from './fixtures'
+import {
+  AMBIGUOUS,
+  ANSWER,
+  EMPTY,
+  ERROR_DETAIL,
+  ERROR_STATUS,
+  LOCALITY,
+  META,
+  REFUSAL,
+} from './fixtures'
 
-export const MOCK_SCENARIOS = ['answer', 'refusal', 'empty', 'error'] as const
+export const MOCK_SCENARIOS = [
+  'answer',
+  'refusal',
+  'empty',
+  'error',
+  'locality',
+  'ambiguous',
+] as const
 export type MockScenario = (typeof MOCK_SCENARIOS)[number]
 
 export function isMockScenario(value: string | null): value is MockScenario {
@@ -24,6 +40,10 @@ export function createMockClient(scenario: MockScenario): NavigatorApi {
           return Promise.resolve({ ...REFUSAL, question })
         case 'empty':
           return Promise.resolve({ ...EMPTY, question })
+        case 'locality':
+          return Promise.resolve({ ...LOCALITY, question })
+        case 'ambiguous':
+          return Promise.resolve({ ...AMBIGUOUS, question })
         case 'error':
           return Promise.reject(new ApiError(ERROR_STATUS, ERROR_DETAIL))
       }

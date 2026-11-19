@@ -1,4 +1,4 @@
-import type { AskIntentOut, DistanceOut } from './api/client'
+import type { AskIntentOut, DistanceOut, LocalityOut } from './api/client'
 
 /** `11111111111` → `11 111 111 111`, the way the ABR prints it. */
 export function formatAbn(abn: string): string {
@@ -103,12 +103,33 @@ export function filterPairs(filters: NonNullable<AskIntentOut['provider_filters'
   const pairs: string[] = []
   if (filters.state) pairs.push(`state: ${filters.state}`)
   if (filters.postcode) pairs.push(`postcode: ${filters.postcode}`)
+  if (filters.locality) pairs.push(`locality: ${filters.locality}`)
   if (filters.group) pairs.push(`group: ${filters.group}`)
   if (filters.status) pairs.push(`status: ${filters.status}`)
   if (filters.brisbane_area !== null) {
     pairs.push(`Brisbane area: ${filters.brisbane_area ? 'yes' : 'no'}`)
   }
   return pairs
+}
+
+/** What the resolution chip says under "Understood as". */
+export function localityChipText(locality: LocalityOut): string {
+  if (locality.outcome === 'resolved' && locality.state && locality.postcode) {
+    return `locality: ${locality.name} → ${locality.state} ${locality.postcode}`
+  }
+  if (locality.outcome === 'locality_ambiguous') {
+    return `locality: ${locality.name} matched ${locality.candidates.length} postcodes`
+  }
+  return `locality: ${locality.name} is not in the postcode gazetteer`
+}
+
+/** The question the candidate buttons ask again with: the original words, plus the chosen
+ * postcode in brackets, so the postcode filter (and the postcode guard) have it in text. */
+export function candidateQuestion(
+  question: string,
+  candidate: LocalityOut['candidates'][number],
+): string {
+  return `${question.replace(/\s+$/, '')} (postcode ${candidate.postcode})`
 }
 
 export function formatMs(ms: number): string {

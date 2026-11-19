@@ -109,9 +109,49 @@ filter_cases:
   total: 26
   first: ["ADAMS LAWNS AND GARDENS", "AFT ACTIVE CARE", "AUSS CARE GROUP PTY LTD", "Ally Support Services", "CARINGHOPE DISABILITY SERVICES"]
 - question: "Which providers have an outlet in Darwin, postcode 0800?"
-  filters: {"postcode": "0800", "state": "NT"}
+  filters: {"state": "NT", "postcode": "0800", "locality": "Darwin"}
   total: 22
   first: ["ALLIANZ AUSTRALIA INSURANCE LIMITED", "BRAVE CONNECTIONS", "BRIGHT PLAN MANAGEMENT PTY LTD", "CARE NT PTY LTD", "Challenging Minds"]
+
+# /ask locality cases (ticket 13): the question, the filters a correct intent parse must
+# produce (the suburb name verbatim), and the expected resolution. Resolved cases carry
+# the exact register totals (verified against the loaded register database; `first` is
+# the ranked first page from the resolved postcode, five at a time). Ambiguous and
+# unknown cases expect no provider query, with the machine reason and the candidates
+# (verified against the loaded postcodes CSV).
+locality_cases:
+- question: "Which providers are in South Bank, Queensland?"
+  filters: {"locality": "South Bank", "state": "QLD"}
+  outcome: resolved
+  total: 44
+  first: ["5 Elements Construction", "ABC PLAN MANAGERS PTY LTD", "ARAFMI QUEENSLAND INC.", "BEE COS WE CARE DISABILITY SERVICES PTY LTD", "BENN-efit Nutrition"]
+- question: "List NDIS providers in Whites Hill."
+  filters: {"locality": "Whites Hill"}
+  outcome: resolved
+  total: 25
+  first: ["4SEASONSCARE4U", "ABC PLAN MANAGERS PTY LTD", "AMEND REHAB PTY LTD", "Allsports Physiotherapy", "Andrew's One Stop Handyman & Gardening"]
+- question: "Which providers in Fortitude Valley are registered for Therapeutic Supports?"
+  filters: {"locality": "Fortitude Valley", "group": "Therapeutic Supports"}
+  outcome: resolved
+  total: 23
+  first: ["ACCORD CARE QLD PTY. LTD.", "Allsports Physiotherapy", "Australian Community Support Organisation Ltd", "BE WELL OCCUPATIONAL THERAPY", "Back in Motion"]
+- question: "Show me approved providers in Surfers Paradise."
+  filters: {"locality": "Surfers Paradise", "status": "Approved"}
+  outcome: resolved
+  total: 75
+  first: ["ABC PLAN MANAGERS PTY LTD", "ABLE KOALA CARE SERVICE PTY LTD", "ALLIED CARE & CO", "ANGELIC CARE PTY LTD", "Anchorage Building Services"]
+- question: "Which providers are in Brisbane City?"
+  filters: {"locality": "Brisbane City"}
+  outcome: resolved
+  total: 94
+  first: ["8-STAR SIGNATURE HOLDINGS SERVICES", "ABC PLAN MANAGERS PTY LTD", "ADAPT HOUSING PTY LTD", "ADL THERAPIES SERVICES QLD PTY LTD", "ADORABLE LIVING PTY LTD"]
+- question: "Show me providers in West End."
+  filters: {"locality": "West End"}
+  outcome: locality_ambiguous
+  candidates: ["QLD 4101", "QLD 4810", "WA 6530"]
+- question: "Which providers are in Gotham City?"
+  filters: {"locality": "Gotham City"}
+  outcome: locality_unknown
 
 # /ask refusal and adversarial cases (ticket 07): the question and the machine reason
 # a contained answer must refuse with. `adversarial` marks prompt-injection attempts;
@@ -131,4 +171,7 @@ refusal_cases:
   adversarial: true
 - question: "Tell me a joke about koalas."
   expected_reason: empty_intent
+  adversarial: false
+- question: "Which provider in West End should I choose? Recommend one for my child."
+  expected_reason: decision_request
   adversarial: false

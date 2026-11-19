@@ -98,6 +98,8 @@ export interface paths {
          * @description List registered providers nationally, filtered and paginated. With ``near`` (a
          *     postcode) the whole matched set is ranked by straight-line distance from that
          *     postcode's centroid before the page is cut; ``max_km`` (inclusive) requires ``near``.
+         *     ``locality`` (a suburb name) is resolved to a ``(state, postcode)`` in code; an
+         *     unknown or ambiguous name is a 422 with the reason and the candidates.
          */
         get: operations["list_providers_providers_get"];
         put?: never;
@@ -138,6 +140,8 @@ export interface components {
             brisbane_area: boolean | null;
             /** Group */
             group: string | null;
+            /** Locality */
+            locality: string | null;
             /** Postcode */
             postcode: string | null;
             /** State */
@@ -163,7 +167,8 @@ export interface components {
          * AskOut
          * @description The combined answer: the parsed intent, the executed sections, and the refusal
          *     fields. ``caveat`` carries the exact services sentence whenever services are used;
-         *     ``steps`` lists the stages that built the answer, in order.
+         *     ``steps`` lists the stages that built the answer, in order; ``locality`` discloses
+         *     the suburb resolution when the question named one.
          */
         AskOut: {
             /** Caveat */
@@ -173,6 +178,7 @@ export interface components {
             /** Explanation */
             explanation: string | null;
             intent: components["schemas"]["AskIntentOut"] | null;
+            locality?: components["schemas"]["LocalityOut"] | null;
             price: components["schemas"]["PriceLimitOut"] | null;
             /** Price Error */
             price_error: string | null;
@@ -281,6 +287,43 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * LocalityCandidateOut
+         * @description One candidate a locality name may resolve to: the gazetteer spelling, its state
+         *     and postcode.
+         */
+        LocalityCandidateOut: {
+            /** Name */
+            name: string;
+            /** Postcode */
+            postcode: string;
+            /** State */
+            state: string;
+        };
+        /**
+         * LocalityOut
+         * @description The outcome of resolving one locality name: the suburb the question wrote, the
+         *     (state, postcode) it resolved to, or the unknown/ambiguous outcome with the full
+         *     candidate list.
+         */
+        LocalityOut: {
+            /**
+             * Candidates
+             * @default []
+             */
+            candidates: components["schemas"]["LocalityCandidateOut"][];
+            /** Name */
+            name: string;
+            /**
+             * Outcome
+             * @enum {string}
+             */
+            outcome: "resolved" | "locality_unknown" | "locality_ambiguous";
+            /** Postcode */
+            postcode?: string | null;
+            /** State */
+            state?: string | null;
+        };
+        /**
          * MetaOut
          * @description What the page needs to label itself truthfully: the configured model ids (empty
          *     strings when unset), the data snapshots and sources, and the tracing status. Nothing
@@ -380,6 +423,7 @@ export interface components {
          * ProviderPageOut
          * @description One page of providers; ``distance_origin`` is the ``near`` postcode the distances
          *     were measured from, ``null`` when the page is in register order without distances.
+         *     ``locality`` echoes the resolution when the query named a suburb.
          */
         ProviderPageOut: {
             /** Distance Origin */
@@ -388,6 +432,7 @@ export interface components {
             items: components["schemas"]["ProviderOut"][];
             /** Limit */
             limit: number;
+            locality?: components["schemas"]["LocalityOut"] | null;
             /** Offset */
             offset: number;
             /** Total */
@@ -595,6 +640,7 @@ export interface operations {
             query?: {
                 state?: string | null;
                 postcode?: string | null;
+                locality?: string | null;
                 group?: string | null;
                 status?: string | null;
                 brisbane_area?: boolean | null;

@@ -18,6 +18,8 @@ export type AskRuleOut = components['schemas']['AskRuleOut']
 export type StepOut = components['schemas']['StepOut']
 export type MetaOut = components['schemas']['MetaOut']
 export type ProviderPageOut = components['schemas']['ProviderPageOut']
+export type LocalityOut = components['schemas']['LocalityOut']
+export type LocalityCandidateOut = components['schemas']['LocalityCandidateOut']
 
 type JsonBody<T> = T extends { content: { 'application/json': infer B } } ? B : never
 type Ok<P extends keyof paths, M extends keyof paths[P]> = paths[P][M] extends {

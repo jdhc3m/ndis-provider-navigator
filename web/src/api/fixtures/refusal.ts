@@ -14,6 +14,7 @@ export const REFUSAL: AskOut = {
     decision_request: true,
     parse_rejections: [],
   },
+  locality: null,
   providers: [],
   provider_total: 0,
   distance_origin: null,

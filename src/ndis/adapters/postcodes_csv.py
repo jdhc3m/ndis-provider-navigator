@@ -7,7 +7,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ndis.application.providers import PostcodeCentroids
+from ndis.application.providers import PostcodeLocalities
 from ndis.domain.geo import (
     NON_GEOGRAPHIC_REASON,
     POSTCODE_COLUMNS,
@@ -16,6 +16,13 @@ from ndis.domain.geo import (
     PostcodeRowError,
     parse_postcode_row,
     postcode_centroid,
+)
+from ndis.domain.locality import (
+    COLUMN_TYPE,
+    Locality,
+    LocalityRowError,
+    normalise_locality,
+    parse_locality_row,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +47,8 @@ def iter_postcode_rows(path: Path) -> Iterator[Mapping[str, str | None]]:
 
 @dataclass
 class PostcodeLoadReport:
-    """Counts produced by one load of the postcode CSV."""
+    """Counts produced by one load of the postcode CSV: the centroid step and, since
+    ticket 13, the locality gazetteer step over the same rows."""
 
     input_rows: int = 0
     parsed_rows: int = 0
@@ -49,6 +57,14 @@ class PostcodeLoadReport:
     excluded_rows: int = 0
     """Rows dropped on purpose (``NON_GEOGRAPHIC_POSTCODES``), not parse failures."""
     postcodes_persisted: int = 0
+    locality_rows: Counter[str] = field(default_factory=Counter)
+    """Rows seen per ``type`` value by the locality step (Delivery Area, Post Office
+    Boxes, LVR, ...); only Delivery Area rows become localities."""
+    localities_persisted: int = 0
+    locality_names_persisted: int = 0
+    """Distinct locality names (so distinct lookup keys) the gazetteer gained."""
+    locality_rejected_rows: int = 0
+    locality_rejection_reasons: Counter[str] = field(default_factory=Counter)
 
     @property
     def parse_ratio(self) -> float:
@@ -61,24 +77,50 @@ class PostcodeLoadReport:
         reasons = ", ".join(
             f"{reason}={count}" for reason, count in sorted(self.rejection_reasons.items())
         )
+        types = ", ".join(f"{name}={count}" for name, count in sorted(self.locality_rows.items()))
+        locality_reasons = ", ".join(
+            f"{reason}={count}" for reason, count in sorted(self.locality_rejection_reasons.items())
+        )
         return (
             f"input_rows={self.input_rows} parsed_rows={self.parsed_rows} "
             f"rejected_rows={self.rejected_rows} ({reasons or 'none'}) "
             f"excluded_rows={self.excluded_rows} (non-geographic postcodes) "
-            f"parse_ratio={self.parse_ratio:.4f} postcodes_persisted={self.postcodes_persisted}"
+            f"parse_ratio={self.parse_ratio:.4f} postcodes_persisted={self.postcodes_persisted} "
+            f"locality_rows_by_type=({types or 'none'}) "
+            f"localities_persisted={self.localities_persisted} "
+            f"locality_names_persisted={self.locality_names_persisted} "
+            f"locality_rejected_rows={self.locality_rejected_rows} "
+            f"({locality_reasons or 'none'})"
         )
 
 
-def parse_postcodes(path: Path) -> tuple[list[PostcodeCentroid], PostcodeLoadReport]:
+def parse_postcodes(
+    path: Path,
+) -> tuple[list[PostcodeCentroid], list[Locality], PostcodeLoadReport]:
     """Read the file row by row and reduce it to one centroid per postcode (the mean of
-    every located locality row; see ``postcode_centroid``). Rows for the Australia Post
-    codes that are not places (``NON_GEOGRAPHIC_POSTCODES``, e.g. 9999 "NORTH POLE") are
-    rejected as ``non_geographic`` so those postcodes get no centroid; PO-box and LVR
-    postcodes are kept because their coordinates are the real post office."""
+    every located locality row; see ``postcode_centroid``) and to the locality gazetteer
+    of the ``Delivery Area`` rows — the only rows that name places people ask for; PO-box
+    and large-volume-receiver rows name post offices and mail routes instead. Rows for
+    the Australia Post codes that are not places (``NON_GEOGRAPHIC_POSTCODES``, e.g. 9999
+    "NORTH POLE") are rejected as ``non_geographic`` so those postcodes get neither a
+    centroid nor a locality; PO-box and LVR postcodes keep their centroid because their
+    coordinates are the real post office."""
     points: dict[str, list[Coordinates]] = {}
+    localities: dict[tuple[str, str, str], Locality] = {}
     report = PostcodeLoadReport()
     for row in iter_postcode_rows(path):
         report.input_rows += 1
+        # The locality step reads every row — a row without usable coordinates can still
+        # be a real named place — so it runs before the centroid parse below.
+        report.locality_rows[(row.get(COLUMN_TYPE) or "").strip()] += 1
+        try:
+            locality = parse_locality_row(row)
+        except LocalityRowError as exc:
+            if exc.reason not in ("not_delivery_area", NON_GEOGRAPHIC_REASON):
+                report.locality_rejected_rows += 1
+                report.locality_rejection_reasons[exc.reason] += 1
+        else:
+            localities.setdefault((locality.name, locality.state, locality.postcode), locality)
         try:
             postcode, point = parse_postcode_row(row)
         except PostcodeRowError as exc:
@@ -91,19 +133,24 @@ def parse_postcodes(path: Path) -> tuple[list[PostcodeCentroid], PostcodeLoadRep
         report.parsed_rows += 1
         points.setdefault(postcode, []).append(point)
     centroids = [postcode_centroid(postcode, located) for postcode, located in points.items()]
-    return centroids, report
+    ordered = sorted(localities.values(), key=lambda item: (item.name, item.state, item.postcode))
+    return centroids, ordered, report
 
 
-def load_postcodes(path: Path, repository: PostcodeCentroids) -> PostcodeLoadReport:
-    """Parse the CSV at ``path`` and replace the stored centroids with it: the table is
-    cleared first, so a postcode the rule now rejects disappears from the database."""
-    centroids, report = parse_postcodes(path)
+def load_postcodes(path: Path, repository: PostcodeLocalities) -> PostcodeLoadReport:
+    """Parse the CSV at ``path`` and replace the stored centroids and the locality
+    gazetteer with it: both tables are cleared first, so a postcode or name the rules now
+    reject disappears from the database."""
+    centroids, localities, report = parse_postcodes(path)
     if report.parse_ratio < MIN_PARSE_RATIO:
         raise PostcodesFormatError(
             f"only {report.parse_ratio:.1%} of {report.input_rows} rows parsed; "
             f"rejections: {dict(report.rejection_reasons)}"
         )
     repository.replace_all(centroids)
+    repository.replace_all_localities(localities)
     report.postcodes_persisted = len(centroids)
+    report.localities_persisted = len(localities)
+    report.locality_names_persisted = len({normalise_locality(item.name) for item in localities})
     logger.info("postcode load: %s", report.summary())
     return report

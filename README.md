@@ -54,7 +54,7 @@ Import-linter enforces the layering; `web/` reaches the API only over HTTP. Trac
 | [NDIS Commission registered provider CSV](https://www.ndiscommission.gov.au/provider-registration/find-registered-provider/download-csv) | Provider source of record (providers, outlets, registration groups, status) | [CC BY 4.0 Australia](https://www.ndiscommission.gov.au/copyright-and-disclaimer) — "© Commonwealth of Australia" |
 | [NDIS Support Catalogue 2026-27 (XLSX)](https://www.ndis.gov.au/providers/pricing-and-payments/pricing/what-support-catalogue) | Price limits, support item numbers, registration groups | NDIA website material under CC Attribution–NonCommercial 3.0 ([NDIA copyright page](https://www.ndis.gov.au/policies-rules-and-legal/using-our-websites-and-social-media/copyright)); attribute the NDIA |
 | [NDIS Pricing Arrangements and Price Limits 2025-26 v1.1 (PDF)](https://www.ndis.gov.au/providers/pricing-and-payments/pricing/pricing-arrangements) | The pricing-rule text the RAG index is built from | Same NDIA CC BY-NC 3.0 terms |
-| [Australian postcodes CSV](https://github.com/matthewproctor/australianpostcodes) (Matthew Proctor) | Postcode centroids for distance ranking | The source repository carries no licence file; the author describes the dataset as free and "regarded as public domain" |
+| [Australian postcodes CSV](https://github.com/matthewproctor/australianpostcodes) (Matthew Proctor) | Postcode centroids for distance ranking, and the suburb-name gazetteer (the `Delivery Area` rows are the `localities` table behind `GET /providers?locality=` and the /ask suburb questions) | The source repository carries no licence file; the author describes the dataset as free and "regarded as public domain" |
 | Google Maps export of Brisbane providers (private) | Local bootstrap only: entity resolution and the page-collection seed | Owner's own export; lives under git-ignored `data/private/`, never committed |
 
 The register is the provider source of record; the register does not record profession, so
@@ -141,6 +141,8 @@ pnpm --dir web build                            # once, then restart uvicorn —
 
 Then check, in order: `GET /meta` (configured models and data dates), `GET
 /providers?near=4101&max_km=5&limit=5` (ranked by distance), `GET
+/providers?locality=South%20Bank&state=QLD` (suburb resolved to postcode 4101 in code;
+an unknown or ambiguous suburb is a 422 with the candidates), `GET
 /price-limits?item=15_056_0128_1_3&state=QLD` (catalogue limit, no model involved), and
 `POST /ask` with a question (needs the key; the rule part degrades to a refusal with
 reason `no_chunks` until `build_rule_index.py` has run). `POST /ask` with
@@ -243,6 +245,11 @@ validation is not done (below).
 
 Honest list; nothing here should be assumed from the demo:
 
+- Region names and other area words — "Gold Coast", "Sunshine Coast", "northside", LGA or
+  SA4 names are not understood as locations; only suburb names (the postcode CSV's
+  `Delivery Area` localities), postcodes, states and the Brisbane-area flag are.
+- Typo correction and "did you mean" suggestions — a suburb name is matched on its
+  normalised spelling only; a misspelling is reported as unknown rather than guessed.
 - Fuzzy vector name match — provider names are matched exactly (domain, normalised name,
   registered-Maps links); no fuzzy/vector name search for "something like".
 - Model routing — one configured model serves every step; no cheap/fast routing or

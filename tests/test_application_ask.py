@@ -27,16 +27,28 @@ from ndis.application.ask import (
 from ndis.application.catalogue import GetPriceLimit, UnknownSupportItemError
 from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.application.pricing import RuleAnswer
-from ndis.application.providers import ListProviders, PostcodeCentroids, ProviderQuery
+from ndis.application.providers import (
+    ListProviders,
+    LocalityDirectory,
+    LocalityResolver,
+    PostcodeCentroids,
+    ProviderQuery,
+)
 from ndis.domain.answer import CAVEAT_SERVICES, ClaimedService, ServiceMention
 from ndis.domain.catalogue import price_limit
 from ndis.domain.entities import Remoteness
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.geo import DistanceSource
 from ndis.domain.intent import Intent, ProviderFilters, parse_intent
+from ndis.domain.locality import Locality, LocalityOutcome
 from ndis.domain.pricing import REFUSAL_NO_CHUNKS
 from ndis.domain.taxonomy import Service
-from tests.conftest import SEED_CENTROIDS, SEED_PROVIDERS, SEED_SUPPORT_ITEMS
+from tests.conftest import (
+    SEED_CENTROIDS,
+    SEED_PROVIDERS,
+    SEED_SUPPORT_ITEMS,
+    LocalityDirectoryStub,
+)
 
 
 class FakeIntentClient:
@@ -139,6 +151,7 @@ def make_ask(
     provider_limit: int = ASK_PROVIDER_LIMIT,
     token_prices: tuple[float, float] | None = None,
     centroids: PostcodeCentroids | None = None,
+    localities: LocalityDirectory | None = None,
 ) -> Ask:
     return Ask(
         client,
@@ -146,6 +159,7 @@ def make_ask(
         RecordingPriceLimit(catalogue),
         rule_answerer or FakeRuleAnswerer(),
         evidence or FakeEvidence(),
+        locality_resolver=LocalityResolver(localities or LocalityDirectoryStub(())),
         provider_limit=provider_limit,
         token_prices=token_prices,
         clock=TickingClock(),
@@ -264,6 +278,241 @@ class TestFilterExecution:
         answer = make_ask(client, providers, catalogue)("providers in 4101")
         assert answer.distance_origin is None
         assert "origin postcode unknown, no distances" in answer.steps[1].output_summary
+
+
+class TestLocalityExecution:
+    """A suburb name is resolved in code and executed through the postcode filter."""
+
+    @staticmethod
+    def directory() -> LocalityDirectory:
+        return LocalityDirectoryStub(
+            [
+                Locality("SOUTH BANK", "QLD", "4101"),
+                Locality("SOUTHBANK", "VIC", "3006"),
+                Locality("WEST END", "QLD", "4101"),
+                Locality("WEST END", "QLD", "4810"),
+                Locality("WEST END", "WA", "6530"),
+                Locality("BRISBANE CITY", "QLD", "4000"),
+            ]
+        )
+
+    def test_a_resolved_locality_answers_like_its_postcode_question(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        centroids = SqlAlchemyPostcodeCentroids(providers._engine)
+        centroids.replace_all(SEED_CENTROIDS)
+        locality = make_ask(
+            FakeIntentClient(
+                [intent_payload(provider_filters='{"locality": "South Bank", "state": "QLD"}')]
+            ),
+            providers,
+            catalogue,
+            centroids=centroids,
+            localities=self.directory(),
+        )
+        postcode = make_ask(
+            FakeIntentClient([intent_payload(provider_filters='{"postcode": "4101"}')]),
+            providers,
+            catalogue,
+            centroids=centroids,
+            localities=self.directory(),
+        )
+        by_suburb = locality("Which providers are in South Bank, Queensland?")
+        by_postcode = postcode("Which providers have an outlet in postcode 4101?")
+        assert not by_suburb.refused
+        assert [provider.abn for provider in by_suburb.providers] == [
+            provider.abn for provider in by_postcode.providers
+        ]
+        assert by_suburb.provider_total == by_postcode.provider_total == 2
+        assert by_suburb.distance_origin == by_postcode.distance_origin == "4101"
+        assert by_suburb.distances == by_postcode.distances
+        assert by_suburb.locality is not None
+        assert by_suburb.locality.outcome is LocalityOutcome.RESOLVED
+        assert by_suburb.locality.name == "South Bank"
+        assert by_suburb.locality.locality == Locality("SOUTH BANK", "QLD", "4101")
+        assert by_suburb.parse_rejections == ()
+        assert by_suburb.steps[1].output_summary == (
+            "resolved South Bank to QLD 4101; the postcode covers other suburbs too; "
+            "2 of 2 matching providers ranked by distance from 4101: "
+            "0 exact, 2 postcode centroid, 0 without distance"
+        )
+
+    def test_an_ambiguous_locality_runs_no_provider_query_and_lists_candidates(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [
+                intent_payload(
+                    provider_filters='{"locality": "West End"}',
+                    price_query='{"item": "01_002_0107_1_1", "state": "QLD"}',
+                )
+            ]
+        )
+        ask = make_ask(client, providers, catalogue, localities=self.directory())
+        answer = ask("Who is in West End and what is the price limit for 01_002_0107_1_1 in QLD?")
+        assert not answer.refused
+        assert answer.providers == () and answer.provider_total == 0
+        assert answer.locality is not None
+        assert answer.locality.outcome is LocalityOutcome.AMBIGUOUS
+        assert [(item.state, item.postcode) for item in answer.locality.candidates] == [
+            ("QLD", "4101"),
+            ("QLD", "4810"),
+            ("WA", "6530"),
+        ]
+        assert "locality_ambiguous" in answer.parse_rejections
+        # The price part of the same question is still answered.
+        assert answer.price is not None and answer.price.limit is not None
+        assert answer.steps[1].output_summary == (
+            "no provider query: locality_ambiguous (candidates: QLD 4101, QLD 4810, WA 6530)"
+        )
+
+    def test_an_unknown_locality_runs_no_provider_query(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient([intent_payload(provider_filters='{"locality": "Gotham City"}')])
+        ask = make_ask(client, providers, catalogue, localities=self.directory())
+        answer = ask("Which providers are in Gotham City?")
+        assert not answer.refused
+        assert answer.providers == () and answer.provider_total == 0
+        assert answer.locality is not None
+        assert answer.locality.outcome is LocalityOutcome.UNKNOWN
+        assert "locality_unknown" in answer.parse_rejections
+        assert answer.steps[1].output_summary == "no provider query: locality_unknown"
+
+    def test_a_postcode_not_in_the_question_is_rejected_and_nothing_executes_with_it(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [
+                intent_payload(
+                    provider_filters='{"postcode": "4101"}',
+                    price_query='{"item": "01_002_0107_1_1", "state": "QLD"}',
+                )
+            ]
+        )
+        ask = make_ask(client, providers, catalogue, localities=self.directory())
+        answer = ask("Who is nearby and what does 01_002_0107_1_1 cost in QLD?")
+        assert not answer.refused
+        assert answer.providers == () and answer.provider_total == 0
+        assert answer.parse_rejections == ("postcode_not_in_question",)
+        # The price part of the same question still runs.
+        assert answer.price is not None
+        assert answer.steps[1].output_summary == "no provider query: postcode_not_in_question"
+
+    def test_a_stated_postcode_that_the_question_does_write_is_kept(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient([intent_payload(provider_filters='{"postcode": "4101"}')])
+        ask = make_ask(client, providers, catalogue, localities=self.directory())
+        answer = ask("Providers in West End, 4101?")
+        assert not answer.refused
+        assert answer.provider_total == 2
+
+    def test_a_suburb_that_contradicts_the_postcode_is_reported(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        centroids = SqlAlchemyPostcodeCentroids(providers._engine)
+        centroids.replace_all(SEED_CENTROIDS)
+        client = FakeIntentClient(
+            [intent_payload(provider_filters='{"locality": "West End", "postcode": "3000"}')]
+        )
+        ask = make_ask(
+            client, providers, catalogue, centroids=centroids, localities=self.directory()
+        )
+        answer = ask("Providers in West End, postcode 3000?")
+        assert not answer.refused
+        # The postcode is used and the contradicting suburb is reported, not ignored.
+        assert answer.provider_total == 1
+        assert [provider.abn for provider in answer.providers] == ["10000000005"]
+        assert answer.distance_origin == "3000"
+        assert "locality_ambiguous" in answer.parse_rejections
+        assert "rejected: locality_ambiguous" in answer.steps[1].output_summary
+        # The ambiguity is disclosed with its candidates (none of them 3000).
+        assert answer.locality is not None
+        assert answer.locality.outcome is LocalityOutcome.AMBIGUOUS
+        assert {item.postcode for item in answer.locality.candidates} == {"4101", "4810", "6530"}
+
+    def test_a_resolved_suburb_that_contradicts_the_postcode_is_reported(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        centroids = SqlAlchemyPostcodeCentroids(providers._engine)
+        centroids.replace_all(SEED_CENTROIDS)
+        client = FakeIntentClient(
+            [
+                intent_payload(
+                    provider_filters=(
+                        '{"locality": "West End", "brisbane_area": true, "postcode": "3000"}'
+                    )
+                )
+            ]
+        )
+        ask = make_ask(
+            client, providers, catalogue, centroids=centroids, localities=self.directory()
+        )
+        answer = ask("Providers in West End in the Brisbane area, postcode 3000?")
+        assert not answer.refused
+        # The Brisbane-area flag narrows West End to QLD 4101, which contradicts the
+        # stated postcode: the postcode runs, the suburb is reported, not ignored.
+        assert answer.provider_total == 1
+        assert [provider.abn for provider in answer.providers] == ["10000000005"]
+        assert answer.distance_origin == "3000"
+        assert "locality_postcode_mismatch" in answer.parse_rejections
+        assert "rejected: locality_postcode_mismatch" in answer.steps[1].output_summary
+
+    def test_a_suburb_that_agrees_with_the_postcode_is_disclosed(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        centroids = SqlAlchemyPostcodeCentroids(providers._engine)
+        centroids.replace_all(SEED_CENTROIDS)
+        client = FakeIntentClient(
+            [intent_payload(provider_filters='{"locality": "West End", "postcode": "4101"}')]
+        )
+        ask = make_ask(
+            client, providers, catalogue, centroids=centroids, localities=self.directory()
+        )
+        answer = ask("Providers in West End, postcode 4101?")
+        assert not answer.refused
+        assert answer.provider_total == 2
+        assert answer.locality is not None
+        assert answer.locality.locality == Locality("WEST END", "QLD", "4101")
+        assert "resolved West End to QLD 4101" in answer.steps[1].output_summary
+        assert answer.parse_rejections == ()
+
+    def test_brisbane_city_is_a_locality_not_the_brisbane_area(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        centroids = SqlAlchemyPostcodeCentroids(providers._engine)
+        centroids.replace_all(SEED_CENTROIDS)
+        client = FakeIntentClient(
+            [intent_payload(provider_filters='{"locality": "Brisbane City"}')]
+        )
+        ask = make_ask(
+            client, providers, catalogue, centroids=centroids, localities=self.directory()
+        )
+        answer = ask("Providers in Brisbane City?")
+        assert not answer.refused
+        assert answer.provider_total == 1
+        assert [provider.abn for provider in answer.providers] == ["10000000002"]
+        assert answer.locality is not None
+        assert answer.locality.locality == Locality("BRISBANE CITY", "QLD", "4000")
 
 
 class TestRefusals:
