@@ -15,6 +15,7 @@ from ndis.domain.catalogue import CATALOGUE_TITLE
 from ndis.domain.entities import Provider
 from ndis.domain.geo import Distance
 from ndis.domain.intent import Intent
+from ndis.domain.locality import LocalityResolution
 
 
 class AddressOut(BaseModel):
@@ -78,13 +79,49 @@ class ProviderOut(BaseModel):
 
 class ProviderPageOut(BaseModel):
     """One page of providers; ``distance_origin`` is the ``near`` postcode the distances
-    were measured from, ``null`` when the page is in register order without distances."""
+    were measured from, ``null`` when the page is in register order without distances.
+    ``locality`` echoes the resolution when the query named a suburb."""
 
     items: list[ProviderOut]
     total: int
     limit: int
     offset: int
     distance_origin: str | None = None
+    locality: "LocalityOut | None" = None
+
+
+class LocalityCandidateOut(BaseModel):
+    """One candidate a locality name may resolve to: the gazetteer spelling, its state
+    and postcode."""
+
+    name: str
+    state: str
+    postcode: str
+
+
+class LocalityOut(BaseModel):
+    """The outcome of resolving one locality name: the suburb the question wrote, the
+    (state, postcode) it resolved to, or the unknown/ambiguous outcome with the full
+    candidate list."""
+
+    name: str
+    outcome: Literal["resolved", "locality_unknown", "locality_ambiguous"]
+    state: str | None = None
+    postcode: str | None = None
+    candidates: list[LocalityCandidateOut] = []
+
+    @classmethod
+    def from_resolution(cls, resolution: LocalityResolution) -> "LocalityOut":
+        return cls(
+            name=resolution.name,
+            outcome=resolution.outcome.value,
+            state=resolution.locality.state if resolution.locality else None,
+            postcode=resolution.locality.postcode if resolution.locality else None,
+            candidates=[
+                LocalityCandidateOut(name=item.name, state=item.state, postcode=item.postcode)
+                for item in resolution.candidates
+            ],
+        )
 
 
 class PriceLimitsOut(BaseModel):
@@ -182,6 +219,7 @@ class AskIntentFiltersOut(BaseModel):
 
     state: str | None
     postcode: str | None
+    locality: str | None
     group: str | None
     status: str | None
     brisbane_area: bool | None
@@ -214,6 +252,7 @@ class AskIntentOut(BaseModel):
             else AskIntentFiltersOut(
                 state=filters.state,
                 postcode=filters.postcode,
+                locality=filters.locality,
                 group=filters.group,
                 status=filters.status,
                 brisbane_area=filters.brisbane_area,
@@ -281,13 +320,15 @@ class StepOut(BaseModel):
 class AskOut(BaseModel):
     """The combined answer: the parsed intent, the executed sections, and the refusal
     fields. ``caveat`` carries the exact services sentence whenever services are used;
-    ``steps`` lists the stages that built the answer, in order."""
+    ``steps`` lists the stages that built the answer, in order; ``locality`` discloses
+    the suburb resolution when the question named one."""
 
     question: str
     refused: bool
     reason: str | None
     explanation: str | None
     intent: AskIntentOut | None
+    locality: LocalityOut | None = None
     providers: list[AskProviderOut]
     provider_total: int
     distance_origin: str | None
@@ -307,6 +348,9 @@ class AskOut(BaseModel):
             intent=None
             if result.intent is None
             else AskIntentOut.from_intent(result.intent, result.parse_rejections),
+            locality=None
+            if result.locality is None
+            else LocalityOut.from_resolution(result.locality),
             providers=[
                 AskProviderOut(
                     **ProviderOut.from_provider(

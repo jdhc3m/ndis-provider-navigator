@@ -15,7 +15,7 @@ from ndis.adapters.sqlite_repository import (
     create_sqlite_engine,
 )
 from ndis.api import app as api_app
-from ndis.api.app import create_app, get_price_limit, list_providers
+from ndis.api.app import _locality_422, create_app, get_price_limit, list_providers
 from ndis.api.dependencies import (
     DB_PATH_ENV,
     DEFAULT_DB_PATH,
@@ -30,7 +30,7 @@ from ndis.api.dependencies import (
     support_item_repository,
     support_item_repository_for,
 )
-from ndis.api.schemas import DistanceOut, PriceLimitOut, ProviderOut
+from ndis.api.schemas import DistanceOut, LocalityOut, PriceLimitOut, ProviderOut
 from ndis.application.catalogue import GetPriceLimit, PriceLimitResult
 from ndis.application.providers import ListProviders, RankedProvider
 from ndis.domain.entities import Remoteness
@@ -42,6 +42,7 @@ from ndis.domain.entity_resolution import (
     ProviderLink,
 )
 from ndis.domain.geo import Distance, DistanceSource
+from ndis.domain.locality import Locality, LocalityOutcome, LocalityResolution
 from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS, make_place
 
 
@@ -247,6 +248,152 @@ def test_list_providers_rejects_bad_parameters(client: TestClient, params: dict[
     response = client.get("/providers", params=params)
     assert response.status_code == 422
     assert response.json()["detail"]
+
+
+def test_list_providers_locality_same_total_as_the_postcode(
+    client: TestClient, db_path: Path
+) -> None:
+    """The gazetteer is loaded into the same database and /providers resolves the suburb
+    to the postcode: same total, disclosed in the response."""
+    repository = SqlAlchemyPostcodeCentroids(create_sqlite_engine(db_path))
+    repository.replace_all_localities(
+        [Locality("SOUTH BANK", "QLD", "4101"), Locality("SOUTHBANK", "VIC", "3006")]
+    )
+    by_postcode = client.get("/providers", params={"postcode": "4101"}).json()
+    by_locality = client.get("/providers", params={"locality": "South Bank", "state": "QLD"})
+    assert by_locality.status_code == 200
+    body = by_locality.json()
+    assert body["total"] == by_postcode["total"] == 2
+    assert body["locality"] == {
+        "name": "South Bank",
+        "outcome": "resolved",
+        "state": "QLD",
+        "postcode": "4101",
+        "candidates": [],
+    }
+
+
+def test_list_providers_ambiguous_locality_is_a_422_with_candidates(
+    client: TestClient, db_path: Path
+) -> None:
+    repository = SqlAlchemyPostcodeCentroids(create_sqlite_engine(db_path))
+    repository.replace_all_localities(
+        [
+            Locality("WEST END", "QLD", "4101"),
+            Locality("WEST END", "QLD", "4810"),
+            Locality("WEST END", "WA", "6530"),
+        ]
+    )
+    response = client.get("/providers", params={"locality": "West End"})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["reason"] == "locality_ambiguous"
+    assert [(item["state"], item["postcode"]) for item in detail["candidates"]] == [
+        ("QLD", "4101"),
+        ("QLD", "4810"),
+        ("WA", "6530"),
+    ]
+    assert "postcode" in detail["message"]
+
+
+def test_list_providers_unknown_locality_is_a_422(client: TestClient, db_path: Path) -> None:
+    repository = SqlAlchemyPostcodeCentroids(create_sqlite_engine(db_path))
+    repository.replace_all_localities([Locality("SOUTH BANK", "QLD", "4101")])
+    response = client.get("/providers", params={"locality": "Gotham City"})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["reason"] == "locality_unknown"
+    assert detail["candidates"] == []
+
+
+def test_list_providers_locality_state_narrows_the_candidates(
+    client: TestClient, db_path: Path
+) -> None:
+    repository = SqlAlchemyPostcodeCentroids(create_sqlite_engine(db_path))
+    repository.replace_all_localities(
+        [
+            Locality("WEST END", "QLD", "4101"),
+            Locality("WEST END", "QLD", "4810"),
+            Locality("WEST END", "WA", "6530"),
+        ]
+    )
+    response = client.get("/providers", params={"locality": "West End", "state": "WA"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 0  # no seeded provider in WA 6530
+    assert body["locality"]["postcode"] == "6530"
+
+
+def test_list_providers_locality_contradicting_the_postcode_is_a_422(
+    client: TestClient, db_path: Path
+) -> None:
+    repository = SqlAlchemyPostcodeCentroids(create_sqlite_engine(db_path))
+    repository.replace_all_localities(
+        [Locality("SOUTH BANK", "QLD", "4101"), Locality("SOUTHBANK", "VIC", "3006")]
+    )
+    response = client.get(
+        "/providers", params={"locality": "South Bank", "state": "QLD", "postcode": "4101"}
+    )
+    assert response.status_code == 200  # agreeing postcode and suburb run together
+    assert response.json()["total"] == 2
+    mismatch = client.get(
+        "/providers", params={"locality": "South Bank", "state": "QLD", "postcode": "4000"}
+    )
+    assert mismatch.status_code == 422
+    assert mismatch.json()["detail"]["reason"] == "locality_postcode_mismatch"
+
+
+def test_the_locality_422_payload_carries_the_reason_and_candidates() -> None:
+    ambiguous = LocalityResolution(
+        LocalityOutcome.AMBIGUOUS,
+        "West End",
+        None,
+        (Locality("WEST END", "QLD", "4101"), Locality("WEST END", "WA", "6530")),
+    )
+    error = _locality_422(ambiguous, ambiguous.outcome.value)
+    assert error.status_code == 422
+    assert error.detail["reason"] == "locality_ambiguous"
+    assert error.detail["candidates"] == [
+        {"name": "WEST END", "state": "QLD", "postcode": "4101"},
+        {"name": "WEST END", "state": "WA", "postcode": "6530"},
+    ]
+    unknown = LocalityResolution(LocalityOutcome.UNKNOWN, "Gotham City")
+    detail = _locality_422(unknown, unknown.outcome.value).detail
+    assert detail == {
+        "reason": "locality_unknown",
+        "message": "the locality 'Gotham City' is not in the loaded gazetteer",
+        "candidates": [],
+    }
+
+
+def test_the_locality_schema_echoes_the_resolution() -> None:
+    resolved = LocalityOut.from_resolution(
+        LocalityResolution(
+            LocalityOutcome.RESOLVED, "South Bank", Locality("SOUTH BANK", "QLD", "4101"), ()
+        )
+    )
+    assert resolved.model_dump() == {
+        "name": "South Bank",
+        "outcome": "resolved",
+        "state": "QLD",
+        "postcode": "4101",
+        "candidates": [],
+    }
+    ambiguous = LocalityOut.from_resolution(
+        LocalityResolution(
+            LocalityOutcome.AMBIGUOUS,
+            "West End",
+            None,
+            (Locality("WEST END", "QLD", "4101"),),
+        )
+    )
+    assert ambiguous.outcome == "locality_ambiguous"
+    assert ambiguous.state is None and ambiguous.postcode is None
+    assert ambiguous.candidates[0].model_dump() == {
+        "name": "WEST END",
+        "state": "QLD",
+        "postcode": "4101",
+    }
 
 
 def test_get_price_limit_national_default(client: TestClient) -> None:

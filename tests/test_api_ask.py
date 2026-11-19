@@ -96,6 +96,7 @@ def test_ask_returns_the_combined_answer(
             "provider_filters": {
                 "state": "NSW",
                 "postcode": None,
+                "locality": None,
                 "group": None,
                 "status": None,
                 "brisbane_area": None,
@@ -105,6 +106,7 @@ def test_ask_returns_the_combined_answer(
             "decision_request": False,
             "parse_rejections": [],
         },
+        "locality": None,
         "providers": [],
         "provider_total": 1,
         "distance_origin": None,
@@ -233,6 +235,7 @@ def test_ask_dependency_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
         ),
         dependencies.get_price_limit_use_case(dependencies.support_item_repository()),
         claim_evidence_source(),
+        dependencies.locality_resolver(),
     )
     assert isinstance(use_case, Ask)
     assert rule_store_maybe() is None
@@ -317,6 +320,7 @@ def test_ask_use_case_prices_tokens_for_the_configured_model(
             ),
             dependencies.get_price_limit_use_case(dependencies.support_item_repository()),
             claim_evidence_source(),
+            dependencies.locality_resolver(),
         )
 
     monkeypatch.setenv("LLM_MODEL", "a-model-with-no-published-price")

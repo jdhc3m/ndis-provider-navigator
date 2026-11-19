@@ -10,6 +10,7 @@ from ndis.domain.intent import (
     PriceQuery,
     ProviderFilters,
     parse_intent,
+    postcode_in_question,
 )
 
 
@@ -87,6 +88,10 @@ class TestProviderFilters:
             '{"state": "Georgia"}',
             '{"postcode": "41O1"}',
             '{"postcode": "41010"}',
+            '{"locality": 4101}',
+            '{"locality": ""}',
+            '{"locality": "   "}',
+            f'{{"locality": "{"x" * 81}"}}',
             '{"group": ""}',
             '{"status": "pending"}',
             '{"brisbane_area": "yes"}',
@@ -99,8 +104,8 @@ class TestProviderFilters:
 
     def test_an_all_null_filter_object_is_no_query(self) -> None:
         parsed = parse_intent(
-            '{"provider_filters": {"state": null, "postcode": null, "group": null,'
-            ' "status": null, "brisbane_area": null}}'
+            '{"provider_filters": {"state": null, "postcode": null, "locality": null,'
+            ' "group": null, "status": null, "brisbane_area": null}}'
         )
         assert parsed.intent is not None and parsed.intent.provider_filters is None
         assert "provider_filters_empty" in parsed.rejected
@@ -110,9 +115,37 @@ class TestProviderFilters:
         assert parsed.intent is not None
         assert parsed.intent.provider_filters == ProviderFilters(state="ACT", status="Revoked")
 
+    def test_the_locality_is_kept_verbatim(self) -> None:
+        parsed = parse_intent('{"provider_filters": {"locality": "  West End  "}}')
+        assert parsed.intent is not None
+        assert parsed.intent.provider_filters == ProviderFilters(locality="West End")
+        assert parsed.intent.provider_filters.stated()
+
     def test_long_group_name_is_dropped(self) -> None:
         parsed = parse_intent(f'{{"provider_filters": {{"group": "{"x" * 121}"}}}}')
         assert parsed.intent is not None and parsed.intent.provider_filters is None
+
+    def test_a_locality_at_the_cap_is_kept_and_over_it_is_dropped(self) -> None:
+        parsed = parse_intent(f'{{"provider_filters": {{"locality": "{"x" * 80}"}}}}')
+        assert parsed.intent is not None
+        assert parsed.intent.provider_filters == ProviderFilters(locality="x" * 80)
+
+
+class TestPostcodeGuard:
+    @pytest.mark.parametrize(
+        ("question", "postcode", "expected"),
+        [
+            ("providers in postcode 4101", "4101", True),
+            ("providers near 4101.", "4101", True),
+            ("(4101) West End", "4101", True),
+            ("providers in 14101", "4101", False),
+            ("postcode 41015 is wrong", "4101", False),
+            ("providers in West End", "4101", False),
+            ("", "4101", False),
+        ],
+    )
+    def test_postcode_in_question(self, question: str, postcode: str, expected: bool) -> None:
+        assert postcode_in_question(question, postcode) is expected
 
 
 class TestPriceQuery:

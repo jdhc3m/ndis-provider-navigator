@@ -9,6 +9,7 @@ response — never a crash and never a half-understood execution.
 """
 
 import json
+import re
 from dataclasses import dataclass
 
 from ndis.domain.entities import Remoteness
@@ -19,10 +20,17 @@ from ndis.domain.register import REGISTRATION_STATUSES, STATES
 MAX_RULE_QUESTION_CHARS = 500
 MAX_GROUP_CHARS = 120
 MAX_ITEM_CHARS = 60
+# A locality name longer than this is not a suburb; the cap lives in domain/locality.py
+# with the resolver that consumes it.
+MAX_LOCALITY_CHARS = 80
 
 REFUSAL_DECISION_REQUEST = "decision_request"
 REFUSAL_INTENT_UNPARSEABLE = "intent_unparseable"
 REFUSAL_EMPTY_INTENT = "empty_intent"
+
+# The machine reason for a model-supplied postcode that does not appear in the question
+# text: the guard treats it as invented, and nothing executes with it.
+REJECTION_POSTCODE_NOT_IN_QUESTION = "postcode_not_in_question"
 
 DECISION_REFUSAL_EXPLANATION = (
     "This system does not make recommendations and does not make funding decisions. "
@@ -44,10 +52,14 @@ INTENT_UNPARSEABLE_EXPLANATION = (
 
 @dataclass(frozen=True)
 class ProviderFilters:
-    """Register filters parsed from a question; every part is ``None`` when unstated."""
+    """Register filters parsed from a question; every part is ``None`` when unstated.
+
+    ``locality`` is the suburb name exactly as the question wrote it; turning it into a
+    postcode is the resolver's job, never the model's."""
 
     state: str | None = None
     postcode: str | None = None
+    locality: str | None = None
     group: str | None = None
     status: str | None = None
     brisbane_area: bool | None = None
@@ -56,7 +68,14 @@ class ProviderFilters:
         """False when no filter is actually set, so an all-null object is no query."""
         return any(
             value is not None
-            for value in (self.state, self.postcode, self.group, self.status, self.brisbane_area)
+            for value in (
+                self.state,
+                self.postcode,
+                self.locality,
+                self.group,
+                self.status,
+                self.brisbane_area,
+            )
         )
 
 
@@ -102,6 +121,14 @@ def _valid_postcode(value: str) -> bool:
     return value.isdigit() and len(value) == 4
 
 
+def postcode_in_question(question: str, postcode: str) -> bool:
+    """True when ``postcode`` appears in the question as a number of its own — not as a
+    slice of a longer digit run (``14101`` does not contain ``4101`` as a postcode). The
+    guard for a model-supplied ``postcode``: one the question never states is invented
+    and must never execute."""
+    return re.search(rf"(?<!\d){re.escape(postcode)}(?!\d)", question) is not None
+
+
 def _canonical_status(value: str) -> str | None:
     known = {status.lower(): status for status in REGISTRATION_STATUSES}
     return known.get(value.strip().lower())
@@ -125,6 +152,12 @@ def _provider_filters(document: object, rejected: list[str]) -> ProviderFilters 
     ):
         rejected.append("provider_filters_invalid")
         return None
+    locality = document.get("locality")
+    if locality is not None and (
+        not isinstance(locality, str) or not 0 < len(locality.strip()) <= MAX_LOCALITY_CHARS
+    ):
+        rejected.append("provider_filters_invalid")
+        return None
     group = document.get("group")
     if group is not None and (
         not isinstance(group, str) or not 0 < len(group.strip()) <= MAX_GROUP_CHARS
@@ -142,6 +175,7 @@ def _provider_filters(document: object, rejected: list[str]) -> ProviderFilters 
     filters = ProviderFilters(
         state=state.strip().upper() if isinstance(state, str) else None,
         postcode=postcode.strip() if isinstance(postcode, str) else None,
+        locality=locality.strip() if isinstance(locality, str) else None,
         group=group.strip() if isinstance(group, str) else None,
         status=_canonical_status(status) if isinstance(status, str) else None,
         brisbane_area=brisbane_area,

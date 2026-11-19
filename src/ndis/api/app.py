@@ -15,6 +15,7 @@ from ndis.api.dependencies import (
     cors_origins,
     get_price_limit_use_case,
     list_providers_use_case,
+    locality_resolver,
     register_snapshot_date,
     web_dist_dir,
 )
@@ -23,6 +24,8 @@ from ndis.api.schemas import (
     AskOut,
     AskRuleIn,
     AskRuleOut,
+    LocalityCandidateOut,
+    LocalityOut,
     MetaOut,
     PriceLimitOut,
     ProviderOut,
@@ -38,11 +41,40 @@ from ndis.application.providers import (
     MAX_PAGE_SIZE,
     InvalidQueryError,
     ListProviders,
+    LocalityResolver,
     ProviderQuery,
 )
 from ndis.config import embed_model, llm_configured, llm_model, rule_chunk_strategy
 from ndis.domain.catalogue import CATALOGUE_TITLE, FINANCIAL_YEAR
+from ndis.domain.locality import (
+    REJECTION_LOCALITY_POSTCODE_MISMATCH,
+    LocalityOutcome,
+    LocalityResolution,
+)
 from ndis.domain.pricing import PRICING_DOCUMENT_TITLE
+
+
+def _locality_422(resolution: LocalityResolution, reason: str) -> HTTPException:
+    """The 422 an unresolved locality name answers with: the machine reason, the full
+    candidate list (empty for an unknown name) and a readable message."""
+    candidates = [
+        LocalityCandidateOut(name=item.name, state=item.state, postcode=item.postcode)
+        for item in resolution.candidates
+    ]
+    message = (
+        f"the locality {resolution.name!r} matches several postcodes; "
+        "name the state or ask again with one candidate's postcode"
+        if reason == LocalityOutcome.AMBIGUOUS.value
+        else f"the locality {resolution.name!r} is not in the loaded gazetteer"
+    )
+    return HTTPException(
+        status_code=422,
+        detail={
+            "reason": reason,
+            "message": message,
+            "candidates": [candidate.model_dump() for candidate in candidates],
+        },
+    )
 
 
 def create_app() -> FastAPI:
@@ -70,8 +102,10 @@ def create_app() -> FastAPI:
 
 def list_providers(
     use_case: Annotated[ListProviders, Depends(list_providers_use_case)],
+    localities: Annotated[LocalityResolver, Depends(locality_resolver)],
     state: str | None = None,
     postcode: str | None = None,
+    locality: str | None = None,
     group: str | None = None,
     status: str | None = None,
     brisbane_area: bool | None = None,
@@ -82,7 +116,18 @@ def list_providers(
 ) -> ProviderPageOut:
     """List registered providers nationally, filtered and paginated. With ``near`` (a
     postcode) the whole matched set is ranked by straight-line distance from that
-    postcode's centroid before the page is cut; ``max_km`` (inclusive) requires ``near``."""
+    postcode's centroid before the page is cut; ``max_km`` (inclusive) requires ``near``.
+    ``locality`` (a suburb name) is resolved to a ``(state, postcode)`` in code; an
+    unknown or ambiguous name is a 422 with the reason and the candidates."""
+    resolution: LocalityOut | None = None
+    if locality is not None:
+        resolved = localities(locality, state=state, brisbane_area=brisbane_area)
+        if resolved.outcome is not LocalityOutcome.RESOLVED or resolved.locality is None:
+            raise _locality_422(resolved, resolved.outcome.value)
+        if postcode is not None and postcode != resolved.locality.postcode:
+            raise _locality_422(resolved, REJECTION_LOCALITY_POSTCODE_MISMATCH)
+        postcode = resolved.locality.postcode
+        resolution = LocalityOut.from_resolution(resolved)
     query = ProviderQuery(
         state=state,
         postcode=postcode,
@@ -104,6 +149,7 @@ def list_providers(
         limit=page.limit,
         offset=page.offset,
         distance_origin=page.distance_origin,
+        locality=resolution,
     )
 
 
