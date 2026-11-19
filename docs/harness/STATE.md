@@ -1,6 +1,6 @@
 # Foreman resume state
 
-Updated: 2026-11-18 (Australia/Brisbane), after ticket 12 merged — **all of tickets 00–12, including the stretch, are on `main` with green CI; the week's brief is complete.** Tickets 05–08 ran on the second machine (the one with Gemini access; see "Machine handoff"); tickets 09–10 ran on the corporate Mac; ticket 11 ran on the second machine (user `jackson`, repo at `~/ndis-provider-navigator`); ticket 12 was built on 2026-11-10 and its review/merge/bookkeeping ran on 2026-11-18 on the second machine. As of 2026-11-18 the second machine is the only available computer; nothing remaining depends on the corporate Mac — its proxy/mirror workarounds are irrelevant here, and every data input already exists on this machine (see "Done — ticket 11" and "Machine handoff"; the private bundle came via `jdhc3m/ndis-handoff`).
+Updated: 2026-11-19 (Australia/Brisbane), after ticket 13 merged — tickets 00–13 (plus one bugfix, 13b) are on `main` with green CI; **ticket 14 (issue #51) is the only open ticket.** Everything since 2026-11-09 ran on the second machine (user `jackson`, repo at `~/ndis-provider-navigator`); the corporate Mac is not needed: it cannot reach the Gemini endpoint, and this machine can — verified live on 2026-11-19 (`/meta` HTTP 200, `gemini-3.5-flash` configured, provider/rule/refusal paths exercised end to end through the running server).
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -271,6 +271,48 @@ updated. Facts the Builder of ticket 09 needs:
   expires 28 days from 2026-11-10 — recreate user/warehouse/service if the
   comparison is ever re-run.
 
+- 13b — Bugfix (issue #48, PR #49, squash `1a9998f`; no note, the PR body is
+  the record). Found live on 2026-11-19: `/ask` rule questions 500'd with
+  `sqlite3.ProgrammingError` because `SqliteVecRuleStore` held one connection
+  (`check_same_thread=True`) cached behind an `@lru_cache` singleton —
+  FastAPI's AnyIO threadpool creates it in one worker thread and any later
+  request on another worker thread crashes. Latent since ticket 06; earlier
+  live demos reused the same thread by luck. Fix: `check_same_thread=False`
+  + one store-owned `RLock` around every statement (RLock for the
+  re-entrancy of `search`→`count`/`dimension`); two regression tests that
+  fail on the old code. Review: APPROVE, 0 must-fix. Latent-bug lesson for
+  the next Foreman: TestClient integration tests run in one thread and
+  cannot catch cross-thread defects — probe the real server (`uvicorn`) for
+  anything involving shared adapters.
+
+- Ticket 13 — Suburb names in provider questions (issue #50, PR #52, squash
+  `0efa55c`). Note: `docs/learning/13-suburb-names.md`. Gazetteer from the
+  same postcodes CSV as ticket 10: 17,984 Delivery-Area rows → 17,959
+  `localities` persisted into the canonical `data/ndis.db` (additive;
+  centroids untouched); intent gains `locality` (copied verbatim); pure
+  resolver in `domain/locality.py` behind application ports — resolved /
+  `locality_unknown` / `locality_ambiguous(candidates)`; unknown and
+  ambiguous run no provider query while price/rule still answer; resolved
+  reuses the postcode filter + distance origin unchanged and discloses the
+  resolution; guards: model-invented `postcode` not in the question text is
+  dropped (`postcode_not_in_question`), suburb contradicting the stated
+  postcode is reported (`locality_postcode_mismatch`, truthful 422 message
+  after the round-1 must-fix); `GET /providers?locality=&state=` with 422 +
+  candidates; web resolution chip + ambiguous re-ask buttons + one suburb
+  example chip; README updated. Measured: golden 7 locality cases (5
+  resolve with re-verified register totals: 4101=44, 4152=25, 4006=23,
+  4217=75, 4000=94; 1 ambiguous Southbank QLD/VIC; 1 unknown), filter
+  12/12, refusals 6/6, locality 7/7; intent_cache regenerated (25 payloads,
+  zero-tolerance parse net restored); 792 passed / 7 skipped locally;
+  eval with register 9 passed / 3 skipped; 18 Vitest tests; screenshots
+  `locality-*`/`ambiguous-*` at 1440/375 px. The intent captures were taken
+  via the `LLM_MODEL` env fallback because the configured model's daily
+  quota was exhausted — no model name committed, all captures verified
+  through the real parser. Review: round 1 APPROVE + 1 must-fix (fixed),
+  round 2 APPROVE 0 must-fix. Follow-ups (not ticketed): none recorded;
+  out-of-scope stands (region names, typo correction, street addresses,
+  suburb-coordinate origins, free-text suburb filtering).
+
 ## In progress
 
 - None.
@@ -352,20 +394,26 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- **Nothing ticketed remains.** All of tickets 00–12 are merged (green CI, one
-  note per ticket, reports present, README demo verified from a fresh clone,
-  `git log --all -- data/private` empty). The week's definition of done is met
-  and the stretch closed. Issue #13 closed 2026-11-18; no open PRs.
+- **Ticket 14 — Service names instead of support item numbers (issue #51), the
+  only open ticket.** It depends on 02/07/08/09 (merged) and must start after
+  13 (merged 2026-11-19) — both change the intent schema, `INTENT_SYSTEM_PROMPT`
+  and `evals/intent_cache.yaml`; starting from fresh `origin/main` inherits
+  13's changes cleanly. It also needs this machine (LLM capture regen + live
+  `docs/demo.md` re-run). Worktree: `~/NDIS/ndis-provider-navigator-ticket-14`,
+  branch `ticket/14-service-names`.
+- **Handoff: this Foreman thread is full.** It processed three tickets
+  (12 finish + merge, the 13b bugfix, ticket 13) — the brief's limit of 3 per
+  thread. A new Foreman thread starts from this file, `gh issue list --label
+  ticket --state open` (one: #51) and the brief at `~/NDIS/HARNESS_PROMPT.md`.
 - Optional, not ticketed (owner decisions needed):
   - The pending ~300-provider extraction run from ticket 08 (≈ $1.34 est.) —
     CAN run on this machine (it reaches Gemini); pace it after the daily
     free-tier quota resets, cache makes a rerun cheap.
   - Fill the ER sample verdicts (`evals/er_sample.yaml`) and the remaining 10
     judge verdicts — owner hand-labelling.
-  - Langfuse keys for a live-tracing demo (owner adds to `~/.config/ndis/.env`).
+  - Langfuse keys for a live-tracing demo (owner adds to `~/.config/ndis/.env`;
+    keys now present but `tracing.configured=false` at 2026-11-19 — check the
+    env names `adapters/tracing.py` expects before demoing).
   - Snowflake trial expires ~2026-12-08; only relevant if the comparison is
     re-run.
-- This Foreman thread finished ticket 12's review/merge/bookkeeping
-  (1 ticket on this thread). A new Foreman starts from this file, the issue
-  list and the brief at `~/NDIS/HARNESS_PROMPT.md` — only if new work is
-  ticketed; there is none open.
+  - Ticket 12 review nits (non-blocking) recorded in the ticket 12 Done entry.
