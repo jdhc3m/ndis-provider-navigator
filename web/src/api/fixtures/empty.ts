@@ -10,6 +10,7 @@ export const EMPTY: AskOut = {
     provider_filters: {
       state: 'QLD',
       postcode: '4999',
+      locality: null,
       group: null,
       status: 'Approved',
       brisbane_area: null,
@@ -19,6 +20,7 @@ export const EMPTY: AskOut = {
     decision_request: false,
     parse_rejections: [],
   },
+  locality: null,
   providers: [],
   provider_total: 0,
   distance_origin: null,

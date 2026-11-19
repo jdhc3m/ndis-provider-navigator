@@ -15,6 +15,7 @@ export const ANSWER: AskOut = {
     provider_filters: {
       state: 'QLD',
       postcode: '4101',
+      locality: null,
       group: null,
       status: 'Approved',
       brisbane_area: null,
@@ -24,6 +25,7 @@ export const ANSWER: AskOut = {
     decision_request: false,
     parse_rejections: [],
   },
+  locality: null,
   providers: [
     {
       abn: '11111111111',

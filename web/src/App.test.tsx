@@ -4,7 +4,16 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { App } from './App'
 import { ApiError, NETWORK_ERROR_STATUS, type NavigatorApi } from './api/client'
-import { ANSWER, EMPTY, ERROR_DETAIL, ERROR_STATUS, META, REFUSAL } from './api/fixtures'
+import {
+  AMBIGUOUS,
+  ANSWER,
+  EMPTY,
+  ERROR_DETAIL,
+  ERROR_STATUS,
+  LOCALITY,
+  META,
+  REFUSAL,
+} from './api/fixtures'
 import { EXAMPLE_QUESTIONS } from './examples'
 
 const QUESTION = 'Which approved providers in postcode 4101 offer speech pathology?'
@@ -150,6 +159,49 @@ describe('answer state', () => {
     expect(screen.getByRole('link', { name: /open the trace viewer/i })).toHaveAttribute(
       'href',
       META.tracing.url,
+    )
+  })
+})
+
+describe('locality resolution', () => {
+  it('shows the resolved suburb as a chip with the covers-other-suburbs note', async () => {
+    const client = fakeClient({ ask: () => Promise.resolve(LOCALITY) })
+    await renderAndAsk(client, LOCALITY.question)
+
+    const row = await screen.findByRole('region', { name: 'Understood as' })
+    expect(within(row).getByText(/locality: South Bank → QLD 4101/)).toBeInTheDocument()
+    expect(within(row).getByText(/the postcode covers other suburbs too/)).toBeInTheDocument()
+    expect(
+      within(row).getByText(/provider_filters: state: QLD, locality: South Bank/),
+    ).toBeInTheDocument()
+    // The resolution is disclosed over the cards too.
+    expect(await screen.findByText(/distances from/i)).toHaveTextContent(
+      'Distances from 4101, straight-line, nearest first.',
+    )
+  })
+
+  it('shows an ambiguous suburb as buttons that re-ask with the chosen postcode', async () => {
+    const ask = vi.fn<NavigatorApi['ask']>().mockResolvedValue(AMBIGUOUS)
+    const user = await renderAndAsk(fakeClient({ ask }), AMBIGUOUS.question)
+
+    const row = await screen.findByRole('region', { name: 'Understood as' })
+    expect(within(row).getByText('locality: West End matched 3 postcodes')).toBeInTheDocument()
+    expect(within(row).getByText('rejected: locality_ambiguous')).toBeInTheDocument()
+
+    const buttons = within(row).getAllByRole('button', { name: /ask again with/i })
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'Ask again with QLD 4101',
+      'Ask again with QLD 4810',
+      'Ask again with WA 6530',
+    ])
+
+    const chosen = buttons[0]
+    if (!chosen) throw new Error('candidate buttons missing')
+    await user.click(chosen)
+    expect(ask).toHaveBeenLastCalledWith(`${AMBIGUOUS.question} (postcode 4101)`)
+    // The query box carries the chosen postcode for the next edit.
+    expect(screen.getByLabelText<HTMLInputElement>(/ask about ndis providers/i).value).toBe(
+      `${AMBIGUOUS.question} (postcode 4101)`,
     )
   })
 })

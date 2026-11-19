@@ -1,5 +1,7 @@
 export { ANSWER } from './answer'
+export { AMBIGUOUS } from './ambiguous'
 export { EMPTY } from './empty'
+export { LOCALITY } from './locality'
 export { META, META_UNCONFIGURED } from './meta'
 export { REFUSAL } from './refusal'
 
