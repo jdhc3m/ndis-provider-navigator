@@ -123,6 +123,20 @@ export function localityChipText(locality: LocalityOut): string {
   return `locality: ${locality.name} is not in the postcode gazetteer`
 }
 
+/** What the price_query chip says when the question named a service, not an item
+ * number: the phrase as the user wrote it, the state (or the national tier), and —
+ * when the search ran — how many catalogue items it matched. */
+export function priceQueryChipText(
+  priceQuery: NonNullable<AskIntentOut['price_query']>,
+  matchCount: number | null,
+): string {
+  const target = priceQuery.item ?? (priceQuery.service ? `service "${priceQuery.service}"` : '?')
+  const place = priceQuery.state ?? 'national (no state stated)'
+  const tier = priceQuery.remoteness ? ` · ${priceQuery.remoteness}` : ''
+  const matches = matchCount === null ? '' : ` · matched ${matchCount}`
+  return `price_query: ${target} · ${place}${tier}${matches}`
+}
+
 /** The question the candidate buttons ask again with: the original words, plus the chosen
  * postcode in brackets, so the postcode filter (and the postcode guard) have it in text. */
 export function candidateQuestion(

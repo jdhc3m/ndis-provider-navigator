@@ -36,7 +36,8 @@ export function PriceLimitCard({ price }: PriceLimitCardProps) {
           )}
         </p>
         <p className="mt-1 text-sm text-muted-foreground">
-          {unitLabel(price.unit)} · {price.state} · {remotenessLabel(price.remoteness)}
+          {unitLabel(price.unit)} · {price.state ?? 'no state stated'} ·{' '}
+          {remotenessLabel(price.remoteness)}
         </p>
       </div>
       <dl className="grid grid-cols-3 gap-2 text-sm">

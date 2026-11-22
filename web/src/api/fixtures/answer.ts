@@ -20,7 +20,7 @@ export const ANSWER: AskOut = {
       status: 'Approved',
       brisbane_area: null,
     },
-    price_query: { item: '15_999_0128_1_3', state: 'QLD', remoteness: null },
+    price_query: { item: '15_999_0128_1_3', service: null, state: 'QLD', remoteness: null },
     rule_question: 'Can a provider charge for a short-notice cancellation?',
     decision_request: false,
     parse_rejections: [],

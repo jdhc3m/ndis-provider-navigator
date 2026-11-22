@@ -4,6 +4,7 @@ export { EMPTY } from './empty'
 export { LOCALITY } from './locality'
 export { META, META_UNCONFIGURED } from './meta'
 export { REFUSAL } from './refusal'
+export { SERVICE, UNKNOWN_SERVICE } from './service'
 
 /** The `detail` the API sends when the model endpoint cannot be reached. */
 export const ERROR_DETAIL = 'intent parse failed: the model endpoint did not answer (fixture)'

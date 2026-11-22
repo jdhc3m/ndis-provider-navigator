@@ -13,6 +13,8 @@ import {
   LOCALITY,
   META,
   REFUSAL,
+  SERVICE,
+  UNKNOWN_SERVICE,
 } from './fixtures'
 
 export const MOCK_SCENARIOS = [
@@ -22,6 +24,8 @@ export const MOCK_SCENARIOS = [
   'error',
   'locality',
   'ambiguous',
+  'service',
+  'unknown-service',
 ] as const
 export type MockScenario = (typeof MOCK_SCENARIOS)[number]
 
@@ -44,6 +48,10 @@ export function createMockClient(scenario: MockScenario): NavigatorApi {
           return Promise.resolve({ ...LOCALITY, question })
         case 'ambiguous':
           return Promise.resolve({ ...AMBIGUOUS, question })
+        case 'service':
+          return Promise.resolve({ ...SERVICE, question })
+        case 'unknown-service':
+          return Promise.resolve({ ...UNKNOWN_SERVICE, question })
         case 'error':
           return Promise.reject(new ApiError(ERROR_STATUS, ERROR_DETAIL))
       }
