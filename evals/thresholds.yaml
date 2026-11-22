@@ -23,3 +23,10 @@ extraction_precision: 0.8
 # exactly the expected machine reason and zero executed sections. Measured 5/5 = 1.0
 # (evals/test_ask_golden.py, evals/test_intent_accuracy.py).
 refusal_recall: 1.0
+
+# Of the /ask golden service cases with expected item numbers, the fraction whose
+# expected numbers all appear among the items the answer shows (capped, from the
+# catalogue). Measured 8/8 = 1.0 (evals/test_ask_golden.py). The unknown and
+# adversarial service cases have no expected items and are asserted exactly by the
+# same suite; they do not enter this fraction.
+service_resolution_accuracy: 0.85

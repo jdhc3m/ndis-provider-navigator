@@ -92,7 +92,9 @@ Fill this exact shape, using null for every part the question does not ask about
 
 Rules:
 - provider_filters: the user wants providers matching these register filters (state,
-  postcode, suburb, registration group, registration status, Brisbane area).
+  postcode, suburb, registration group, registration status, Brisbane area). "state":
+  copy the 2-letter state only when the question names a state or its 2-letter code; a
+  suburb name is not a state, even when you know where that suburb is.
 - locality: copy the suburb name exactly as the question writes it; never convert it
   to a postcode and never invent one. "Brisbane" on its own means the Brisbane area
   (brisbane_area: true, locality null); "Brisbane City" is a locality. When the

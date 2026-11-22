@@ -41,6 +41,7 @@ def main() -> int:
     golden = read_golden(GOLDEN)
     questions = [case.question for case in golden.filter_cases]
     questions += [case.question for case in golden.locality_cases]
+    questions += [case.question for case in golden.service_cases]
     questions += [case.question for case in golden.refusal_cases]
     client = traced(
         OpenAICompatibleClient(

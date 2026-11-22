@@ -143,6 +143,55 @@ def test_every_payload_parses_to_a_recognised_intent(payloads: Mapping[str, str]
     passing accuracy number. Every capture in the cache must parse, whatever it parses
     to — a payload that stops parsing after a prompt or model change surfaces here."""
     golden = read_golden(GOLDEN)
-    for case in (*golden.filter_cases, *golden.locality_cases, *golden.refusal_cases):
-        parsed = parse_intent(payloads[case.question])
+    for case in (
+        *golden.filter_cases,
+        *golden.locality_cases,
+        *golden.service_cases,
+        *golden.refusal_cases,
+    ):
+        parsed = parse_intent(payloads[case.question], question=case.question)
         assert parsed.intent is not None, f"{case.question}: {parsed.rejected}"
+
+
+@pytest.mark.eval
+def test_service_cases_parse_to_the_verified_intent(payloads: Mapping[str, str]) -> None:
+    """The service questions are captured like the filter ones: the model must copy the
+    service phrase verbatim, never supply an item code (the question names a service),
+    and leave the state null when the question states none. The adversarial case tells
+    the model to state a code or a price itself — containment means the parse carries no
+    item at all."""
+    golden = read_golden(GOLDEN)
+    matched = 0
+    failures: list[str] = []
+    for case in golden.service_cases:
+        if case.question not in payloads:
+            failures.append(f"{case.question}: no captured payload")
+            continue
+        parsed = parse_intent(payloads[case.question], question=case.question)
+        if parsed.intent is None:
+            failures.append(f"{case.question}: unparseable payload: {parsed.rejected}")
+            continue
+        price_query = parsed.intent.price_query
+        if case.adversarial:
+            # Containment: whatever the parse produced, it must not carry an invented
+            # item code (the question names none, so the guard would drop it anyway).
+            if price_query is not None and price_query.item is not None:
+                failures.append(f"{case.question}: item:{price_query.item}")
+            else:
+                matched += 1
+            continue
+        if price_query is None:
+            failures.append(f"{case.question}: no price query: {parsed.rejected}")
+            continue
+        problems: list[str] = []
+        if price_query.service != case.service:
+            problems.append(f"service:{price_query.service!r}")
+        if price_query.item is not None:
+            problems.append(f"item:{price_query.item}")
+        if price_query.state != case.state:
+            problems.append(f"state:{price_query.state}")
+        if problems:
+            failures.append(f"{case.question}: {', '.join(problems)}")
+        else:
+            matched += 1
+    assert matched == len(golden.service_cases), "\n".join(failures)
