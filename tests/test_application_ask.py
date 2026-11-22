@@ -4,6 +4,8 @@ the answer carries only verified service evidence."""
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -24,7 +26,11 @@ from ndis.application.ask import (
     intent_prompt,
     token_cost,
 )
-from ndis.application.catalogue import GetPriceLimit, UnknownSupportItemError
+from ndis.application.catalogue import (
+    GetPriceLimit,
+    SearchSupportItems,
+    UnknownSupportItemError,
+)
 from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.application.pricing import RuleAnswer
 from ndis.application.providers import (
@@ -34,7 +40,7 @@ from ndis.application.providers import (
     PostcodeCentroids,
     ProviderQuery,
 )
-from ndis.domain.answer import CAVEAT_SERVICES, ClaimedService, ServiceMention
+from ndis.domain.answer import CAVEAT_SERVICES, ClaimedService, PriceEntry, ServiceMention
 from ndis.domain.catalogue import price_limit
 from ndis.domain.entities import Remoteness
 from ndis.domain.extraction import TokenBudget
@@ -42,12 +48,14 @@ from ndis.domain.geo import DistanceSource
 from ndis.domain.intent import Intent, ProviderFilters, parse_intent
 from ndis.domain.locality import Locality, LocalityOutcome
 from ndis.domain.pricing import REFUSAL_NO_CHUNKS
+from ndis.domain.service_search import MAX_SHOWN_SERVICE_MATCHES
 from ndis.domain.taxonomy import Service
 from tests.conftest import (
     SEED_CENTROIDS,
     SEED_PROVIDERS,
     SEED_SUPPORT_ITEMS,
     LocalityDirectoryStub,
+    make_support_item,
 )
 
 
@@ -160,6 +168,7 @@ def make_ask(
         rule_answerer or FakeRuleAnswerer(),
         evidence or FakeEvidence(),
         locality_resolver=LocalityResolver(localities or LocalityDirectoryStub(())),
+        service_search=SearchSupportItems(catalogue),
         provider_limit=provider_limit,
         token_prices=token_prices,
         clock=TickingClock(),
@@ -627,6 +636,164 @@ class TestPriceExecution:
         assert answer.price is None and answer.price_error == "unknown_item"
 
 
+class TestServiceExecution:
+    """A question that names a service rather than an item number answers with the
+    catalogue's matching items, their limits, and the total — all in code."""
+
+    def test_a_service_phrase_answers_the_matching_limits(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [intent_payload(price_query='{"service": "self-care", "state": "QLD"}')]
+        )
+        answer = make_ask(client, providers, catalogue)(
+            "What is the price limit for self-care in Queensland?"
+        )
+        assert not answer.refused
+        assert answer.price is None and answer.price_error is None
+        section = answer.service_prices
+        assert section is not None
+        assert section.phrase == "self-care"
+        assert section.state == "QLD" and section.remoteness == "national"
+        assert section.total == 1
+        assert section.entries == (
+            PriceEntry(
+                item=SEED_SUPPORT_ITEMS[0],
+                state="QLD",
+                remoteness=Remoteness.NATIONAL,
+                limit=Decimal("82.57"),
+            ),
+        )
+        # The price_limit step names the phrase and the match count.
+        assert answer.steps[1].kind == "price_limit"
+        assert 'service="self-care"' in answer.steps[1].input_summary
+        assert answer.steps[1].output_summary == "1 matching support items, showing 1"
+
+    def test_no_state_gives_the_national_tier_and_says_so(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient([intent_payload(price_query='{"service": "self-care"}')])
+        answer = make_ask(client, providers, catalogue)("What does self-care cost?")
+        assert not answer.refused
+        section = answer.service_prices
+        assert section is not None
+        assert section.state is None and section.remoteness == "national"
+        assert section.entries[0].limit == SEED_SUPPORT_ITEMS[0].limits.national
+        assert answer.steps[1].output_summary == (
+            "1 matching support items, showing 1; no state stated: national limit applies"
+        )
+
+    def test_a_stated_remoteness_tier_prices_that_tier(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [
+                intent_payload(
+                    price_query='{"service": "self-care", "state": "QLD", "remoteness": "remote"}'
+                )
+            ]
+        )
+        answer = make_ask(client, providers, catalogue)("remote self-care price in QLD")
+        assert answer.service_prices is not None
+        assert answer.service_prices.entries[0].limit == Decimal("115.60")
+        assert answer.service_prices.entries[0].remoteness is Remoteness.REMOTE
+
+    def test_the_shown_list_is_capped_with_the_total_stated(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        many = [
+            make_support_item(f"07_00{i}_0106_8_3", f"Support Coordination Level {i}")
+            for i in range(1, 16)
+        ]  # 15 matching base items
+        catalogue.replace_all(many)
+        client = FakeIntentClient(
+            [intent_payload(price_query='{"service": "support coordination", "state": "QLD"}')]
+        )
+        answer = make_ask(client, providers, catalogue)("support coordination price")
+        section = answer.service_prices
+        assert section is not None
+        assert section.total == 15
+        assert len(section.entries) == MAX_SHOWN_SERVICE_MATCHES
+        assert answer.steps[1].output_summary == "15 matching support items, showing 12"
+
+    def test_a_legacy_match_keeps_its_end_date(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient([intent_payload(price_query='{"service": "respite"}')])
+        answer = make_ask(client, providers, catalogue)("what does respite cost?")
+        section = answer.service_prices
+        assert section is not None
+        assert section.entries[0].item.legacy is True
+        assert section.entries[0].item.end_date == date(2027, 6, 30)
+
+    def test_no_match_gives_unknown_service_and_no_price(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [intent_payload(price_query='{"service": "underwater basket weaving"}')]
+        )
+        answer = make_ask(client, providers, catalogue)("price of underwater basket weaving")
+        assert not answer.refused
+        assert answer.service_prices is None and answer.price is None
+        assert answer.price_error == "unknown_service"
+        assert answer.steps[1].output_summary == "unknown_service"
+
+    def test_an_invented_item_is_rejected_and_never_looked_up(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        """The model must never supply a code: an item the question does not name is
+        rejected with a machine reason and nothing is looked up. With no other part in
+        the intent the question fails safe as an empty intent."""
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [intent_payload(price_query='{"item": "15_056_0128_1_3", "state": "QLD"}')]
+        )
+        ask = make_ask(client, providers, catalogue)
+        answer = ask("What is the price limit for occupational therapy?")
+        assert answer.refused and answer.reason == "empty_intent"
+        assert "item_not_in_question" in answer.parse_rejections
+        assert answer.price is None and answer.price_error is None
+        assert answer.service_prices is None
+        assert isinstance(ask._catalogue, RecordingPriceLimit)
+        assert ask._catalogue.calls == 0  # never looked up
+
+    def test_an_invented_item_drops_only_the_price_query(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        """The rest of the intent still answers: the guard rejects the invented part,
+        not the whole question."""
+        providers, catalogue = repos
+        client = FakeIntentClient(
+            [
+                intent_payload(
+                    provider_filters='{"state": "NSW"}',
+                    price_query='{"item": "15_056_0128_1_3", "state": "QLD"}',
+                )
+            ]
+        )
+        answer = make_ask(client, providers, catalogue)(
+            "Providers in NSW, and what is the price limit for occupational therapy?"
+        )
+        assert not answer.refused
+        assert answer.provider_total == 1
+        assert "item_not_in_question" in answer.parse_rejections
+        assert answer.price is None and answer.price_error is None
+
+
 class TestRuleExecution:
     def test_a_rule_question_goes_to_the_rule_pipeline(
         self,
@@ -820,7 +987,7 @@ class TestSteps:
             [
                 intent_payload(
                     provider_filters='{"state": "Georgia", "postcode": "4101"}',
-                    price_query='{"item": "99_999_9999_1_1", "state": "QLD"}',
+                    price_query='{"service": "underwater basket weaving", "state": "QLD"}',
                     rule_question="anything",
                 )
             ]
@@ -838,7 +1005,7 @@ class TestSteps:
             "evidence",
             "guard",
         ]
-        assert answer.steps[1].output_summary == "unknown_item"
+        assert answer.steps[1].output_summary == "unknown_service"
         assert answer.steps[2].output_summary == f"refused: {REFUSAL_NO_CHUNKS}"
 
     def test_unparseable_intent_records_the_parse_only(

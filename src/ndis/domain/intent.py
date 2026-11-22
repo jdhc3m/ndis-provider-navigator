@@ -20,6 +20,9 @@ from ndis.domain.register import REGISTRATION_STATUSES, STATES
 MAX_RULE_QUESTION_CHARS = 500
 MAX_GROUP_CHARS = 120
 MAX_ITEM_CHARS = 60
+# A service phrase longer than this is not a service name; the same cap is enforced by
+# the search use case (domain/service_search.py carries the matching itself).
+MAX_SERVICE_CHARS = 80
 # A locality name longer than this is not a suburb; the cap lives in domain/locality.py
 # with the resolver that consumes it.
 MAX_LOCALITY_CHARS = 80
@@ -32,6 +35,11 @@ REFUSAL_EMPTY_INTENT = "empty_intent"
 # text: the guard treats it as invented, and nothing executes with it.
 REJECTION_POSTCODE_NOT_IN_QUESTION = "postcode_not_in_question"
 
+# The machine reason for a model-supplied support item number that does not appear in the
+# question text: the model must never supply a code, so an item the question does not
+# name is invented and the whole price query is dropped before anything is looked up.
+REJECTION_ITEM_NOT_IN_QUESTION = "item_not_in_question"
+
 DECISION_REFUSAL_EXPLANATION = (
     "This system does not make recommendations and does not make funding decisions. "
     "It reports provider-register facts, published price limits and the NDIS pricing "
@@ -40,13 +48,13 @@ DECISION_REFUSAL_EXPLANATION = (
 EMPTY_INTENT_EXPLANATION = (
     "The question could not be mapped to anything this system answers: provider-register "
     "filters, a support-item price limit, or the NDIS pricing rules. Try naming a state, "
-    "postcode or registration group, a support item number, or a question about the "
-    "pricing arrangements."
+    "postcode or registration group, a support item number or a service name, or a "
+    "question about the pricing arrangements."
 )
 INTENT_UNPARSEABLE_EXPLANATION = (
     "The question could not be understood as a structured request. Try again in plainer "
-    "words: name a state, postcode or registration group, a support item number, or ask "
-    "about the NDIS pricing arrangements."
+    "words: name a state, postcode or registration group, a support item number or a "
+    "service name, or ask about the NDIS pricing arrangements."
 )
 
 
@@ -81,10 +89,18 @@ class ProviderFilters:
 
 @dataclass(frozen=True)
 class PriceQuery:
-    """One support item priced for one state; ``remoteness`` is ``None`` when unstated."""
+    """One price question: the support item number the question itself states, or the
+    service phrase as the user wrote it, for one state.
 
-    item: str
-    state: str
+    ``state`` is ``None`` when the question states none — the national tier applies, the
+    2026-27 catalogue publishes no per-state prices, so that invents nothing.
+    ``remoteness`` is ``None`` when unstated. When both ``item`` and ``service`` are set
+    (the question contains a number and names a service) the item decides the answer and
+    the phrase is kept for disclosure."""
+
+    item: str | None = None
+    service: str | None = None
+    state: str | None = None
     remoteness: str | None = None
 
 
@@ -127,6 +143,15 @@ def postcode_in_question(question: str, postcode: str) -> bool:
     guard for a model-supplied ``postcode``: one the question never states is invented
     and must never execute."""
     return re.search(rf"(?<!\d){re.escape(postcode)}(?!\d)", question) is not None
+
+
+def item_in_question(question: str, item: str) -> bool:
+    """True when the item number appears in the question text at all (case-insensitive:
+    the catalogue writes numbers with digits, underscores and trailing letters, and a
+    question copies them verbatim). The guard for a model-supplied ``item``: one the
+    question never states is invented — the model must never supply a code — and the
+    whole price query is dropped before anything is looked up."""
+    return item.casefold() in question.casefold()
 
 
 def _canonical_status(value: str) -> str | None:
@@ -186,8 +211,13 @@ def _provider_filters(document: object, rejected: list[str]) -> ProviderFilters 
     return filters
 
 
-def _price_query(document: object, rejected: list[str]) -> PriceQuery | None:
-    """The parsed price query, or ``None``; one unusable field drops the whole query."""
+def _price_query(document: object, rejected: list[str], question: str | None) -> PriceQuery | None:
+    """The parsed price query, or ``None``; one unusable field drops the whole query.
+
+    The model supplies either an item number (only when the question itself states one —
+    anything else is invented and the whole query is dropped with
+    ``item_not_in_question`` before anything is looked up) or the service phrase as the
+    user wrote it. The state is optional: none stated means the national tier."""
     if document is None:
         return None
     if not isinstance(document, dict):
@@ -196,6 +226,12 @@ def _price_query(document: object, rejected: list[str]) -> PriceQuery | None:
     item = document.get("item")
     if item is not None and (
         not isinstance(item, str) or not 0 < len(item.strip()) <= MAX_ITEM_CHARS
+    ):
+        rejected.append("price_query_invalid")
+        return None
+    service = document.get("service")
+    if service is not None and (
+        not isinstance(service, str) or not 0 < len(service.strip()) <= MAX_SERVICE_CHARS
     ):
         rejected.append("price_query_invalid")
         return None
@@ -210,16 +246,19 @@ def _price_query(document: object, rejected: list[str]) -> PriceQuery | None:
         }:
             rejected.append("price_query_invalid")
             return None
-    if item is None:
+    if item is None and service is None:
         rejected.append("price_query_empty")
         return None
-    if state is None:
-        # The price-limit lookup needs a state; one was not stated, so nothing is executed.
-        rejected.append("price_query_no_state")
+    if item is not None and (question is None or not item_in_question(question, item.strip())):
+        # The model must never supply a code: an item the question does not name is
+        # invented. Without the question there is nothing to verify against, so an item
+        # fails safe there too; nothing in the query executes and nothing is looked up.
+        rejected.append(REJECTION_ITEM_NOT_IN_QUESTION)
         return None
     return PriceQuery(
-        item=item.strip(),
-        state=state.strip().upper(),
+        item=item.strip() if isinstance(item, str) else None,
+        service=service.strip() if isinstance(service, str) else None,
+        state=state.strip().upper() if isinstance(state, str) else None,
         remoteness=remoteness.strip().lower() if isinstance(remoteness, str) else None,
     )
 
@@ -239,13 +278,15 @@ def _rule_question(value: object, rejected: list[str]) -> str | None:
     return text
 
 
-def parse_intent(payload: str) -> ParsedIntent:
+def parse_intent(payload: str, question: str | None = None) -> ParsedIntent:
     """Parse the model's intent JSON. Total: any structural surprise becomes a rejection
     reason, never an exception, so a bad model answer can only lose its own data.
 
     Field values are validated against the register's states and statuses, the four-digit
     postcode shape and the remoteness tiers; an unusable field drops its whole part so
-    nothing half-understood is executed."""
+    nothing half-understood is executed. When ``question`` is given, a model-supplied
+    support item number must appear in it verbatim — the item guard — or the whole price
+    query is dropped with ``item_not_in_question``; the model never supplies a code."""
     try:
         document = json.loads(payload)
     except (json.JSONDecodeError, ValueError):
@@ -261,7 +302,7 @@ def parse_intent(payload: str) -> ParsedIntent:
     return ParsedIntent(
         Intent(
             provider_filters=_provider_filters(document.get("provider_filters"), rejected),
-            price_query=_price_query(document.get("price_query"), rejected),
+            price_query=_price_query(document.get("price_query"), rejected, question),
             rule_question=_rule_question(document.get("rule_question"), rejected),
             decision_request=bool(decision_request),
         ),

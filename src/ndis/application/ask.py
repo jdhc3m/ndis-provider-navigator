@@ -19,6 +19,7 @@ from ndis.application.catalogue import (
     GetPriceLimit,
     PriceLimitQuery,
     PriceLimitResult,
+    SearchSupportItems,
     UnknownSupportItemError,
 )
 from ndis.application.extraction import LlmClient, LlmRequest
@@ -35,12 +36,14 @@ from ndis.domain.answer import (
     CAVEAT_SERVICES,
     AnswerDocument,
     ClaimedService,
+    PriceEntry,
     ProviderEntry,
     ServiceMention,
     check_answer,
     mentions_for_provider,
 )
-from ndis.domain.entities import Provider
+from ndis.domain.catalogue import price_limit
+from ndis.domain.entities import Provider, Remoteness
 from ndis.domain.geo import Distance, DistanceSource
 from ndis.domain.intent import (
     DECISION_REFUSAL_EXPLANATION,
@@ -64,6 +67,7 @@ from ndis.domain.locality import (
     LocalityResolution,
 )
 from ndis.domain.pricing import REFUSAL_NO_CHUNKS
+from ndis.domain.service_search import MAX_SHOWN_SERVICE_MATCHES
 
 # The provider page a filter question answers with; the same default page size the
 # listing endpoint serves.
@@ -81,8 +85,8 @@ Fill this exact shape, using null for every part the question does not ask about
    "postcode": "<4 digits>"|null, "locality": "<suburb name>"|null,
    "group": "<exact registration group name>"|null,
    "status": "<Approved|Revoked>"|null, "brisbane_area": true|false|null},
- "price_query": {"item": "<support item number>"|null, "state": "<2-letter state>"|null,
-   "remoteness": "<national|remote|very_remote>"|null},
+ "price_query": {"item": "<support item number>"|null, "service": "<service name>"|null,
+   "state": "<2-letter state>"|null, "remoteness": "<national|remote|very_remote>"|null},
  "rule_question": "<question about the NDIS Pricing Arrangements>"|null,
  "decision_request": true|false}
 
@@ -94,8 +98,13 @@ Rules:
   (brisbane_area: true, locality null); "Brisbane City" is a locality. When the
   question states both a postcode and a suburb, fill both.
 - postcode: copy the four digits only when the question itself states them.
-- price_query: the user asks the price limit of one support item; "item" is its number,
-  "state" is where the participant lives, "remoteness" only when stated.
+- price_query: the user asks what a support costs. "item": copy the support item number
+  only when the question itself states it (e.g. 15_056_0128_1_3); never guess a code.
+  Otherwise "service": copy the service the question names, exactly as it is written
+  (e.g. "occupational therapy", "OT", "support coordination"); never turn it into a
+  code. "state": copy the 2-letter state only when the question names one; leave it
+  null when none is stated - the national price limit applies. "remoteness" only when
+  stated.
 - rule_question: the user asks what the NDIS Pricing Arrangements say (cancellations,
   travel, GST, non-face-to-face work, remote loading, surcharges, ...). Copy the
   question; never answer it.
@@ -162,6 +171,29 @@ TokenPrices = tuple[float, float] | None
 
 
 @dataclass(frozen=True)
+class ServicePrices:
+    """The price section of an answer for a service phrase: the phrase as the user wrote
+    it, the state (``None`` when the question stated none — the national tier applies),
+    the remoteness tier, the total match count, and the capped entries shown. Every
+    entry's limit was computed from the catalogue row itself; the output guard re-checks
+    each against ``price_limit`` before the answer leaves."""
+
+    phrase: str
+    state: str | None
+    remoteness: str
+    total: int
+    entries: tuple[PriceEntry, ...]
+
+    def output_summary(self) -> str:
+        """The ``price_limit`` step's output summary: the match total, how many are
+        shown, and — when the question stated no state — that the national tier applies."""
+        head = f"{self.total} matching support items, showing {len(self.entries)}"
+        if self.state is None:
+            return f"{head}; no state stated: national limit applies"
+        return head
+
+
+@dataclass(frozen=True)
 class CombinedAnswer:
     """The outcome of one question: the parsed intent, the deterministic sections that
     were executed, the verified service evidence, and the refusal fields."""
@@ -183,7 +215,10 @@ class CombinedAnswer:
     """The postcode distances were measured from, or ``None`` when none were."""
     services: Mapping[str, tuple[ServiceMention, ...]] = field(default_factory=dict)
     price: PriceLimitResult | None = None
+    """The single item's price fact, when the question named an item number."""
     price_error: str | None = None
+    service_prices: ServicePrices | None = None
+    """The service phrase's price list, when the question named a service instead."""
     rule: RuleAnswer | None = None
     caveat: str | None = None
     steps: tuple[Step, ...] = ()
@@ -344,6 +379,7 @@ class Ask:
         evidence: ClaimEvidenceSource,
         *,
         locality_resolver: LocalityResolver,
+        service_search: SearchSupportItems,
         provider_limit: int = ASK_PROVIDER_LIMIT,
         token_prices: TokenPrices = None,
         clock: Callable[[], float] = time.perf_counter,
@@ -354,6 +390,7 @@ class Ask:
         self._rule_answerer = rule_answerer
         self._evidence = evidence
         self._locality_resolver = locality_resolver
+        self._service_search = service_search
         self._provider_limit = provider_limit
         self._token_prices = token_prices
         self._clock = clock
@@ -364,7 +401,7 @@ class Ask:
 
         started = log.start()
         result = self._client.complete(LlmRequest(INTENT_SYSTEM_PROMPT, intent_prompt(text)))
-        parsed = parse_intent(result.text)
+        parsed = parse_intent(result.text, question=text)
         log.record(
             "intent_parse",
             started,
@@ -404,19 +441,36 @@ class Ask:
         providers = section.providers
         price: PriceLimitResult | None = None
         price_error: str | None = None
+        service_prices: ServicePrices | None = None
         if intent.price_query is not None:
             started = log.start()
             query = intent.price_query
-            price, price_error = self._execute_price(query)
-            log.record(
-                "price_limit",
-                started,
-                f"item={query.item} state={query.state} "
-                f"remoteness={query.remoteness or 'national'}",
-                price_error
-                if price_error is not None
-                else f"limit {price.limit if price is not None else None}",
-            )
+            if query.item is not None:
+                # A question that names an item number behaves exactly as it does today.
+                price, price_error = self._execute_price(query)
+                log.record(
+                    "price_limit",
+                    started,
+                    f"item={query.item} state={query.state} "
+                    f"remoteness={query.remoteness or 'national'}",
+                    price_error
+                    if price_error is not None
+                    else f"limit {price.limit if price is not None else None}",
+                )
+            else:
+                service_prices, price_error = self._execute_service(query)
+                output = (
+                    service_prices.output_summary()
+                    if service_prices is not None
+                    else price_error or "unknown_service"
+                )
+                log.record(
+                    "price_limit",
+                    started,
+                    f'service="{query.service}" state={query.state} '
+                    f"remoteness={query.remoteness or 'national'}",
+                    output,
+                )
         rule: RuleAnswer | None = None
         if intent.rule_question:
             started = log.start()
@@ -447,7 +501,12 @@ class Ask:
             for provider in providers
         )
         caveat = CAVEAT_SERVICES if services else None
-        document = AnswerDocument(providers=entries, caveat=caveat)
+        price_entries: list[PriceEntry] = []
+        if price is not None:
+            price_entries.append(PriceEntry(price.item, price.state, price.remoteness, price.limit))
+        if service_prices is not None:
+            price_entries.extend(service_prices.entries)
+        document = AnswerDocument(providers=entries, caveat=caveat, prices=tuple(price_entries))
         guard = check_answer(document, providers, page_texts)
         log.record(
             "guard",
@@ -480,6 +539,7 @@ class Ask:
             services=services,
             price=price,
             price_error=price_error,
+            service_prices=service_prices,
             rule=rule,
             caveat=caveat,
             steps=log.done(),
@@ -591,7 +651,9 @@ class Ask:
         try:
             return (
                 self._catalogue(
-                    PriceLimitQuery(item=query.item, state=query.state, remoteness=query.remoteness)
+                    PriceLimitQuery(
+                        item=query.item or "", state=query.state, remoteness=query.remoteness
+                    )
                 ),
                 None,
             )
@@ -599,6 +661,42 @@ class Ask:
             return None, "unknown_item"
         except InvalidQueryError:
             return None, "invalid_price_query"
+
+    def _execute_service(self, query: PriceQuery) -> tuple[ServicePrices | None, str | None]:
+        """The service-phrase path: the deterministic search runs in code, the limits
+        come from the catalogue rows, and the shown list is capped with the total
+        stated. No match is the machine reason ``unknown_service`` and shows nothing
+        invented."""
+        remoteness = query.remoteness or "national"
+        try:
+            search = self._service_search(query.service or "")
+        except InvalidQueryError:
+            return None, "invalid_price_query"
+        if search.total == 0:
+            return None, "unknown_service"
+        entries = tuple(
+            PriceEntry(
+                item=item,
+                state=query.state,
+                remoteness=Remoteness(remoteness),
+                limit=(
+                    price_limit(item, query.state, Remoteness(remoteness))
+                    if query.state is not None
+                    else item.limits.for_remoteness(Remoteness(remoteness))
+                ),
+            )
+            for item in search.items[:MAX_SHOWN_SERVICE_MATCHES]
+        )
+        return (
+            ServicePrices(
+                phrase=search.phrase,
+                state=query.state,
+                remoteness=remoteness,
+                total=search.total,
+                entries=entries,
+            ),
+            None,
+        )
 
     def _service_evidence(
         self, providers: Sequence[Provider]

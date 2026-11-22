@@ -27,7 +27,7 @@ from ndis.config import MODEL_PRICES_PER_1M
 from ndis.domain.answer import CAVEAT_SERVICES, ServiceMention
 from ndis.domain.intent import Intent, ProviderFilters
 from ndis.domain.pricing import REFUSAL_NO_CHUNKS
-from tests.conftest import SEED_PROVIDERS
+from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS
 
 DECISION = CombinedAnswer(
     question="Which provider is best for my child?",
@@ -112,6 +112,7 @@ def test_ask_returns_the_combined_answer(
         "distance_origin": None,
         "price": None,
         "price_error": None,
+        "service_prices": None,
         "rule": None,
         "caveat": None,
         "steps": [
@@ -236,6 +237,7 @@ def test_ask_dependency_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
         dependencies.get_price_limit_use_case(dependencies.support_item_repository()),
         claim_evidence_source(),
         dependencies.locality_resolver(),
+        dependencies.search_support_items_use_case(dependencies.support_item_repository()),
     )
     assert isinstance(use_case, Ask)
     assert rule_store_maybe() is None
@@ -263,6 +265,61 @@ def test_extraction_and_pages_dirs_come_from_env(
     monkeypatch.setenv(PAGES_DIR_ENV, str(tmp_path / "pages"))
     assert dependencies.extraction_dir() == tmp_path / "extraction"
     assert dependencies.pages_dir() == tmp_path / "pages"
+
+
+def test_service_price_and_search_schemas_convert_the_application_values() -> None:
+    from decimal import Decimal
+
+    from ndis.api.schemas import (
+        ServicePriceOut,
+        ServicePricesOut,
+        SupportItemSearchOut,
+        SupportItemSummaryOut,
+    )
+    from ndis.application.ask import ServicePrices
+    from ndis.application.catalogue import ServiceSearchResult
+    from ndis.domain.answer import PriceEntry
+    from ndis.domain.catalogue import price_limit
+    from ndis.domain.entities import Remoteness
+    from ndis.domain.service_search import search_service_items
+
+    items = search_service_items(
+        "self-care", tuple(SEED_SUPPORT_ITEMS[:1] + SEED_SUPPORT_ITEMS[2:])
+    ).matches
+    search_out = SupportItemSearchOut.from_result(ServiceSearchResult("self-care", items), limit=20)
+    assert search_out.query == "self-care" and search_out.total == 1
+    assert search_out.items[0].model_dump(mode="json") == {
+        "item_number": "01_002_0107_1_1",
+        "name": "Assistance With Self-Care Activities - Weekday Night",
+        "unit": "H",
+        "quotable": False,
+        "legacy": False,
+        "limits": {"national": "82.57", "remote": "115.60", "very_remote": "123.86"},
+    }
+    assert SupportItemSummaryOut.from_item(SEED_SUPPORT_ITEMS[0]).item_number == "01_002_0107_1_1"
+
+    entry = PriceEntry(
+        item=SEED_SUPPORT_ITEMS[0],
+        state="QLD",
+        remoteness=Remoteness.REMOTE,
+        limit=price_limit(SEED_SUPPORT_ITEMS[0], "QLD", Remoteness.REMOTE),
+    )
+    prices = ServicePrices(
+        phrase="self-care", state="QLD", remoteness="remote", total=2, entries=(entry,)
+    )
+    prices_out = ServicePricesOut.from_result(prices)
+    assert prices_out.phrase == "self-care" and prices_out.total == 2
+    assert prices_out.items[0].model_dump(mode="json") == {
+        "item_number": "01_002_0107_1_1",
+        "name": "Assistance With Self-Care Activities - Weekday Night",
+        "unit": "H",
+        "quotable": False,
+        "legacy": False,
+        "state": "QLD",
+        "remoteness": "remote",
+        "price_limit": "115.60",
+    }
+    assert ServicePriceOut.from_entry(entry).price_limit == Decimal("115.60")
 
 
 def test_intent_and_service_mention_schemas_convert_domain_values() -> None:
@@ -321,6 +378,7 @@ def test_ask_use_case_prices_tokens_for_the_configured_model(
             dependencies.get_price_limit_use_case(dependencies.support_item_repository()),
             claim_evidence_source(),
             dependencies.locality_resolver(),
+            dependencies.search_support_items_use_case(dependencies.support_item_repository()),
         )
 
     monkeypatch.setenv("LLM_MODEL", "a-model-with-no-published-price")

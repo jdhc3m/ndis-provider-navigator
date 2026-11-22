@@ -17,6 +17,7 @@ from ndis.api.dependencies import (
     list_providers_use_case,
     locality_resolver,
     register_snapshot_date,
+    search_support_items_use_case,
     web_dist_dir,
 )
 from ndis.api.schemas import (
@@ -30,10 +31,18 @@ from ndis.api.schemas import (
     PriceLimitOut,
     ProviderOut,
     ProviderPageOut,
+    SupportItemSearchOut,
     TracingOut,
 )
 from ndis.application.ask import Ask as AskCombined
-from ndis.application.catalogue import GetPriceLimit, PriceLimitQuery, UnknownSupportItemError
+from ndis.application.catalogue import (
+    DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
+    GetPriceLimit,
+    PriceLimitQuery,
+    SearchSupportItems,
+    UnknownSupportItemError,
+)
 from ndis.application.extraction import BudgetExhausted, LlmError
 from ndis.application.pricing import AskRule, EmbeddingError
 from ndis.application.providers import (
@@ -110,6 +119,7 @@ def create_app() -> FastAPI:
     # function that tests import and reference by name (scripts/check_no_stubs.py).
     app.get("/providers", response_model=ProviderPageOut)(list_providers)
     app.get("/price-limits", response_model=PriceLimitOut)(get_price_limit)
+    app.get("/support-items", response_model=SupportItemSearchOut)(search_support_items)
     app.post("/ask-rule", response_model=AskRuleOut)(ask_rule)
     app.post("/ask", response_model=AskOut)(ask)
     app.get("/meta", response_model=MetaOut)(meta)
@@ -188,6 +198,22 @@ def get_price_limit(
     except UnknownSupportItemError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PriceLimitOut.from_result(result)
+
+
+def search_support_items(
+    use_case: Annotated[SearchSupportItems, Depends(search_support_items_use_case)],
+    q: str,
+    limit: Annotated[int, Query(ge=1, le=MAX_SEARCH_LIMIT)] = DEFAULT_SEARCH_LIMIT,
+) -> SupportItemSearchOut:
+    """Match a service phrase ("occupational therapy", "OT") against the support
+    catalogue in code — no model, so no key is needed — and return the deterministic
+    match list (base items before claim-type variants, current before legacy, then item
+    number) with its total match count."""
+    try:
+        result = use_case(q)
+    except InvalidQueryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return SupportItemSearchOut.from_result(result, limit)
 
 
 def ask_rule(
