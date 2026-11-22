@@ -3,10 +3,12 @@
 Answers plain-language questions about NDIS providers and pricing over the real NDIS
 Commission provider register: a question is parsed into a structured intent and executed
 deterministically — register filters as SQL, price limits as a pure lookup in the official
-support catalogue, pricing-rule questions answered only with citations that are verbatim
-spans of the Pricing Arrangements document — and it refuses rather than guess. Where the
-model is used to read a provider's website, every service claim ships with the verbatim
-quote from that page and the register's own caveat that it does not record profession.
+support catalogue (by support item number, or by a service name such as "occupational
+therapy" or "OT" mapped to catalogue items in code), pricing-rule questions answered only
+with citations that are verbatim spans of the Pricing Arrangements document — and it
+refuses rather than guess. Where the model is used to read a provider's website, every
+service claim ships with the verbatim quote from that page and the register's own caveat
+that it does not record profession.
 Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, uv; the front end (`web/`, ticket 09) is
 React 19 + TypeScript strict + Vite + Tailwind v4 with pnpm.
 
@@ -15,11 +17,11 @@ React 19 + TypeScript strict + Vite + Tailwind v4 with pnpm.
 ```mermaid
 flowchart TD
     Web["web/ — React + TypeScript single page<br/>HTTP only; typed client generated from the OpenAPI schema"]
-    API["adapters/api — FastAPI<br/>/providers · /price-limits · /ask · /ask-rule · /meta"]
+    API["adapters/api — FastAPI<br/>/providers · /price-limits · /support-items<br/>/ask · /ask-rule · /meta"]
 
     subgraph L["src/ndis — enforced inward: domain ← application ← adapters/api"]
-        APP["application — use cases over ports:<br/>Ask (intent → deterministic sections → output guard)<br/>AskRule (retrieve → judge → citation check)<br/>ListProviders (filter → rank by distance → page)<br/>GetPriceLimit · extraction use cases"]
-        DOM["domain — pure code, no frameworks:<br/>intent schema (total parser) · answer output guard<br/>citation span check · chunking · price_limit()<br/>haversine + postcode centroids · extraction confidence floor"]
+        APP["application — use cases over ports:<br/>Ask (intent → deterministic sections → output guard)<br/>AskRule (retrieve → judge → citation check)<br/>ListProviders (filter → rank by distance → page)<br/>GetPriceLimit · SearchSupportItems · extraction use cases"]
+        DOM["domain — pure code, no frameworks:<br/>intent schema (total parser) · answer output guard<br/>citation span check · chunking · price_limit()<br/>service-name search (pinned alias table)<br/>haversine + postcode centroids · extraction confidence floor"]
         ADP["adapters — SQLite repositories · sqlite-vec rule store<br/>OpenAI-compatible LLM client · caches · Langfuse tracing (optional)"]
     end
 
@@ -143,9 +145,14 @@ Then check, in order: `GET /meta` (configured models and data dates), `GET
 /providers?near=4101&max_km=5&limit=5` (ranked by distance), `GET
 /providers?locality=South%20Bank&state=QLD` (suburb resolved to postcode 4101 in code;
 an unknown or ambiguous suburb is a 422 with the candidates), `GET
-/price-limits?item=15_056_0128_1_3&state=QLD` (catalogue limit, no model involved), and
-`POST /ask` with a question (needs the key; the rule part degrades to a refusal with
-reason `no_chunks` until `build_rule_index.py` has run). `POST /ask` with
+/price-limits?item=15_056_0128_1_3&state=QLD` (catalogue limit, no model involved), `GET
+/support-items?q=occupational%20therapist` (30 matches, the five base items first, no
+model and no key), and `POST /ask` with a question (needs the key; the rule part
+degrades to a refusal with reason `no_chunks` until `build_rule_index.py` has run).
+`POST /ask` with `"What is the price limit for occupational therapy in Queensland?"`
+answers with the catalogue's matching items and their limits — the mapping from a
+service name to support items is code, never the model, and the answer marks every row
+as coming from the catalogue. `POST /ask` with
 `"Which provider is best for my autistic child? Recommend one."` must refuse with reason
 `decision_request` — that refusal is the product.
 
@@ -222,6 +229,7 @@ citation check behind it.
 | rule hit@3 | 0.7 | 1.0 (both strategies) |
 | extraction macro precision (labelled sites, served claims) | 0.8 | 0.840 |
 | refusal recall (5 golden refusal/adversarial cases) | 1.0 | 5/5 = 1.0 |
+| service resolution (8 golden /ask service cases with expected items) | 0.85 | 8/8 = 1.0 |
 
 **Latency and cost** (source: [reports/cost.md](reports/cost.md), 2026-11-09 runs through
 the free tier of the configured hosted endpoint; dollars are what the measured usage would

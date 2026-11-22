@@ -2,7 +2,8 @@
 
 The eval gate is `uv run pytest -m eval --no-cov`. It enforces the floors in
 `thresholds.yaml` — filter accuracy ≥ 0.85, rule hit@3 ≥ 0.7, extraction macro
-precision ≥ 0.8 on labelled rows, refusal recall = 1.0 — and never gets green by
+precision ≥ 0.8 on labelled rows, refusal recall = 1.0, service resolution ≥ 0.85 —
+and never gets green by
 lowering them. Each suite replays a committed capture or a recorded cache where one
 exists, so a gate run spends no model quota; the model-backed values were captured
 from the configured endpoint (see `GET /meta` and `src/ndis/config.py`).

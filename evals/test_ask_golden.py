@@ -254,6 +254,7 @@ def test_service_cases_answer_from_the_catalogue(ask: tuple[Ask, CachedIntentCli
     use_case, client = ask
     golden = read_golden(GOLDEN)
     matched = 0
+    resolved: dict[str, bool] = {}
     failures: list[str] = []
     for case in golden.service_cases:
         answer = use_case(case.question)
@@ -321,6 +322,9 @@ def test_service_cases_answer_from_the_catalogue(ask: tuple[Ask, CachedIntentCli
                     problems.append(f"tier:{section.remoteness}")
                 if section.total < len(section.entries):
                     problems.append("total_smaller_than_shown")
+                # The floor's own condition, recorded from this same run: every expected
+                # item number appears among the items shown.
+                resolved[case.question] = all(number in shown for number in case.items)
         if problems:
             failures.append(f"{case.question}: {', '.join(problems)}")
         else:
@@ -329,19 +333,10 @@ def test_service_cases_answer_from_the_catalogue(ask: tuple[Ask, CachedIntentCli
     # The floor: over the cases with expected item numbers, the fraction whose expected
     # numbers all appear among the items shown.
     resolvable = [case for case in golden.service_cases if case.items]
-    resolved = 0
-    for case in resolvable:
-        answer = use_case(case.question)
-        shown = (
-            {entry.item.item_number for entry in answer.service_prices.entries}
-            if (answer.service_prices)
-            else set()
-        )
-        if all(number in shown for number in case.items):
-            resolved += 1
-    accuracy = resolved / len(resolvable)
+    hits = sum(1 for case in resolvable if resolved.get(case.question))
+    accuracy = hits / len(resolvable)
     assert accuracy >= read_thresholds(THRESHOLDS).service_resolution_accuracy, (
-        f"{resolved}/{len(resolvable)}"
+        f"{hits}/{len(resolvable)}"
     )
 
 
