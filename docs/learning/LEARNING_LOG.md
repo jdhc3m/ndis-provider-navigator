@@ -18,3 +18,4 @@ One line per merged ticket: date, ticket, note, PR.
 - 2026-11-19 — 13 Suburb names in provider questions — [note](13-suburb-names.md) — [PR #52](https://github.com/jdhc3m/ndis-provider-navigator/pull/52)
 - 2026-11-19 — 13b Rule store thread-safety bugfix (issue #48) — PR [#49](https://github.com/jdhc3m/ndis-provider-navigator/pull/49) (no note; PR body is the record)
 - 2026-11-23 — 14 Service names instead of support item numbers — [note](14-service-names.md) — [PR #64](https://github.com/jdhc3m/ndis-provider-navigator/pull/64)
+- 2026-11-23 — 15 LangGraph foundations: one question through a graph — [note](15-langgraph-foundations.md) — [PR #65](https://github.com/jdhc3m/ndis-provider-navigator/pull/65)

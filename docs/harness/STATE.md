@@ -379,13 +379,37 @@ updated. Facts the Builder of ticket 09 needs:
   three older eval replays call `parse_intent` without `question=`;
   `docs/demo.md` eval-gate duration "~3–5 min" measured 5:48 on this machine.
 
+- Ticket 15 — LangGraph foundations (issue #54, PR #65, squash `4f94d2a`).
+  Note: `docs/learning/15-langgraph-foundations.md`; concept map:
+  `docs/learning/langgraph-map.md`; diagram: `docs/graphs/ask_graph.md`
+  (drift-tested). `langgraph>=1.2,<2` locked at 1.2.24 (additions only in
+  `uv.lock`; CI lock step green first try — this machine's `uv lock` matches
+  PyPI); `langgraph`+`langchain_core` forbidden in domain/application by
+  import-linter (probe in PR body). `Ask.__call__` split into eight named
+  stages in `application/ask.py` over a shared `AskDeps`; `AskState` TypedDict
+  (stdlib, in `application/ask.py`) with `steps: Annotated[list[Step],
+  operator.add]`; `build_ask_graph(deps)` in `adapters/graphs/ask_graph.py` —
+  8 thin node closures, conditional refusal/ok edge, all three sections run
+  every time so the fan-in at `evidence` runs exactly once (verified against
+  the installed package: three 0.6 s sleeps in 0.63 s wall, 4 worker threads).
+  Parity eval `evals/test_ask_graph_parity.py`: all 35 intent_cache cases
+  through both paths, 17 fields equal + steps as set of triples, zero model
+  calls. Concurrency test 20×4 threads over one temp SQLite file.
+  `scripts/run_ask_graph.py` (`stream_mode="updates", version="v2"`;
+  `--diagram` → `get_graph().draw_mermaid()`); AGENTS.md LangGraph paragraph
+  appended verbatim; README architecture paragraph. `POST /ask` unchanged;
+  prompts/schema/golden/thresholds/web untouched. Measured: 871 passed / 15
+  skipped; eval 12 passed / 3 skipped (~12:45 with register). Review: APPROVE
+  round 1, 0 must-fix (PR comment on #65); 1 nit applied pre-push (`dd033ee`,
+  `kinds.count("evidence") == 1`). Follow-ups (not ticketed): ticket 16 owns
+  the checkpointed-state restriction (`AskState` today carries non-JSON values
+  like `page_texts` — fine while nothing is checkpointed); a live
+  one-question run of `scripts/run_ask_graph.py` is pending (the endpoint was
+  quota-exhausted on 2026-11-23).
+
 ## In progress
 
-- Ticket 15 — LangGraph foundations (issue #54): branch
-  `ticket/15-langgraph-foundations`, worktree
-  `~/ndis-provider-navigator-ticket-15`, builder + reviewer rounds done
-  (APPROVE, 0 must-fix; join-once nit applied), PR #65 in CI at the time of
-  writing.
+- None — ticket 15 merged; ticket 16 (issue #55) is next.
 
 ## Blocked
 
@@ -464,9 +488,10 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- **Ticket 15 — LangGraph foundations (issue #54) is in progress** (PR #65);
-  after it merge 16 (#55), then 17–24 in number order. Each later ticket
-  depends on the previous one — the graph, memory and chat stack up.
+- **Ticket 16 — Conversation memory: threads, checkpoints and follow-up
+  questions (issue #55) is next**, then 17–24 in number order (each depends on
+  the previous). Ticket 16 owns the checkpointed-state restriction recorded in
+  the ticket 15 Done entry.
 - **LLM quota facts for the phase (2026-11-23).** The free-tier daily quota
   was exhausted again after ticket 14's captures + live demo: the native
   endpoint returns 429, and the OpenAI-compat surface returns an empty 404 in
