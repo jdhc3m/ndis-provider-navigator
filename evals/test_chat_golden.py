@@ -1,36 +1,37 @@
 """The chat golden eval: the multi-turn conversations of ``evals/chat_golden.yaml``
 replayed from ``evals/chat_cache.yaml`` through the real chat graph, intent parser and
-deterministic execution — zero model calls.
+deterministic execution — zero model calls, zero register queries.
 
 The cache holds, per follow-up turn, the contextualise payload captured for exactly what
 the model saw (keyed by a digest of the system and user prompts, so a prompt edit
-invalidates the cache instead of replaying a stale rewrite), and per standalone question
-the intent payload captured for it. The replay drives the real graph turn by turn on one
-thread per conversation: a rewrite payload is looked up by digest, the standalone
-question goes to the intent parser, the parsed intent executes deterministically, and
-the stored turn's final intent (or refusal) is compared with the golden expectation.
+invalidates the cache instead of replaying a stale rewrite), per standalone question the
+intent payload captured for it, and per conversation turn the summary the rewrite prompt
+carried for it. The replay drives the real graph turn by turn on one thread per
+conversation: a rewrite payload is looked up by digest, the standalone question goes to
+the intent parser, the parsed intent executes deterministically, and the stored turn's
+final intent (or refusal) is compared with the golden expectation.
+
+The rewrite prompts' history is rebuilt exclusively from the cached summaries, so it is
+byte-identical to capture time no matter what the replay executes downstream: the ask
+sections run against small seeded fixture repositories (a temp SQLite file, the same
+shape the unit tests seed), because the replayed questions' providers are irrelevant —
+only the parsed intents and refusals are asserted — and the real register must not be
+queried. (Before the summaries existed the replay had to share the capture's wiring
+down to the provider page size and centroids; the cache now pins that.)
 
 Two floors are enforced from ``evals/thresholds.yaml``: ``followup_accuracy`` (follow-up
 turns whose final parsed intent matches the expectation) and ``followup_refusal_recall``
 (follow-up decision requests and injections still contained with the expected reason).
 First turns are asserted exactly, like the locality cases of the /ask golden eval. The
-run skips visibly while the cache or the register database is missing on this machine;
-the database file comes from ``NDIS_DB_PATH`` (see ``ndis.api.dependencies``).
+run skips visibly while the cache file is missing; everything else it needs is committed
+or seeded here.
 
 The rule answerer is the refusing no-index stand-in on both the capture and the replay:
 a rule follow-up is pinned at the intent level here, and this keeps a capture from
 spending rule-judge quota.
-
-The replay wiring is the capture script's own ``build_capture_deps``, not a parallel
-copy: a rewrite's cache key is the digest of exactly what the model saw, and the prompt
-carries the history summaries with every provider the earlier turns showed — a replay
-run at a different provider page size, or without the postcode centroids that decide the
-``near`` ranking's order, would build different prompts and miss every follow-up lookup
-(review round 2's wiring mismatch).
 """
 
-import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,20 +48,26 @@ from ndis.adapters.chat_golden import (
     rewrite_payload_key,
 )
 from ndis.adapters.graphs.chat_graph import build_chat_graph
+from ndis.adapters.sqlite_repository import (
+    SqlAlchemyProviderRepository,
+    SqlAlchemySupportItemRepository,
+    create_sqlite_engine,
+)
 from ndis.adapters.thresholds import read_thresholds
-from ndis.application.ask import INTENT_SYSTEM_PROMPT
-from ndis.application.chat import CONTEXTUALISE_SYSTEM_PROMPT, ChatDeps
-from ndis.application.extraction import LlmRequest, LlmResult
+from ndis.api.schemas import AskOut
+from ndis.application.ask import INTENT_SYSTEM_PROMPT, AskDeps, MissingIndexRuleAnswerer
+from ndis.application.catalogue import GetPriceLimit, SearchSupportItems
+from ndis.application.chat import CONTEXTUALISE_SYSTEM_PROMPT, ChatDeps, TurnSummarizer
+from ndis.application.extraction import LlmClient, LlmRequest, LlmResult
+from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.intent import ProviderFilters
-from scripts.capture_chat_cache import build_capture_deps
+from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS, LocalityDirectoryStub
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "evals" / "chat_golden.yaml"
 CACHE = ROOT / "evals" / "chat_cache.yaml"
 THRESHOLDS = ROOT / "evals" / "thresholds.yaml"
-DB_PATH_ENV = "NDIS_DB_PATH"
-DB = Path(os.environ.get(DB_PATH_ENV) or ROOT / "data" / "ndis.db")
 GOLDEN_ROOT_NS = "golden:"  # thread-id prefix, one thread per conversation
 
 
@@ -102,6 +109,29 @@ def _question_of(request: LlmRequest) -> str:
     prefix = "Question: "
     start = request.user.index(prefix) + len(prefix)
     return request.user[start : request.user.index("\n\n", start)]
+
+
+class CachedSummarizer:
+    """The replay's history source: the captured turn summaries, keyed by the turn's
+    standalone question — the same question always answered the same way at capture
+    time, so the question identifies the summary. A turn without one is recorded and
+    summarized empty, so the run degrades to a recorded failure (the rewrite prompt
+    then differs from capture time and its lookup misses) instead of a crash."""
+
+    def __init__(self, summaries: Mapping[str, Mapping[str, Any]]) -> None:
+        self._summaries = dict(summaries)
+        self.missing: list[str] = []
+
+    def __call__(self, turns: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for turn in turns:
+            question = str(turn.get("standalone_question") or turn.get("message", ""))
+            summary = self._summaries.get(question)
+            if summary is None:
+                self.missing.append(f"summary for {question!r}")
+                summary = {"standalone_question": question, "intent": None, "providers_shown": []}
+            summaries.append(dict(summary))
+        return summaries
 
 
 @dataclass
@@ -170,9 +200,11 @@ def _compare_expectation(turn: GoldenTurn, answer: Mapping[str, Any]) -> list[st
     return problems
 
 
-def run_replay(graph: Any, golden: ChatGoldenSet, client: ReplayChatClient) -> ReplayOutcome:
+def run_replay(
+    graph: Any, golden: ChatGoldenSet, client: ReplayChatClient, summarizer: CachedSummarizer
+) -> ReplayOutcome:
     """Run every golden conversation on its own thread and score the outcome; any cache
-    miss the replay client hit is carried in the outcome."""
+    miss the replay client or the summarizer hit is carried in the outcome."""
     outcome = ReplayOutcome()
     for conversation in golden.conversations:
         config = {"configurable": {"thread_id": GOLDEN_ROOT_NS + conversation.id}}
@@ -204,51 +236,115 @@ def run_replay(graph: Any, golden: ChatGoldenSet, client: ReplayChatClient) -> R
                 )
             else:
                 outcome.followup_hits += 1
-    outcome.missing = list(client.missing)
+    outcome.missing = [*client.missing, *summarizer.missing]
     return outcome
 
 
-def build_replay_deps(cache: ChatCache) -> tuple[ChatDeps, ReplayChatClient]:
-    """The replay's dependencies, built by the capture script's own wiring builder so
-    the two sides cannot drift: the digest covers the history summaries, which carry
-    every provider the earlier turns showed (see the module docstring)."""
+class ReplayEvidence:
+    """A ``ClaimEvidenceSource`` with nothing cached: the replayed questions' providers
+    are fixtures, so there is no page to quote and the evidence stage runs empty."""
+
+    def claims_for(self, provider_keys: Sequence[str]) -> dict[str, tuple]:  # type: ignore[type-arg]
+        return {key: () for key in provider_keys}
+
+    def page_text(self, provider_key: str, url: str) -> str:
+        del provider_key, url
+        return ""
+
+
+@dataclass(frozen=True)
+class ReplayRepos:
+    """The seeded repositories the replay's ask sections execute against."""
+
+    providers: SqlAlchemyProviderRepository
+    catalogue: SqlAlchemySupportItemRepository
+
+
+def seed_replay_repos(tmp_path: Path) -> ReplayRepos:
+    """The temp SQLite repositories the replay executes over: the same seeds the unit
+    tests use, so the pipeline runs end to end without the register database."""
+    engine = create_sqlite_engine(tmp_path / "ndis.db")
+    providers = SqlAlchemyProviderRepository(engine)
+    providers.replace_all(SEED_PROVIDERS, [])
+    catalogue = SqlAlchemySupportItemRepository(engine)
+    catalogue.replace_all(SEED_SUPPORT_ITEMS)
+    return ReplayRepos(providers=providers, catalogue=catalogue)
+
+
+def fixture_chat_deps(
+    client: LlmClient,
+    repos: ReplayRepos,
+    *,
+    summarize_turns: TurnSummarizer | None = None,
+) -> ChatDeps:
+    """The replay's chat dependencies over the seeded repositories. Nothing here can
+    touch the rewrite prompts any more: their history comes from the cache's summaries,
+    so whatever executes downstream of the contextualise stage cannot drift a digest."""
+    return ChatDeps(
+        client=client,
+        ask_deps=AskDeps(
+            client=client,
+            providers=ListProviders(repos.providers),
+            catalogue=GetPriceLimit(repos.catalogue),
+            rule_answerer=MissingIndexRuleAnswerer(),
+            evidence=ReplayEvidence(),  # type: ignore[arg-type]
+            locality_resolver=LocalityResolver(LocalityDirectoryStub(())),
+            service_search=SearchSupportItems(repos.catalogue),
+        ),
+        answer_to_json=lambda answer: AskOut.from_result(answer).model_dump(mode="json"),
+        summarize_turns=summarize_turns,
+    )
+
+
+def build_replay_deps(
+    cache: ChatCache, repos: ReplayRepos
+) -> tuple[ChatDeps, ReplayChatClient, CachedSummarizer]:
+    """The replay's dependencies: the fixture wiring with the cached summaries injected
+    as the rewrite history's source (the served default,
+    :func:`ndis.application.chat.default_turn_summaries`, is what capture time ran)."""
     client = ReplayChatClient(cache.rewrites, cache.intents)
-    return build_capture_deps(client), client
+    summarizer = CachedSummarizer(cache.summaries)
+    deps = fixture_chat_deps(client, repos, summarize_turns=summarizer)
+    return deps, client, summarizer
 
 
-def build_replay_graph(cache: ChatCache) -> tuple[Any, ReplayChatClient]:
-    """The real chat graph over the loaded register database, replaying the cache."""
-    deps, client = build_replay_deps(cache)
-    return build_chat_graph(deps, checkpointer=InMemorySaver()), client
+def build_replay_graph(
+    cache: ChatCache, repos: ReplayRepos
+) -> tuple[Any, ReplayChatClient, CachedSummarizer]:
+    """The real chat graph over the seeded repositories, replaying the cache."""
+    deps, client, summarizer = build_replay_deps(cache, repos)
+    return build_chat_graph(deps, checkpointer=InMemorySaver()), client, summarizer
 
 
 @pytest.fixture
-def replay() -> tuple[Any, ReplayChatClient, ChatGoldenSet]:
+def replay(
+    tmp_path: Path,
+) -> tuple[Any, ReplayChatClient, CachedSummarizer, ChatGoldenSet]:
     if not CACHE.is_file():
         pytest.skip(f"chat cache not captured yet: {CACHE} is missing")
-    if not DB.is_file():
-        pytest.skip(f"register database not loaded yet: {DB} is missing")
     golden = read_chat_golden(GOLDEN)
-    graph, client = build_replay_graph(read_chat_cache(CACHE))
-    return graph, client, golden
+    graph, client, summarizer = build_replay_graph(
+        read_chat_cache(CACHE), seed_replay_repos(tmp_path)
+    )
+    return graph, client, summarizer, golden
 
 
 @pytest.mark.eval
 def test_first_turns_match_the_expectations_exactly(
-    replay: tuple[Any, ReplayChatClient, ChatGoldenSet],
+    replay: tuple[Any, ReplayChatClient, CachedSummarizer, ChatGoldenSet],
 ) -> None:
-    graph, client, golden = replay
-    outcome = run_replay(graph, golden, client)
+    graph, client, summarizer, golden = replay
+    outcome = run_replay(graph, golden, client, summarizer)
     assert not outcome.missing, "\n".join(outcome.missing)
     assert not outcome.first_turn_failures, "\n".join(outcome.first_turn_failures)
 
 
 @pytest.mark.eval
 def test_followup_turns_match_the_expectations_at_the_floor(
-    replay: tuple[Any, ReplayChatClient, ChatGoldenSet],
+    replay: tuple[Any, ReplayChatClient, CachedSummarizer, ChatGoldenSet],
 ) -> None:
-    graph, client, golden = replay
-    outcome = run_replay(graph, golden, client)
+    graph, client, summarizer, golden = replay
+    outcome = run_replay(graph, golden, client, summarizer)
     assert not outcome.missing, "\n".join(outcome.missing)
     # The floor's own denominator: the golden set must keep its follow-up expectations,
     # or the accuracy below would be a vacuous 1.0.
@@ -260,10 +356,10 @@ def test_followup_turns_match_the_expectations_at_the_floor(
 
 @pytest.mark.eval
 def test_followup_refusals_are_contained(
-    replay: tuple[Any, ReplayChatClient, ChatGoldenSet],
+    replay: tuple[Any, ReplayChatClient, CachedSummarizer, ChatGoldenSet],
 ) -> None:
-    graph, client, golden = replay
-    outcome = run_replay(graph, golden, client)
+    graph, client, summarizer, golden = replay
+    outcome = run_replay(graph, golden, client, summarizer)
     assert not outcome.missing, "\n".join(outcome.missing)
     # The refusal floor's denominator: the decision-request and injection follow-ups
     # must both stay in the golden set.

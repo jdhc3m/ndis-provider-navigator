@@ -17,16 +17,23 @@ instructed to copy the place forward, so a price follow-up may legitimately answ
 the combined intent shape the /ask golden SA service case already treats as correct
 (provider filters plus the price query).
 
-The cache holds two sections: ``rewrites`` (the contextualise payloads, keyed by the
-digest of exactly what the model saw — see :func:`rewrite_payload_key`) and ``intents``
-(the intent payloads for every standalone question, keyed by the question). The digest
-makes a prompt edit invalidate the cache instead of silently replaying stale answers.
+The cache holds three sections: ``rewrites`` (the contextualise payloads, keyed by the
+digest of exactly what the model saw — see :func:`rewrite_payload_key`), ``intents``
+(the intent payloads for every standalone question, keyed by the question) and
+``summaries`` (per conversation turn, the turn summary exactly as
+``application.chat.contextualise_stage`` built it — :func:`ndis.application.chat.turn_summary`'s
+``standalone_question``, ``intent`` and ``providers_shown`` — keyed by the turn's
+standalone question, which the summary itself carries). The digest makes a prompt edit
+invalidate the cache instead of silently replaying stale answers; the summaries pin the
+rewrite prompts' history, so the replay can rebuild them byte-identically without
+executing the earlier turns the way capture time did.
 """
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from ndis.application.extraction import LlmRequest
 from ndis.domain.intent import ProviderFilters
@@ -36,6 +43,7 @@ TURN_FIELDS = ("message", "filters", "service", "service_state", "rule_contains"
 TURN_EXPECTATIONS = ("filters", "service", "rule_contains", "refusal")
 REWRITE_FIELDS = ("message", "key", "payload")
 CACHE_INTENT_FIELDS = ("question", "payload")
+CACHE_SUMMARY_FIELDS = ("question", "payload")
 
 
 class ChatGoldenFormatError(ValueError):
@@ -73,11 +81,15 @@ class ChatGoldenSet:
 
 @dataclass(frozen=True)
 class ChatCache:
-    """The captured payloads: rewrites keyed by :func:`rewrite_payload_key`, intents by
-    the standalone question."""
+    """The captured payloads: rewrites keyed by :func:`rewrite_payload_key` (with the
+    human-readable message label the file carries alongside each key), intents by the
+    standalone question, and the per-turn summaries by the turn's standalone question —
+    the dicts :func:`ndis.application.chat.turn_summary` builds."""
 
     rewrites: dict[str, str] = field(default_factory=dict)
+    rewrite_messages: dict[str, str] = field(default_factory=dict)
     intents: dict[str, str] = field(default_factory=dict)
+    summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _parse_scalar(text: str) -> object:
@@ -252,7 +264,8 @@ def rewrite_payload_key(request: LlmRequest) -> str:
 
 
 def read_chat_cache(path) -> ChatCache:  # type: ignore[no-untyped-def]
-    """Parse the chat cache file; duplicate keys are a capture bug and fail loudly."""
+    """Parse the chat cache file; duplicate keys are a capture bug and fail loudly. A
+    cache written before the ``summaries`` section existed reads back with none."""
     cache = ChatCache()
     section: str | None = None
     current: dict[str, object] | None = None
@@ -260,7 +273,7 @@ def read_chat_cache(path) -> ChatCache:  # type: ignore[no-untyped-def]
         line = raw.rstrip()
         if not line or line.lstrip().startswith("#"):
             continue
-        if line in ("rewrites:", "intents:") and not line.startswith(" "):
+        if line in ("rewrites:", "intents:", "summaries:") and not line.startswith(" "):
             if current is not None:
                 _cache_row(path, cache, section or "", current)
             section = line[:-1]
@@ -276,7 +289,11 @@ def read_chat_cache(path) -> ChatCache:  # type: ignore[no-untyped-def]
         if current is None or not line.startswith("  ") or ":" not in line:
             raise ChatGoldenFormatError(f"{path}:{number}: unexpected line {raw!r}")
         field, _, value = line.strip().partition(":")
-        allowed = REWRITE_FIELDS if section == "rewrites" else CACHE_INTENT_FIELDS
+        allowed = {
+            "rewrites": REWRITE_FIELDS,
+            "intents": CACHE_INTENT_FIELDS,
+            "summaries": CACHE_SUMMARY_FIELDS,
+        }[section]
         if field not in allowed:
             raise ChatGoldenFormatError(f"{path}:{number}: unknown field {field!r}")
         current[field] = _parse_scalar(value)
@@ -294,6 +311,14 @@ def _cache_row(  # type: ignore[no-untyped-def]
         if key in cache.rewrites:
             raise ChatGoldenFormatError(f"{path}: duplicate rewrite key {key}")
         cache.rewrites[key] = str(row["payload"])
+        cache.rewrite_messages[key] = str(row["message"])
+        return
+    if section == "summaries":
+        _require(path, row, CACHE_SUMMARY_FIELDS, "a summary row")
+        question = str(row["question"])
+        if question in cache.summaries:
+            raise ChatGoldenFormatError(f"{path}: duplicate summary question {question!r}")
+        cache.summaries[question] = _summary_document(path, row["payload"])
         return
     _require(path, row, CACHE_INTENT_FIELDS, "an intent row")
     question = str(row["question"])
@@ -302,14 +327,44 @@ def _cache_row(  # type: ignore[no-untyped-def]
     cache.intents[question] = str(row["payload"])
 
 
+def _summary_document(  # type: ignore[no-untyped-def]
+    path, value: object
+) -> dict[str, Any]:
+    """One summary row's payload: an inline JSON object of exactly the shape
+    ``application.chat.turn_summary`` builds, validated so a typo fails loudly instead
+    of silently feeding a different rewrite prompt."""
+    if not isinstance(value, dict):
+        raise ChatGoldenFormatError(f"{path}: a summary payload must be an inline JSON object")
+    if set(value) != {"standalone_question", "intent", "providers_shown"}:
+        raise ChatGoldenFormatError(
+            f"{path}: a summary payload carries exactly standalone_question, intent "
+            f"and providers_shown, not {sorted(value)}"
+        )
+    question = value["standalone_question"]
+    providers = value["providers_shown"]
+    if not isinstance(question, str):
+        raise ChatGoldenFormatError(f"{path}: a summary's standalone_question must be a string")
+    if not isinstance(providers, list) or not all(
+        isinstance(item, dict) and set(item) == {"abn", "business_name"} for item in providers
+    ):
+        raise ChatGoldenFormatError(
+            f"{path}: a summary's providers_shown must list abn/business_name objects"
+        )
+    if value["intent"] is not None and not isinstance(value["intent"], dict):
+        raise ChatGoldenFormatError(f"{path}: a summary's intent must be an object or null")
+    return value
+
+
 def write_chat_cache(  # type: ignore[no-untyped-def]
     path,
     rewrites: Iterable[tuple[str, str, str]],
     intents: Iterable[tuple[str, str]],
     header: str,
+    summaries: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
-    """Write the cache file: rewrites (message, key, payload) then intents (question,
-    payload), values JSON-quoted, in the deterministic order given."""
+    """Write the cache file: rewrites (message, key, payload), then intents (question,
+    payload), then the turn summaries (question, inline JSON object of the summary), in
+    the deterministic order given."""
     lines = [header, "rewrites:\n"]
     for message, key, payload in rewrites:
         lines.append(f"- message: {json.dumps(message)}\n")
@@ -319,4 +374,9 @@ def write_chat_cache(  # type: ignore[no-untyped-def]
     for question, payload in intents:
         lines.append(f"- question: {json.dumps(question)}\n")
         lines.append(f"  payload: {json.dumps(payload)}\n")
+    if summaries is not None:
+        lines.append("summaries:\n")
+        for question, summary in summaries.items():
+            lines.append(f"- question: {json.dumps(question)}\n")
+            lines.append(f"  payload: {json.dumps(summary, ensure_ascii=False)}\n")
     path.write_text("".join(lines), encoding="utf-8")

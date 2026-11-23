@@ -67,6 +67,18 @@ THREAD_NOT_FOUND = "thread_not_found"
 THREAD_FULL = "thread_full"
 
 
+# Given the window of stored turns a rewrite is about to see, return the summaries the
+# prompt carries. The served pipeline summarizes the turns it holds; a caller that
+# already holds the summaries (the eval replay) injects its own reader so its prompts
+# stay byte-identical to capture time while its own execution runs elsewhere.
+TurnSummarizer = Callable[[Sequence[Mapping[str, Any]]], list[dict[str, Any]]]
+
+
+def default_turn_summaries(turns: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """:func:`turn_summary` over each stored turn, in order — the served behaviour."""
+    return [turn_summary(turn) for turn in turns]
+
+
 @dataclass(frozen=True)
 class ChatDeps:
     """The chat dependencies every stage needs, and what the graph builder receives.
@@ -74,11 +86,13 @@ class ChatDeps:
     ``client`` is the rewrite client (one call per follow-up turn); ``ask_deps`` builds
     the ticket 15 ask graph the ``ask`` node runs; ``answer_to_json`` turns the composed
     answer into the JSON shape the API returns — injected by the composition root, which
-    owns that shape."""
+    owns that shape. ``summarize_turns`` replaces how the rewrite history is built (see
+    :data:`TurnSummarizer`); ``None`` keeps :func:`default_turn_summaries`."""
 
     client: LlmClient
     ask_deps: AskDeps
     answer_to_json: Callable[[CombinedAnswer], dict[str, Any]]
+    summarize_turns: TurnSummarizer | None = None
 
 
 class ChatTurn(TypedDict):
@@ -148,7 +162,8 @@ def contextualise_stage(
     """Rewrite one follow-up into a standalone question from the last
     :data:`RECENT_TURNS_FOR_REWRITE` turns, then check the model's answer with the
     domain guard (a failed check falls back to the raw message with its reason)."""
-    history = [turn_summary(turn) for turn in list(turns)[-RECENT_TURNS_FOR_REWRITE:]]
+    summarize = deps.summarize_turns or default_turn_summaries
+    history = summarize(list(turns)[-RECENT_TURNS_FOR_REWRITE:])
     result = deps.client.complete(
         LlmRequest(CONTEXTUALISE_SYSTEM_PROMPT, contextualise_prompt(history, message))
     )

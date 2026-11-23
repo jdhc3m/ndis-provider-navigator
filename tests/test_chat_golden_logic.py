@@ -1,17 +1,28 @@
 """The chat eval's enforcement logic, proven without the real capture: a synthetic cache
 fixture is recorded the way ``scripts/capture_chat_cache.py`` records (rewrite payloads
 keyed by the digest of what the model saw, intent payloads keyed by the standalone
-question), written to YAML, read back through the real readers, replayed through the
-real chat graph over seeded repositories, and scored by the eval's own runner — then a
-corrupted or laundering cache must fail the floors."""
+question, and per turn the summary the rewrite prompt carried), written to YAML, read
+back through the real readers, replayed through the real chat graph over seeded
+repositories, and scored by the eval's own runner — then a corrupted or laundering cache
+must fail the floors, and the replay's rewrite lookups must not care how its own ask
+sections are wired, because the history comes verbatim from the cached summaries."""
 
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from evals.test_chat_golden import ReplayChatClient, run_replay
+from evals.test_chat_golden import (
+    CachedSummarizer,
+    ReplayChatClient,
+    ReplayRepos,
+    fixture_chat_deps,
+    run_replay,
+    seed_replay_repos,
+)
 from ndis.adapters.chat_golden import (
     ChatCache,
     ChatGoldenFormatError,
@@ -21,25 +32,12 @@ from ndis.adapters.chat_golden import (
     write_chat_cache,
 )
 from ndis.adapters.graphs.chat_graph import build_chat_graph
-from ndis.adapters.sqlite_repository import (
-    SqlAlchemyProviderRepository,
-    SqlAlchemySupportItemRepository,
-    create_sqlite_engine,
-)
-from ndis.api.schemas import AskOut
-from ndis.application.ask import AskDeps, MissingIndexRuleAnswerer
-from ndis.application.catalogue import GetPriceLimit, SearchSupportItems
-from ndis.application.chat import ChatDeps
+from ndis.application.ask import ASK_PROVIDER_LIMIT
+from ndis.application.chat import turn_summary
 from ndis.application.extraction import LlmRequest, LlmResult
-from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.intent import ProviderFilters
-from tests.conftest import (
-    SEED_PROVIDERS,
-    SEED_SUPPORT_ITEMS,
-    LocalityDirectoryStub,
-    chat_intent_payload,
-)
+from tests.conftest import chat_intent_payload
 
 FIRST_QUESTION = "providers in postcode 4101"
 NARROWED_QUESTION = "approved providers in postcode 4101"
@@ -139,102 +137,90 @@ def _message_of(request: LlmRequest) -> str:
     return request.user[start : request.user.index("\n", start)]
 
 
-class EmptyEvidence:
-    """A ``ClaimEvidenceSource`` with nothing cached: the synthetic runs need no page."""
-
-    def claims_for(self, provider_keys) -> dict:  # type: ignore[no-untyped-def]
-        return {}
-
-    def page_text(self, provider_key: str, url: str) -> str:
-        del provider_key, url
-        return ""
-
-
 @pytest.fixture
-def repos(tmp_path: Path) -> tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository]:
-    engine = create_sqlite_engine(tmp_path / "ndis.db")
-    providers = SqlAlchemyProviderRepository(engine)
-    providers.replace_all(SEED_PROVIDERS, [])
-    catalogue = SqlAlchemySupportItemRepository(engine)
-    catalogue.replace_all(SEED_SUPPORT_ITEMS)
-    return providers, catalogue
+def repos(tmp_path: Path) -> ReplayRepos:
+    """The seeded temp repositories the synthetic capture and every replay run over."""
+    return seed_replay_repos(tmp_path)
 
 
 def capture(
-    repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    repos: ReplayRepos,
     tmp_path: Path,
     rewrites: Mapping[str, str],
     intents: Mapping[str, str],
+    *,
+    provider_limit: int | None = None,
 ) -> tuple[Path, Path]:
-    """Record the synthetic cache the way the capture script does, and write the golden
-    and cache files, returning their paths."""
-    providers, catalogue = repos
+    """Record the synthetic cache the way the capture script does (the served pipeline:
+    history summarized from the turns it holds, at the given provider page), and write
+    the golden and cache files, returning their paths."""
     client = SyntheticCaptureClient(rewrites, intents)
-    graph = build_chat_graph(
-        ChatDeps(
-            client=client,
-            ask_deps=AskDeps(
-                client=client,
-                providers=ListProviders(providers),
-                catalogue=GetPriceLimit(catalogue),
-                rule_answerer=MissingIndexRuleAnswerer(),
-                evidence=EmptyEvidence(),  # type: ignore[arg-type]
-                locality_resolver=LocalityResolver(LocalityDirectoryStub(())),
-                service_search=SearchSupportItems(catalogue),
-            ),
-            answer_to_json=lambda answer: AskOut.from_result(answer).model_dump(mode="json"),
-        ),
-        checkpointer=InMemorySaver(),
-    )
+    deps = fixture_chat_deps(client, repos)
+    if provider_limit is not None:
+        deps = replace(deps, ask_deps=replace(deps.ask_deps, provider_limit=provider_limit))
+    graph = build_chat_graph(deps, checkpointer=InMemorySaver())
     golden_path = tmp_path / "chat_golden.yaml"
     golden_path.write_text(GOLDEN_YAML, encoding="utf-8")
+    summaries: dict[str, dict[str, object]] = {}
     for conversation in read_chat_golden(golden_path).conversations:
         config = {"configurable": {"thread_id": f"golden:{conversation.id}"}}
         for turn in conversation.turns:
-            graph.invoke({"message": turn.message}, config)
+            final = graph.invoke({"message": turn.message}, config)
+            stored = final["turns"][-1]
+            summaries.setdefault(stored["standalone_question"], turn_summary(stored))
     cache_path = tmp_path / "chat_cache.yaml"
-    rewrites = [
+    recorded = [
         (message, key, payload) for key, (message, payload) in client.recorded_rewrites.items()
     ]
-    write_chat_cache(cache_path, rewrites, client.recorded_intents.items(), "# synthetic\n")
+    write_chat_cache(
+        cache_path, recorded, client.recorded_intents.items(), "# synthetic\n", summaries=summaries
+    )
     return golden_path, cache_path
 
 
-def replay_graph(
-    client: ReplayChatClient,
-    repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
-):
-    providers, catalogue = repos
-    return build_chat_graph(
-        ChatDeps(
-            client=client,
-            ask_deps=AskDeps(
-                client=client,
-                providers=ListProviders(providers),
-                catalogue=GetPriceLimit(catalogue),
-                rule_answerer=MissingIndexRuleAnswerer(),
-                evidence=EmptyEvidence(),  # type: ignore[arg-type]
-                locality_resolver=LocalityResolver(LocalityDirectoryStub(())),
-                service_search=SearchSupportItems(catalogue),
-            ),
-            answer_to_json=lambda answer: AskOut.from_result(answer).model_dump(mode="json"),
-        ),
-        checkpointer=InMemorySaver(),
+def replay(
+    cache: ChatCache,
+    repos: ReplayRepos,
+    *,
+    rewrites: Mapping[str, str] | None = None,
+    intents: Mapping[str, str] | None = None,
+    summaries: Mapping[str, Mapping[str, object]] | None = None,
+    provider_limit: int | None = None,
+) -> tuple[Any, ReplayChatClient, CachedSummarizer]:
+    """The replay graph over the seeded repositories at the given wiring, replaying the
+    loaded cache (a test may corrupt one section by passing that section's replacement)."""
+    client = ReplayChatClient(
+        rewrites if rewrites is not None else cache.rewrites,
+        intents if intents is not None else cache.intents,
     )
+    summarizer = CachedSummarizer(summaries if summaries is not None else cache.summaries)
+    deps = fixture_chat_deps(client, repos, summarize_turns=summarizer)
+    if provider_limit is not None:
+        deps = replace(deps, ask_deps=replace(deps.ask_deps, provider_limit=provider_limit))
+    graph = build_chat_graph(deps, checkpointer=InMemorySaver())
+    return graph, client, summarizer
 
 
 def test_the_eval_logic_scores_a_clean_synthetic_capture(
-    repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    repos: ReplayRepos,
     tmp_path: Path,
 ) -> None:
     golden_path, cache_path = capture(repos, tmp_path, MODEL_REWRITES, MODEL_INTENTS)
     golden = read_chat_golden(golden_path)
-    cache: ChatCache = read_chat_cache(cache_path)
+    cache = read_chat_cache(cache_path)
     assert len(cache.rewrites) == 3 and len(cache.intents) == 4
+    # One summary per unique standalone question: three first turns share one question,
+    # and each follow-up rewrote into its own.
+    assert len(cache.summaries) == 4
+    assert set(cache.summaries) == {
+        FIRST_QUESTION,
+        NARROWED_QUESTION,
+        DECISION_QUESTION,
+        SERVICE_QUESTION,
+    }
 
-    replay_client = ReplayChatClient(cache.rewrites, cache.intents)
-    graph = replay_graph(replay_client, repos)
-    outcome = run_replay(graph, golden, replay_client)
+    graph, replay_client, summarizer = replay(cache, repos)
+    outcome = run_replay(graph, golden, replay_client, summarizer)
     assert outcome.missing == []
     assert outcome.first_turn_failures == []
     assert outcome.followup_total == 2 and outcome.followup_hits == 2
@@ -245,8 +231,48 @@ def test_the_eval_logic_scores_a_clean_synthetic_capture(
     assert outcome.refusal_hits / outcome.refusal_total >= 1.0
 
 
+def test_the_replays_rewrite_lookups_ignore_its_own_ask_wiring(
+    repos: ReplayRepos,
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the new shape: the capture ran at one provider page size,
+    the replay deliberately runs at another — its execution shows different providers,
+    and the rewrite digests must still resolve, because the rewrite prompt's history is
+    byte-identical from the cached summaries and nothing else about it depends on the
+    replay's wiring. (Before the summaries existed, exactly this mismatch missed every
+    follow-up lookup — review round 2.)"""
+    golden_path, cache_path = capture(repos, tmp_path, MODEL_REWRITES, MODEL_INTENTS)
+    cache = read_chat_cache(cache_path)
+    golden = read_chat_golden(golden_path)
+
+    graph, replay_client, summarizer = replay(cache, repos, provider_limit=1)
+    outcome = run_replay(graph, golden, replay_client, summarizer)
+    assert outcome.missing == []
+    assert outcome.followup_hits == outcome.followup_total == 2
+    assert outcome.refusal_hits == outcome.refusal_total == 1
+    assert outcome.failures == []
+
+
+def test_a_missing_summary_fails_loudly_through_the_cache_misses(
+    repos: ReplayRepos,
+    tmp_path: Path,
+) -> None:
+    """A cache without the summaries degrades, not crashes: the rebuilt history differs
+    from capture time, every rewrite digest misses, and the recorded misses fail the
+    eval instead of scoring a silent 1.0."""
+    golden_path, cache_path = capture(repos, tmp_path, MODEL_REWRITES, MODEL_INTENTS)
+    cache = read_chat_cache(cache_path)
+    golden = read_chat_golden(golden_path)
+
+    graph, replay_client, summarizer = replay(cache, repos, summaries={})
+    outcome = run_replay(graph, golden, replay_client, summarizer)
+    assert outcome.missing, "the missing summaries must surface as cache misses"
+    assert any("summary for" in miss for miss in outcome.missing)
+    assert outcome.followup_hits < outcome.followup_total
+
+
 def test_a_corrupted_rewrite_fails_the_followup_floor(
-    repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    repos: ReplayRepos,
     tmp_path: Path,
 ) -> None:
     golden_path, cache_path = capture(repos, tmp_path, MODEL_REWRITES, MODEL_INTENTS)
@@ -258,16 +284,15 @@ def test_a_corrupted_rewrite_fails_the_followup_floor(
         if NARROWED_QUESTION in payload:
             corrupted[key] = '{"standalone_question": "approved providers in postcode 9999"}'
     golden = read_chat_golden(golden_path)
-    replay_client = ReplayChatClient(corrupted, cache.intents)
-    graph = replay_graph(replay_client, repos)
-    outcome = run_replay(graph, golden, replay_client)
+    graph, replay_client, summarizer = replay(cache, repos, rewrites=corrupted)
+    outcome = run_replay(graph, golden, replay_client, summarizer)
     assert outcome.missing, "the corrupted rewrite must surface as a cache miss"
     assert outcome.followup_hits < outcome.followup_total  # the poisoned turn scores 0
     assert outcome.followup_hits / outcome.followup_total < 0.85
 
 
 def test_a_laundering_rewrite_fails_the_refusal_recall_floor(
-    repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    repos: ReplayRepos,
     tmp_path: Path,
 ) -> None:
     """A rewrite that turns a decision request into a plain filter question must fail
@@ -281,45 +306,23 @@ def test_a_laundering_rewrite_fails_the_refusal_recall_floor(
     for key, payload in cache.rewrites.items():
         if DECISION_QUESTION in payload:
             laundering[key] = f'{{"standalone_question": "{NARROWED_QUESTION}"}}'
-    replay_client = ReplayChatClient(laundering, cache.intents)
-    graph = replay_graph(replay_client, repos)
-    outcome = run_replay(graph, golden, replay_client)
+    graph, replay_client, summarizer = replay(cache, repos, rewrites=laundering)
+    outcome = run_replay(graph, golden, replay_client, summarizer)
     assert outcome.missing == []  # the payload is present — it is just wrong
     assert outcome.refusal_hits == 0 and outcome.refusal_total == 1
     assert outcome.refusal_hits / outcome.refusal_total < 1.0
     assert any("decision_request" in failure for failure in outcome.failures)
 
 
-def test_the_chat_replay_builds_its_deps_with_the_capture_builder(
+def test_the_capture_builder_runs_at_the_served_provider_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression (review round 2): the replay wired its own AskDeps and drifted from the
-    capture — a replay at the eval's own provider page size (5 vs the served default 20)
-    built different history summaries, so no follow-up rewrite digest matched and every
-    floor failed. The replay must not have wiring of its own to drift: it builds its deps
-    through the capture script's ``build_capture_deps``, and that builder must run at the
-    served default provider limit. WHY: the rewrite digest covers the history summaries,
-    which carry every provider the earlier turns showed
-    (``application.chat.turn_summary``) — capture and replay must show the same page, in
-    the same order."""
-    import evals.test_chat_golden as eval_module
+    """The capture must see what a user of the live /chat endpoint sees: the same
+    ``ASK_PROVIDER_LIMIT`` provider page — it decides which providers the captured
+    history summaries list. The replay no longer shares this builder (its prompts are
+    pinned by the cached summaries; see the wiring-invariance test above)."""
     import scripts.capture_chat_cache as capture_module
-    from ndis.application.ask import ASK_PROVIDER_LIMIT
 
-    # Structural: the eval has no wiring of its own to drift.
-    sentinel: object = object()
-    seen: list[object] = []
-
-    def fake_builder(client: object) -> object:
-        seen.append(client)
-        return sentinel
-
-    monkeypatch.setattr(eval_module, "build_capture_deps", fake_builder)
-    deps, client = eval_module.build_replay_deps(ChatCache())
-    assert deps is sentinel
-    assert seen == [client]
-
-    # The capture builder itself runs at the served default, over stand-in dependencies.
     monkeypatch.setattr(capture_module, "provider_repository", lambda: object())
     monkeypatch.setattr(capture_module, "postcode_centroids", lambda: object())
     monkeypatch.setattr(capture_module, "support_item_repository", lambda: object())

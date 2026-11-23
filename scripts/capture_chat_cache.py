@@ -1,11 +1,15 @@
 """Capture the chat golden conversations' model payloads from the configured LLM.
 
 Writes ``evals/chat_cache.yaml`` — for every follow-up turn the contextualise payload
-keyed by the digest of exactly what the model saw (system and user prompts), and for
-every standalone question (a first turn's raw message or a rewritten follow-up) the
-intent payload keyed by the question — so ``evals/test_chat_golden.py`` can replay whole
-conversations without spending quota. Paced by the adapter (one request every few
-seconds), because the free tier is rate-limited per minute and per day.
+keyed by the digest of exactly what the model saw (system and user prompts), for every
+standalone question (a first turn's raw message or a rewritten follow-up) the intent
+payload keyed by the question, and for every conversation turn the turn summary exactly
+as ``application.chat.contextualise_stage`` built it (keyed by the turn's standalone
+question, which the summary carries) — so ``evals/test_chat_golden.py`` can replay whole
+conversations without spending quota and without executing the earlier turns the way
+capture time did: the rewrite prompts' history comes verbatim from the summaries.
+Paced by the adapter (one request every few seconds), because the free tier is
+rate-limited per minute and per day.
 
 The conversations drive the real chat graph over the loaded register database
 (``NDIS_DB_PATH``, default ``data/ndis.db``), because a follow-up's history summaries
@@ -40,7 +44,7 @@ from ndis.application.ask import (
     MissingIndexRuleAnswerer,
 )
 from ndis.application.catalogue import GetPriceLimit, SearchSupportItems
-from ndis.application.chat import CONTEXTUALISE_SYSTEM_PROMPT, ChatDeps
+from ndis.application.chat import CONTEXTUALISE_SYSTEM_PROMPT, ChatDeps, turn_summary
 from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.application.providers import ListProviders
 from ndis.config import llm_api_key, llm_base_url, llm_configured, llm_model
@@ -55,21 +59,25 @@ HEADER = """\
 # scripts/capture_chat_cache.py whenever the golden conversations or the contextualise
 # prompt change; the eval replays these payloads through the real chat graph, the real
 # parser and the real deterministic execution, and makes no model call. A rewrite key is
-# the digest of exactly what the model saw, so a prompt edit invalidates the cache.
+# the digest of exactly what the model saw, so a prompt edit invalidates the cache. The
+# summaries section pins the rewrite prompts' history (standalone question, parsed
+# intent, providers shown): the replay rebuilds the history from it byte-identically, so
+# its own execution — which runs elsewhere — cannot change what the model saw.
 """
 
 
 def build_capture_deps(client: object) -> ChatDeps:
-    """The chat dependencies a capture runs with — and, by way of this one function, the
-    wiring the replay eval must use too.
+    """The chat dependencies a capture runs with, at the served pipeline's wiring: the
+    same ``ASK_PROVIDER_LIMIT`` provider page the live /chat endpoint executes, and the
+    postcode centroids that decide the ``near`` ranking's order, so a capture sees what
+    a user would see.
 
     A rewrite's cache key is the digest of exactly what the model saw, and the prompt
     carries the history summaries, which list every provider the earlier turns showed
-    (``application.chat.turn_summary``). Any wiring difference that changes the executed
-    provider page — the served ``ASK_PROVIDER_LIMIT`` page size, the postcode centroids
-    that decide the ``near`` ranking's order — changes the prompt and misses the cache,
-    so the eval builds its replay graph through this same builder and a unit test pins
-    the delegation."""
+    (``application.chat.turn_summary``). The replay eval no longer shares this builder:
+    its history comes verbatim from the cache's summaries section, so its prompts are
+    byte-identical to capture time whatever it executes downstream (a unit test pins
+    that invariance instead of the old delegation)."""
     return ChatDeps(
         client=client,
         ask_deps=AskDeps(
@@ -165,17 +173,26 @@ def main() -> int:
     # own thread id, and the follow-up turns need the earlier turns' history.
     graph = build_chat_graph(deps, checkpointer=InMemorySaver())
     try:
+        summaries: dict[str, dict[str, object]] = {}
         for conversation in golden.conversations:
             config = {"configurable": {"thread_id": f"golden:{conversation.id}"}}
             for turn in conversation.turns:
-                graph.invoke({"message": turn.message}, config)
+                final = graph.invoke({"message": turn.message}, config)
+                stored = final["turns"][-1]
+                # The turn summary exactly as the rewrite stage built it; identical
+                # standalone questions (the same question never produced two different
+                # pages) dedupe to the first recording.
+                summaries.setdefault(stored["standalone_question"], turn_summary(stored))
             print(f"captured conversation {conversation.id} ({len(conversation.turns)} turns)")
     finally:
         client.close()
         flush()
     rewrites = [(message, key, payload) for key, (message, payload) in client.rewrites.items()]
-    write_chat_cache(CACHE, rewrites, client.intents.items(), HEADER)
-    print(f"wrote {CACHE} ({len(rewrites)} rewrites, {len(client.intents)} intents)")
+    write_chat_cache(CACHE, rewrites, client.intents.items(), HEADER, summaries=summaries)
+    print(
+        f"wrote {CACHE} ({len(rewrites)} rewrites, {len(client.intents)} intents, "
+        f"{len(summaries)} summaries)"
+    )
     return 0
 
 
