@@ -59,6 +59,32 @@ HEADER = """\
 """
 
 
+def build_capture_deps(client: object) -> ChatDeps:
+    """The chat dependencies a capture runs with — and, by way of this one function, the
+    wiring the replay eval must use too.
+
+    A rewrite's cache key is the digest of exactly what the model saw, and the prompt
+    carries the history summaries, which list every provider the earlier turns showed
+    (``application.chat.turn_summary``). Any wiring difference that changes the executed
+    provider page — the served ``ASK_PROVIDER_LIMIT`` page size, the postcode centroids
+    that decide the ``near`` ranking's order — changes the prompt and misses the cache,
+    so the eval builds its replay graph through this same builder and a unit test pins
+    the delegation."""
+    return ChatDeps(
+        client=client,
+        ask_deps=AskDeps(
+            client=client,
+            providers=ListProviders(provider_repository(), postcode_centroids()),
+            catalogue=GetPriceLimit(support_item_repository()),
+            rule_answerer=MissingIndexRuleAnswerer(),
+            evidence=claim_evidence_source(),
+            locality_resolver=locality_resolver(),
+            service_search=SearchSupportItems(support_item_repository()),
+        ),
+        answer_to_json=_answer_to_json,
+    )
+
+
 class CapturingClient:
     """Wraps the paced real client, routing by system prompt like the served graph does
     and recording each payload under the key the replay will look it up by. Payloads
@@ -134,19 +160,7 @@ def main() -> int:
         "chat_capture",
     )
     client = CapturingClient(inner)
-    deps = ChatDeps(
-        client=client,
-        ask_deps=AskDeps(
-            client=client,
-            providers=ListProviders(provider_repository(), postcode_centroids()),
-            catalogue=GetPriceLimit(support_item_repository()),
-            rule_answerer=MissingIndexRuleAnswerer(),
-            evidence=claim_evidence_source(),
-            locality_resolver=locality_resolver(),
-            service_search=SearchSupportItems(support_item_repository()),
-        ),
-        answer_to_json=_answer_to_json,
-    )
+    deps = build_capture_deps(client)
     # One in-memory checkpointer across the whole capture: each conversation runs on its
     # own thread id, and the follow-up turns need the earlier turns' history.
     graph = build_chat_graph(deps, checkpointer=InMemorySaver())

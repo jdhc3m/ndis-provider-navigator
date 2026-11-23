@@ -20,6 +20,13 @@ the database file comes from ``NDIS_DB_PATH`` (see ``ndis.api.dependencies``).
 The rule answerer is the refusing no-index stand-in on both the capture and the replay:
 a rule follow-up is pinned at the intent level here, and this keeps a capture from
 spending rule-judge quota.
+
+The replay wiring is the capture script's own ``build_capture_deps``, not a parallel
+copy: a rewrite's cache key is the digest of exactly what the model saw, and the prompt
+carries the history summaries with every provider the earlier turns showed — a replay
+run at a different provider page size, or without the postcode centroids that decide the
+``near`` ranking's order, would build different prompts and miss every follow-up lookup
+(review round 2's wiring mismatch).
 """
 
 import os
@@ -31,7 +38,6 @@ from typing import Any
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from ndis.adapters.ask_evidence import ExtractionEvidenceSource
 from ndis.adapters.chat_golden import (
     ChatCache,
     ChatGoldenSet,
@@ -41,25 +47,13 @@ from ndis.adapters.chat_golden import (
     rewrite_payload_key,
 )
 from ndis.adapters.graphs.chat_graph import build_chat_graph
-from ndis.adapters.sqlite_repository import (
-    SqlAlchemyPostcodeCentroids,
-    SqlAlchemyProviderRepository,
-    SqlAlchemySupportItemRepository,
-    create_sqlite_engine,
-)
 from ndis.adapters.thresholds import read_thresholds
-from ndis.api.schemas import AskOut
-from ndis.application.ask import (
-    INTENT_SYSTEM_PROMPT,
-    AskDeps,
-    MissingIndexRuleAnswerer,
-)
-from ndis.application.catalogue import GetPriceLimit, SearchSupportItems
+from ndis.application.ask import INTENT_SYSTEM_PROMPT
 from ndis.application.chat import CONTEXTUALISE_SYSTEM_PROMPT, ChatDeps
 from ndis.application.extraction import LlmRequest, LlmResult
-from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.intent import ProviderFilters
+from scripts.capture_chat_cache import build_capture_deps
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "evals" / "chat_golden.yaml"
@@ -67,9 +61,6 @@ CACHE = ROOT / "evals" / "chat_cache.yaml"
 THRESHOLDS = ROOT / "evals" / "thresholds.yaml"
 DB_PATH_ENV = "NDIS_DB_PATH"
 DB = Path(os.environ.get(DB_PATH_ENV) or ROOT / "data" / "ndis.db")
-EXTRACTION = ROOT / "data" / "private" / "extraction"
-PAGES = ROOT / "data" / "private" / "pages"
-FILTER_PAGE = 5
 GOLDEN_ROOT_NS = "golden:"  # thread-id prefix, one thread per conversation
 
 
@@ -215,31 +206,18 @@ def run_replay(graph: Any, golden: ChatGoldenSet, client: ReplayChatClient) -> R
     return outcome
 
 
+def build_replay_deps(cache: ChatCache) -> tuple[ChatDeps, ReplayChatClient]:
+    """The replay's dependencies, built by the capture script's own wiring builder so
+    the two sides cannot drift: the digest covers the history summaries, which carry
+    every provider the earlier turns showed (see the module docstring)."""
+    client = ReplayChatClient(cache.rewrites, cache.intents)
+    return build_capture_deps(client), client
+
+
 def build_replay_graph(cache: ChatCache) -> tuple[Any, ReplayChatClient]:
     """The real chat graph over the loaded register database, replaying the cache."""
-    engine = create_sqlite_engine(DB)
-    client = ReplayChatClient(cache.rewrites, cache.intents)
-    deps = ChatDeps(
-        client=client,
-        ask_deps=AskDeps(
-            client=client,
-            providers=ListProviders(SqlAlchemyProviderRepository(engine)),
-            catalogue=GetPriceLimit(SqlAlchemySupportItemRepository(engine)),
-            rule_answerer=MissingIndexRuleAnswerer(),
-            evidence=ExtractionEvidenceSource(engine, EXTRACTION, PAGES),
-            locality_resolver=LocalityResolver(SqlAlchemyPostcodeCentroids(engine)),
-            service_search=SearchSupportItems(SqlAlchemySupportItemRepository(engine)),
-            provider_limit=FILTER_PAGE,
-        ),
-        answer_to_json=_answer_to_json,
-    )
+    deps, client = build_replay_deps(cache)
     return build_chat_graph(deps, checkpointer=InMemorySaver()), client
-
-
-def _answer_to_json(answer: Any) -> dict[str, Any]:
-    """The composed answer in exactly the shape the API returns (the composition root
-    injects the same conversion for the served endpoint)."""
-    return AskOut.from_result(answer).model_dump(mode="json")
 
 
 @pytest.fixture

@@ -269,3 +269,53 @@ def test_a_laundering_rewrite_fails_the_refusal_recall_floor(
     assert outcome.refusal_hits == 0 and outcome.refusal_total == 1
     assert outcome.refusal_hits / outcome.refusal_total < 1.0
     assert any("decision_request" in failure for failure in outcome.failures)
+
+
+def test_the_chat_replay_builds_its_deps_with_the_capture_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (review round 2): the replay wired its own AskDeps and drifted from the
+    capture — a replay at the eval's own provider page size (5 vs the served default 20)
+    built different history summaries, so no follow-up rewrite digest matched and every
+    floor failed. The replay must not have wiring of its own to drift: it builds its deps
+    through the capture script's ``build_capture_deps``, and that builder must run at the
+    served default provider limit. WHY: the rewrite digest covers the history summaries,
+    which carry every provider the earlier turns showed
+    (``application.chat.turn_summary``) — capture and replay must show the same page, in
+    the same order."""
+    import evals.test_chat_golden as eval_module
+    import scripts.capture_chat_cache as capture_module
+    from ndis.application.ask import ASK_PROVIDER_LIMIT
+
+    # Structural: the eval has no wiring of its own to drift.
+    sentinel: object = object()
+    seen: list[object] = []
+
+    def fake_builder(client: object) -> object:
+        seen.append(client)
+        return sentinel
+
+    monkeypatch.setattr(eval_module, "build_capture_deps", fake_builder)
+    deps, client = eval_module.build_replay_deps(ChatCache())
+    assert deps is sentinel
+    assert seen == [client]
+
+    # The capture builder itself runs at the served default, over stand-in dependencies.
+    monkeypatch.setattr(capture_module, "provider_repository", lambda: object())
+    monkeypatch.setattr(capture_module, "postcode_centroids", lambda: object())
+    monkeypatch.setattr(capture_module, "support_item_repository", lambda: object())
+    monkeypatch.setattr(capture_module, "claim_evidence_source", lambda: object())
+    monkeypatch.setattr(capture_module, "locality_resolver", lambda: object())
+    capture_deps = capture_module.build_capture_deps(_DummyClient())
+    assert capture_deps.ask_deps.provider_limit == ASK_PROVIDER_LIMIT
+
+
+class _DummyClient:
+    """A stand-in client for building the capture deps without touching the network."""
+
+    @property
+    def budget(self) -> object:
+        return None
+
+    def complete(self, request: object) -> object:
+        raise AssertionError("building the deps never completes a call")
