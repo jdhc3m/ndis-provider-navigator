@@ -1,10 +1,11 @@
 """Pydantic response models for the HTTP API."""
 
+import uuid
 from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ndis.application.ask import CombinedAnswer, ServicePrices, Step
 from ndis.application.catalogue import PriceLimitResult, ServiceSearchResult
@@ -497,8 +498,8 @@ class TracingOut(BaseModel):
 
 class MetaOut(BaseModel):
     """What the page needs to label itself truthfully: the configured model ids (empty
-    strings when unset), the data snapshots and sources, and the tracing status. Nothing
-    here is hard-coded in the front end."""
+    strings when unset), the data snapshots and sources, the tracing status, and where
+    the chat keeps its memory. Nothing here is hard-coded in the front end."""
 
     llm_model: str
     embed_model: str
@@ -509,3 +510,55 @@ class MetaOut(BaseModel):
     pricing_document: str
     rule_chunk_strategy: str
     tracing: TracingOut
+    chat_memory: str
+
+
+class ChatIn(BaseModel):
+    """One message in a conversation. ``thread_id`` continues a thread the server
+    created earlier (a UUID it issued on a previous answer); ``null`` starts a new one
+    and the answer names it. A client-sent id must be a UUID."""
+
+    message: str = Field(min_length=3, max_length=500)
+    thread_id: str | None = None
+
+    @field_validator("thread_id")
+    @classmethod
+    def _thread_id_must_be_a_uuid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            uuid.UUID(value)
+        except ValueError as exc:
+            raise ValueError("thread_id must be a UUID") from exc
+        return value
+
+
+class ChatTurnOut(BaseModel):
+    """One stored conversation turn: the user's message, the standalone question it was
+    understood as (the rewrite disclosure included), and the answer in the /ask shape."""
+
+    message: str
+    standalone_question: str
+    rewritten: bool
+    rewrite_reason: str | None
+    answer: AskOut
+
+
+class ChatOut(BaseModel):
+    """One turn's result: the thread to keep sending, the standalone question the
+    follow-up was understood as (equal to the message on a first turn, or when a bad
+    rewrite fell back to it), and the answer in the /ask shape."""
+
+    thread_id: str
+    standalone_question: str
+    rewritten: bool
+    rewrite_reason: str | None
+    answer: AskOut
+
+
+class ChatThreadOut(BaseModel):
+    """A whole stored conversation, for a page restoring it; the turns are in
+    conversation order."""
+
+    thread_id: str
+    turns: list[ChatTurnOut]

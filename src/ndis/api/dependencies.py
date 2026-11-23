@@ -4,14 +4,17 @@ import os
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy import Engine
 
 from ndis.adapters.ask_evidence import ExtractionEvidenceSource
 from ndis.adapters.cached_embedding import CachedEmbeddingClient
 from ndis.adapters.embedding_cache import EmbeddingCache
+from ndis.adapters.graphs.chat_graph import build_chat_graph
 from ndis.adapters.llm_client import OpenAICompatibleClient
 from ndis.adapters.rule_vector_store import SqliteVecRuleStore
 from ndis.adapters.sqlite_repository import (
@@ -21,8 +24,17 @@ from ndis.adapters.sqlite_repository import (
     create_sqlite_engine,
 )
 from ndis.adapters.tracing import traced
-from ndis.application.ask import Ask, ClaimEvidenceSource, MissingIndexRuleAnswerer, RuleAnswerer
+from ndis.api.schemas import AskOut
+from ndis.application.ask import (
+    Ask,
+    AskDeps,
+    ClaimEvidenceSource,
+    CombinedAnswer,
+    MissingIndexRuleAnswerer,
+    RuleAnswerer,
+)
 from ndis.application.catalogue import GetPriceLimit, SearchSupportItems, SupportItemRepository
+from ndis.application.chat import ChatDeps
 from ndis.application.extraction import TokenBudget
 from ndis.application.pricing import AskRule, EmbeddingClient
 from ndis.application.providers import (
@@ -295,3 +307,55 @@ def rule_store_maybe() -> SqliteVecRuleStore | None:
     raises, because a /ask question that needs no rules must still be answerable."""
     path = rule_index_database_path()
     return rule_store_for(path) if path.exists() else None
+
+
+# --- Conversation memory (POST /chat, ticket 16) ---------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def chat_checkpointer() -> InMemorySaver:
+    """One in-memory checkpointer for the life of the process, shared by every request
+    and every thread: the thread id in the request config is the only key into it. The
+    server's RAM is the whole storage on purpose — restarting the process loses every
+    conversation (ticket 20 replaces this with durable storage), and the limit is
+    visible in ``GET /meta``."""
+    return InMemorySaver()
+
+
+def chat_answer_json(answer: CombinedAnswer) -> dict[str, Any]:
+    """The composed answer in exactly the shape ``POST /ask`` returns; the chat stores
+    every turn in this shape, so a restored conversation reads like the ask answers it
+    came from. Owned here, where the response models live."""
+    return AskOut.from_result(answer).model_dump(mode="json")
+
+
+def chat_deps(
+    providers: Annotated[ListProviders, Depends(list_providers_use_case)],
+    catalogue: Annotated[GetPriceLimit, Depends(get_price_limit_use_case)],
+    evidence: Annotated[ClaimEvidenceSource, Depends(claim_evidence_source)],
+    localities: Annotated[LocalityResolver, Depends(locality_resolver)],
+    service_search: Annotated[SearchSupportItems, Depends(search_support_items_use_case)],
+) -> ChatDeps:
+    """The chat dependencies: the rewrite client, the ask pipeline's dependencies (the
+    same wiring ``ask_use_case`` uses), and the answer-to-JSON converter."""
+    return ChatDeps(
+        client=traced(question_llm_client(), "contextualise"),
+        ask_deps=AskDeps(
+            client=traced(question_llm_client(), "intent_parse"),
+            providers=providers,
+            catalogue=catalogue,
+            rule_answerer=rule_answerer_for(rule_store_maybe()),
+            evidence=evidence,
+            locality_resolver=localities,
+            service_search=service_search,
+            token_prices=token_price(llm_model()),
+        ),
+        answer_to_json=chat_answer_json,
+    )
+
+
+def chat_graph(deps: Annotated[ChatDeps, Depends(chat_deps)]) -> CompiledStateGraph:
+    """The chat graph over this request's dependencies, checkpointing into the one
+    shared in-memory saver. Rebuilt per request (the LLM clients and their budgets are
+    fresh per request, as for /ask); the checkpointer outlives every request."""
+    return build_chat_graph(deps, checkpointer=chat_checkpointer())

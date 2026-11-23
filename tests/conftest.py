@@ -2,14 +2,16 @@
 real workbook (written to a small XLSX with the same sheet/column layout), seeded SQLite repos,
 a synthetic Maps export with crawled pages, and a local HTTP site for the fetcher."""
 
+import json
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import openpyxl
 import pytest
@@ -20,6 +22,10 @@ from ndis.adapters.sqlite_repository import (
     SqlAlchemySupportItemRepository,
     create_sqlite_engine,
 )
+from ndis.application.ask import INTENT_SYSTEM_PROMPT
+from ndis.application.chat import CONTEXTUALISE_SYSTEM_PROMPT
+from ndis.application.extraction import LlmRequest, LlmResult
+from ndis.domain.answer import ClaimedService
 from ndis.domain.catalogue import CellValue
 from ndis.domain.entities import (
     AddressParts,
@@ -30,6 +36,7 @@ from ndis.domain.entities import (
     SupportItem,
 )
 from ndis.domain.entity_resolution import MapsPlace
+from ndis.domain.extraction import TokenBudget
 from ndis.domain.geo import Coordinates, PostcodeCentroid
 from ndis.domain.locality import Locality, normalise_locality
 from ndis.domain.register import website_domain
@@ -742,3 +749,68 @@ def local_site() -> Iterator[LocalSite]:
     site = LocalSite()
     yield site
     site.close()
+
+
+# --- Chat fakes (ticket 16): one fake LLM client routed by system prompt -------------------
+
+
+def chat_intent_payload(**overrides: object) -> str:
+    """An intent payload in the shape the model writes, with the given parts set."""
+    document: dict[str, Any] = {
+        "provider_filters": None,
+        "price_query": None,
+        "rule_question": None,
+        "decision_request": False,
+    }
+    for key, value in overrides.items():
+        document[key] = json.loads(value) if key in ("provider_filters", "price_query") else value
+    return json.dumps(document)
+
+
+class ChatFakeClient:
+    """A fake ``LlmClient`` for the chat graph, routed by the request's system prompt:
+    the rewrite prompt gets the canned rewrite payload, the intent prompt gets the
+    canned payload for the question in its user prompt. Records every request so tests
+    can assert which question reached which stage."""
+
+    def __init__(self, rewrite_payload: str, intent_payloads: Mapping[str, str]) -> None:
+        self._rewrite = rewrite_payload
+        self._intents = dict(intent_payloads)
+        self.requests: list[LlmRequest] = []
+        self.lock = threading.Lock()
+
+    def complete(self, request: LlmRequest) -> LlmResult:
+        with self.lock:
+            self.requests.append(request)
+        if request.system == CONTEXTUALISE_SYSTEM_PROMPT:
+            return LlmResult(self._rewrite, 5, 3)
+        if request.system == INTENT_SYSTEM_PROMPT:
+            prefix = "Question: "
+            start = request.user.index(prefix) + len(prefix)
+            question = request.user[start : request.user.index("\n\n", start)]
+            return LlmResult(self._intents[question], 100, 40)
+        raise AssertionError(f"unexpected system prompt: {request.system[:60]!r}")
+
+    @property
+    def budget(self) -> TokenBudget:
+        return TokenBudget(0)
+
+
+class ChatFakeEvidence:
+    """Claims over canned providers, plus one optional page text (for the checkpoint
+    test): the claims quote a span of that text so the mention survives the guard."""
+
+    def __init__(
+        self,
+        claims: Mapping[str, tuple[ClaimedService, ...]] | None = None,
+        page_text: str = "",
+    ) -> None:
+        self._claims = dict(claims or {})
+        self._page_text = page_text
+
+    def claims_for(self, provider_keys: Sequence[str]) -> Mapping[str, tuple[ClaimedService, ...]]:
+        return {key: self._claims.get(key, ()) for key in provider_keys}
+
+    def page_text(self, provider_key: str, url: str) -> str:
+        del provider_key, url
+        return self._page_text

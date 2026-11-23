@@ -68,6 +68,7 @@ def test_meta_reports_unconfigured_models_and_missing_data(clean_env: Path) -> N
         "pricing_document": PRICING_DOCUMENT_TITLE,
         "rule_chunk_strategy": "heading",
         "tracing": {"configured": False, "url": None},
+        "chat_memory": "in_memory",
     }
     assert "2025-26" in PRICING_DOCUMENT_TITLE  # the document ticket 06 indexed, not a copy
 
@@ -207,7 +208,7 @@ def test_built_front_end_is_served_after_the_api_routes(
 def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Path) -> None:
     first = tmp_path / "a.json"
     second = tmp_path / "b.json"
-    assert export_openapi(first) == 6
+    assert export_openapi(first) == 8
     export_openapi(second)
     assert first.read_bytes() == second.read_bytes()
     document = json.loads(first.read_text())
@@ -217,6 +218,8 @@ def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Pat
         "/support-items",
         "/ask-rule",
         "/ask",
+        "/chat",
+        "/chat/{thread_id}",
         "/meta",
     }
     assert "StepOut" in document["components"]["schemas"]
@@ -228,5 +231,5 @@ def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Pat
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "wrote 6 paths" in result.stdout
+    assert "wrote 8 paths" in result.stdout
     assert (tmp_path / "cli.json").read_bytes() == first.read_bytes()
