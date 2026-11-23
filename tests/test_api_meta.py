@@ -208,7 +208,7 @@ def test_built_front_end_is_served_after_the_api_routes(
 def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Path) -> None:
     first = tmp_path / "a.json"
     second = tmp_path / "b.json"
-    assert export_openapi(first) == 8
+    assert export_openapi(first) == 9
     export_openapi(second)
     assert first.read_bytes() == second.read_bytes()
     document = json.loads(first.read_text())
@@ -219,6 +219,7 @@ def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Pat
         "/ask-rule",
         "/ask",
         "/chat",
+        "/chat/{thread_id}/resume",
         "/chat/{thread_id}",
         "/meta",
     }
@@ -231,5 +232,5 @@ def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Pat
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "wrote 8 paths" in result.stdout
+    assert "wrote 9 paths" in result.stdout
     assert (tmp_path / "cli.json").read_bytes() == first.read_bytes()

@@ -22,6 +22,12 @@ from typing import Annotated, Any, TypedDict
 from ndis.application.ask import AskDeps, CombinedAnswer
 from ndis.application.extraction import LlmClient, LlmRequest
 from ndis.domain.chat import parse_standalone_question
+from ndis.domain.locality import (
+    Locality,
+    LocalityResolution,
+    locality_by_option_id,
+    locality_option_id,
+)
 
 CONTEXTUALISE_SYSTEM_PROMPT = """\
 You rewrite one follow-up message in a conversation about the Australian NDIS into a
@@ -62,9 +68,10 @@ RECENT_TURNS_FOR_REWRITE = 3
 # ``thread_full`` so one conversation cannot grow without bound in the server's RAM.
 MAX_TURNS_PER_THREAD = 50
 
-# The API's machine reasons for the two thread-level refusals.
+# The API's machine reasons for the thread-level refusals.
 THREAD_NOT_FOUND = "thread_not_found"
 THREAD_FULL = "thread_full"
+NOTHING_PENDING = "nothing_pending"
 
 
 # Given the window of stored turns a rewrite is about to see, return the summaries the
@@ -113,13 +120,31 @@ class ChatState(TypedDict, total=False):
     current invocation's input or a per-turn intermediate, overwritten each run.
 
     Every value is JSON-plain — strings, bools, numbers, dicts and lists. No page text
-    and no domain object ever enters this state."""
+    and no domain object ever enters this state: the parsed intent travels as the
+    :func:`ndis.domain.intent.parsed_intent_document` document, the intent-parse step as
+    a :func:`ndis.application.ask.step_document` document, and the chosen locality as
+    plain name/state/postcode strings."""
 
     message: str
     standalone_question: str
     rewritten: bool
     rewrite_reason: str | None
     answer: dict[str, Any]
+    parsed_intent: dict[str, Any]
+    """The turn's parsed intent, as the JSON document — written by the graph's parse
+    node, read back by the locality precheck and by the ask node (which hands it to the
+    ask pipeline so a resumed turn never parses twice)."""
+    parse_step: dict[str, Any]
+    """The intent-parse step, as the JSON document — the ask pipeline receives it so the
+    resumed answer discloses the same ``intent_parse`` step a straight /ask run does."""
+    chosen_locality: dict[str, Any]
+    """The locality the user picked while the turn was paused, as plain strings —
+    written only after the graph's interrupt returned, so it never holds a value while
+    the question is still pending."""
+    locality_error: str | None
+    """Why the last resume answer was refused (an option the question never offered);
+    the graph's conditional edge loops back to the same question on it, and the re-ask
+    interrupt carries it as the payload's reason."""
     turns: Annotated[list[ChatTurn], operator.add]
 
 
@@ -186,6 +211,39 @@ def turn_document(
         "rewrite_reason": rewrite_reason,
         "answer": answer,
     }
+
+
+# The pending question's kind: the only one this ticket asks (which place did the user
+# mean?); asking which provider was meant is ticket 22's.
+PENDING_KIND_CHOOSE_LOCALITY = "choose_locality"
+
+# The machine reason a resume answer carries when it names none of the offered options.
+INVALID_LOCALITY_OPTION = "invalid_option"
+
+
+def locality_pending_question(resolution: LocalityResolution) -> dict[str, Any]:
+    """The JSON pending question for an ambiguous suburb, the payload the graph
+    interrupts with and the API returns verbatim: which place did the user mean, with
+    one stable-id option per candidate (the id derives from the state and postcode
+    alone, so the same question offers the same options on every run)."""
+    return {
+        "kind": PENDING_KIND_CHOOSE_LOCALITY,
+        "question": f'Which "{resolution.name}" do you mean?',
+        "options": [
+            {
+                "id": locality_option_id(candidate),
+                "label": f"{candidate.state} {candidate.postcode}",
+            }
+            for candidate in resolution.candidates
+        ],
+    }
+
+
+def locality_choice_of(value: object, resolution: LocalityResolution) -> Locality | None:
+    """The candidate a resume value names, or ``None`` when it is not exactly one of the
+    offered options — the pure domain check, so an answer can never pin a place the
+    question never offered."""
+    return locality_by_option_id(value, resolution.candidates)
 
 
 def thread_turns(state: Mapping[str, Any]) -> list[ChatTurn]:

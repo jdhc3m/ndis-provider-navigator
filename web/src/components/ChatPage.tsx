@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   ApiError,
+  type ChatOptionOut,
   type ChatOut,
   type ChatTurnOut,
   type MetaOut,
   type NavigatorApi,
+  type PendingOut,
 } from '../api/client'
 import { CHAT_EXAMPLE_QUESTIONS } from '../examples'
 import { AnswerResult } from './AnswerResult'
@@ -53,22 +55,27 @@ function threadFull(error: unknown): boolean {
   return error instanceof ApiError && error.reason === 'thread_full'
 }
 
+/** One stored turn from an answered reply: the answer is required, and the standalone
+ * question always names the message it was understood as. */
+function turnFromReply(message: string, reply: ChatOut): ChatTurnOut | null {
+  if (reply.answer === null) {
+    return null
+  }
+  return {
+    message,
+    standalone_question: reply.standalone_question ?? message,
+    rewritten: reply.rewritten,
+    rewrite_reason: reply.rewrite_reason,
+    answer: reply.answer,
+  }
+}
+
 /** Reduced-motion users get an instant jump instead of a smooth scroll. */
 function prefersReducedMotion(): boolean {
   return (
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches
   )
-}
-
-function turnFromReply(message: string, reply: ChatOut): ChatTurnOut {
-  return {
-    message,
-    standalone_question: reply.standalone_question,
-    rewritten: reply.rewritten,
-    rewrite_reason: reply.rewrite_reason,
-    answer: reply.answer,
-  }
 }
 
 type RestoreState =
@@ -85,6 +92,17 @@ export function ChatPage({ client, meta }: ChatPageProps) {
   const [turns, setTurns] = useState<ChatTurnOut[]>([])
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState<string | null>(null)
+  // The question a paused turn waits on, and the message that asked it (the server
+  // stores neither in the turns until the turn completes; after a reload only the
+  // question itself comes back, so the asked message is gone by design).
+  const [pendingQuestion, setPendingQuestion] = useState<PendingOut | null>(null)
+  const [askedMessage, setAskedMessage] = useState<string | null>(null)
+  // The option id being submitted, which disables the buttons until the turn lands.
+  const [resuming, setResuming] = useState<string | null>(null)
+  const [resumeFailure, setResumeFailure] = useState<{
+    option: ChatOptionOut
+    error: unknown
+  } | null>(null)
   const [failed, setFailed] = useState<{ message: string; error: unknown } | null>(null)
   const [notKept, setNotKept] = useState(false)
   const [threadFullError, setThreadFullError] = useState<ApiError | null>(null)
@@ -103,6 +121,10 @@ export function ChatPage({ client, meta }: ChatPageProps) {
     setThreadId(null)
     setTurns([])
     setPending(null)
+    setPendingQuestion(null)
+    setAskedMessage(null)
+    setResuming(null)
+    setResumeFailure(null)
     setFailed(null)
     setThreadFullError(null)
     setNotKept(notKeptNotice)
@@ -126,6 +148,8 @@ export function ChatPage({ client, meta }: ChatPageProps) {
           return
         }
         setTurns(thread.turns)
+        setPendingQuestion(thread.pending ?? null)
+        setAskedMessage(null)
       },
       (error: unknown) => {
         if (cancelled) {
@@ -166,6 +190,11 @@ export function ChatPage({ client, meta }: ChatPageProps) {
       setPending(message)
       setFailed(null)
       setNotKept(false)
+      // A new message instead of an answer: the pending question is dropped and the
+      // message is handled as a normal turn from the start.
+      setPendingQuestion(null)
+      setAskedMessage(null)
+      setResumeFailure(null)
       client.chat(message, threadId).then(
         (reply) => {
           if (generationRef.current !== generation) {
@@ -173,7 +202,17 @@ export function ChatPage({ client, meta }: ChatPageProps) {
           }
           setThreadId(reply.thread_id)
           writeStoredThreadId(reply.thread_id)
-          setTurns((previous) => [...previous, turnFromReply(message, reply)])
+          if (reply.status === 'needs_input' && reply.pending !== null) {
+            // The turn stopped to ask which place the user meant: the question shows
+            // under the message, and nothing is stored until it is answered.
+            setPendingQuestion(reply.pending)
+            setAskedMessage(message)
+          } else {
+            const turn = turnFromReply(message, reply)
+            if (turn !== null) {
+              setTurns((previous) => [...previous, turn])
+            }
+          }
           setPending(null)
           composerRef.current?.focus()
         },
@@ -201,8 +240,51 @@ export function ChatPage({ client, meta }: ChatPageProps) {
     [client, pending, startFresh, threadFullError, threadId],
   )
 
+  const chooseOption = useCallback(
+    (option: ChatOptionOut) => {
+      if (threadId === null || resuming !== null || pendingQuestion === null) {
+        return
+      }
+      const generation = generationRef.current
+      setResuming(option.id)
+      setResumeFailure(null)
+      client.resumeChat(threadId, option.id).then(
+        (reply) => {
+          if (generationRef.current !== generation) {
+            return
+          }
+          setResuming(null)
+          setPendingQuestion(null)
+          setAskedMessage(null)
+          if (reply.status === 'needs_input' && reply.pending !== null) {
+            // The answer named none of the options: the same question, asked again with
+            // the reason, and the buttons still there.
+            setPendingQuestion(reply.pending)
+          } else {
+            const turn = turnFromReply(option.label, reply)
+            if (turn !== null) {
+              // The chosen option reads as the user's message; the same turn continues
+              // below it with the answer.
+              setTurns((previous) => [...previous, turn])
+            }
+          }
+          composerRef.current?.focus()
+        },
+        (error: unknown) => {
+          if (generationRef.current !== generation) {
+            return
+          }
+          setResuming(null)
+          setResumeFailure({ option, error })
+        },
+      )
+    },
+    [client, pendingQuestion, resuming, threadId],
+  )
+
   useEffect(() => {
-    const hasContent = turns.length > 0 || pending !== null || failed !== null
+    const hasContent =
+      turns.length > 0 || pending !== null || failed !== null || pendingQuestion !== null
     if (!hasContent) {
       return
     }
@@ -214,11 +296,15 @@ export function ChatPage({ client, meta }: ChatPageProps) {
       behavior: prefersReducedMotion() ? 'auto' : 'smooth',
       block: 'end',
     })
-  }, [turns.length, pending, failed])
+  }, [turns.length, pending, failed, pendingQuestion, askedMessage])
 
   const restoring = restore.status === 'restoring'
   const emptyConversation =
-    restore.status === 'ready' && turns.length === 0 && pending === null && failed === null
+    restore.status === 'ready' &&
+    turns.length === 0 &&
+    pending === null &&
+    failed === null &&
+    pendingQuestion === null
 
   return (
     <div className="flex flex-col gap-6">
@@ -315,6 +401,29 @@ export function ChatPage({ client, meta }: ChatPageProps) {
           </ol>
         )}
         {pending !== null && <PendingTurn message={pending} />}
+        {askedMessage !== null && pendingQuestion !== null && (
+          <UserMessage message={askedMessage} />
+        )}
+        {pendingQuestion !== null && (
+          <PendingQuestion
+            pending={pendingQuestion}
+            busy={resuming !== null || pending !== null}
+            onChoose={chooseOption}
+          />
+        )}
+        {resumeFailure && (
+          <div className="flex flex-col gap-4">
+            <UserMessage message={resumeFailure.option.label} />
+            <ErrorState
+              error={resumeFailure.error}
+              onRetry={() => {
+                const option = resumeFailure.option
+                setResumeFailure(null)
+                chooseOption(option)
+              }}
+            />
+          </div>
+        )}
         {failed && (
           <div className="flex flex-col gap-4">
             <UserMessage message={failed.message} />
@@ -388,6 +497,53 @@ function PendingTurn({ message }: { message: string }) {
           A follow-up is rewritten with the conversation&apos;s context first, then the same
           deterministic pipeline as the search page runs. This can take several seconds.
         </p>
+      </div>
+    </div>
+  )
+}
+
+interface PendingQuestionProps {
+  pending: PendingOut
+  /** A submit is in flight or a reply is being waited on: nothing more to choose. */
+  busy: boolean
+  onChoose: (option: ChatOptionOut) => void
+}
+
+/** The question a paused turn waits on, as the assistant's message with one button per
+ * option. The buttons go away once the turn is answered (the chosen option then reads
+ * as the user's message) or dropped (a new message handled as a normal turn). */
+function PendingQuestion({ pending, busy, onChoose }: PendingQuestionProps) {
+  return (
+    <div
+      role="status"
+      aria-label="The assistant needs one detail"
+      className="flex flex-col gap-3 rounded-lg border border-border bg-card p-5"
+    >
+      <p className="text-base font-bold text-primary">{pending.question}</p>
+      {pending.reason !== null && (
+        <p className="text-sm text-warning">
+          That answer named none of the options — pick one of the places below, or send a new
+          message to drop the question.
+        </p>
+      )}
+      <div
+        role="group"
+        aria-label="The places the question could mean"
+        className="flex flex-wrap gap-3"
+      >
+        {pending.options.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              onChoose(option)
+            }}
+            className="tap-target transition-colors-fast cursor-pointer rounded-md bg-accent px-4 font-bold text-on-accent hover:bg-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
     </div>
   )

@@ -38,6 +38,7 @@ from typing import Any
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from ndis.adapters.chat_golden import (
     ChatCache,
@@ -62,6 +63,7 @@ from ndis.application.extraction import LlmClient, LlmRequest, LlmResult
 from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.intent import ProviderFilters
+from ndis.domain.locality import Locality
 from tests.conftest import SEED_PROVIDERS, SEED_SUPPORT_ITEMS, LocalityDirectoryStub
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +71,18 @@ GOLDEN = ROOT / "evals" / "chat_golden.yaml"
 CACHE = ROOT / "evals" / "chat_cache.yaml"
 THRESHOLDS = ROOT / "evals" / "thresholds.yaml"
 GOLDEN_ROOT_NS = "golden:"  # thread-id prefix, one thread per conversation
+
+# The gazetteer rows the replay resolves against: the real one spells Paddington twice
+# (QLD 4064 and NSW 2021), and the paused golden turns must be offered exactly these two
+# candidates — the same option ids the served graph would offer.
+PADDINGTON_ROWS = (
+    Locality(name="PADDINGTON", state="QLD", postcode="4064"),
+    Locality(name="PADDINGTON", state="NSW", postcode="2021"),
+)
+PADDINGTON_OPTIONS = [
+    {"id": "nsw-2021", "label": "NSW 2021"},
+    {"id": "qld-4064", "label": "QLD 4064"},
+]
 
 
 class ReplayChatClient:
@@ -207,6 +221,17 @@ def _compare_expectation(turn: GoldenTurn, answer: Mapping[str, Any]) -> list[st
     return problems
 
 
+def _pending_of(graph: Any, config: dict[str, Any]) -> dict[str, Any] | None:
+    """The pending question the thread's paused task waits on, or ``None``."""
+    snapshot = graph.get_state(config)
+    for task in snapshot.tasks:
+        for item in task.interrupts:
+            value = getattr(item, "value", None)
+            if isinstance(value, dict) and value.get("kind") == "choose_locality":
+                return value
+    return None
+
+
 def run_replay(
     graph: Any, golden: ChatGoldenSet, client: ReplayChatClient, summarizer: CachedSummarizer
 ) -> ReplayOutcome:
@@ -214,13 +239,38 @@ def run_replay(
     miss the replay client or the summarizer hit is carried in the outcome, along with
     every replayed turn's standalone question so the caller can pin full summary
     consumption (``consumed_questions`` against :attr:`CachedSummarizer.known_questions`
-    flags both orphaned rows and consumed questions without a row)."""
+    flags both orphaned rows and consumed questions without a row).
+
+    A turn that names a ``choose`` id pauses the graph (the ambiguous-locality question
+    of ticket 18): the replay asserts the pause carried exactly the Paddington options,
+    resumes with the golden choice, and compares the resumed turn like any other."""
     outcome = ReplayOutcome()
     consumed: set[str] = set()
     for conversation in golden.conversations:
         config = {"configurable": {"thread_id": GOLDEN_ROOT_NS + conversation.id}}
         for index, turn in enumerate(conversation.turns):
             final = graph.invoke({"message": turn.message}, config)
+            if turn.choose is not None:
+                payload = _pending_of(graph, config)
+                if payload is None:
+                    outcome.failures.append(
+                        f"{conversation.id} turn {index + 1}: expected the locality "
+                        "question to pause, nothing is pending"
+                    )
+                    continue
+                if payload.get("options") != PADDINGTON_OPTIONS:
+                    outcome.failures.append(
+                        f"{conversation.id} turn {index + 1}: unexpected options "
+                        f"{payload.get('options')!r}"
+                    )
+                    continue
+                final = graph.invoke(Command(resume=turn.choose), config)
+                if _pending_of(graph, config) is not None:
+                    outcome.failures.append(
+                        f"{conversation.id} turn {index + 1}: still pending after "
+                        f"resuming {turn.choose!r}"
+                    )
+                    continue
             stored = final["turns"][-1]
             consumed.add(str(stored["standalone_question"]))
             answer: dict[str, Any] = stored["answer"]
@@ -301,7 +351,7 @@ def fixture_chat_deps(
             catalogue=GetPriceLimit(repos.catalogue),
             rule_answerer=MissingIndexRuleAnswerer(),
             evidence=ReplayEvidence(),  # type: ignore[arg-type]
-            locality_resolver=LocalityResolver(LocalityDirectoryStub(())),
+            locality_resolver=LocalityResolver(LocalityDirectoryStub(PADDINGTON_ROWS)),
             service_search=SearchSupportItems(repos.catalogue),
         ),
         answer_to_json=lambda answer: AskOut.from_result(answer).model_dump(mode="json"),

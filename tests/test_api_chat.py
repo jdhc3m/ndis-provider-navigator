@@ -1,12 +1,14 @@
-"""POST /chat and GET /chat/{thread_id} over a real chat graph (fake model, temp
-repositories): the new-thread and follow-up answers, the restored conversation, and the
-three thread-level rejections (malformed id, unknown thread, full thread)."""
+"""POST /chat, its resume and GET /chat/{thread_id} over a real chat graph (fake model,
+temp repositories): the new-thread and follow-up answers, the restored conversation, the
+pause that asks which place the user meant, and the thread-level rejections (malformed
+id, unknown thread, full thread, resume with nothing pending)."""
 
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,13 +21,22 @@ from ndis.adapters.sqlite_repository import (
     create_sqlite_engine,
 )
 from ndis.api import dependencies
-from ndis.api.app import _thread_config, chat, chat_thread, create_app
+from ndis.api.app import (
+    _chat_turn_outcome,
+    _invoke_turn,
+    _thread_config,
+    chat,
+    chat_resume,
+    chat_thread,
+    create_app,
+)
 from ndis.api.schemas import ChatIn
 from ndis.application.ask import AskDeps, MissingIndexRuleAnswerer
 from ndis.application.catalogue import GetPriceLimit, SearchSupportItems
 from ndis.application.chat import MAX_TURNS_PER_THREAD, ChatDeps
 from ndis.application.extraction import LlmError, LlmRequest, LlmResult
 from ndis.application.providers import ListProviders, LocalityResolver
+from ndis.domain.locality import Locality
 from tests.conftest import (
     SEED_PROVIDERS,
     SEED_SUPPORT_ITEMS,
@@ -68,6 +79,8 @@ def make_api(
     catalogue: SqlAlchemySupportItemRepository,
     rewrite_payload: str,
     intent_payloads: Mapping[str, str],
+    *,
+    localities: Sequence[Locality] = (),
 ) -> tuple[TestClient, ChatFakeClient]:
     """A TestClient whose /chat endpoints run a real chat graph over the temp
     repositories, with the fake model client and its own fresh checkpointer."""
@@ -80,7 +93,7 @@ def make_api(
             catalogue=GetPriceLimit(catalogue),
             rule_answerer=MissingIndexRuleAnswerer(),
             evidence=ChatFakeEvidence(),
-            locality_resolver=LocalityResolver(LocalityDirectoryStub(())),
+            locality_resolver=LocalityResolver(LocalityDirectoryStub(localities)),
             service_search=SearchSupportItems(catalogue),
         ),
         answer_to_json=lambda answer: _answer_json(answer),
@@ -172,6 +185,7 @@ def test_the_chat_routes_are_registered_by_name() -> None:
     app = create_app()
     names = {route.endpoint.__name__ for route in app.routes if hasattr(route, "endpoint")}
     assert chat.__name__ in names
+    assert chat_resume.__name__ in names
     assert chat_thread.__name__ in names
 
 
@@ -378,3 +392,301 @@ def test_two_concurrent_posts_cannot_push_a_thread_past_the_cap(repos) -> None:
         assert statuses == [200, 409], statuses
         turns = client.get(f"/chat/{thread_id}").json()["turns"]
         assert len(turns) == MAX_TURNS_PER_THREAD, len(turns)
+
+
+# --- The pause over the API (ticket 18) ------------------------------------------------------
+
+# The real gazetteer spells Paddington twice: QLD 4064 and NSW 2021 (the fixture rows keep
+# the CSV's uppercase spelling, as the loader stores them).
+PADDINGTON_ROWS = [
+    Locality(name="PADDINGTON", state="QLD", postcode="4064"),
+    Locality(name="PADDINGTON", state="NSW", postcode="2021"),
+]
+AMBIGUOUS_QUESTION = "plan managers in Paddington"
+AMBIGUOUS_INTENT = chat_intent_payload(
+    provider_filters='{"locality": "Paddington", "group": "Plan Management"}'
+)
+EXPECTED_OPTIONS = [
+    {"id": "nsw-2021", "label": "NSW 2021"},
+    {"id": "qld-4064", "label": "QLD 4064"},
+]
+
+
+def ambiguous_api(
+    providers: SqlAlchemyProviderRepository, catalogue: SqlAlchemySupportItemRepository
+) -> tuple[TestClient, str]:
+    """The API with the ambiguous gazetteer, and a thread paused on the Paddington
+    question."""
+    client, _ = make_api(
+        providers,
+        catalogue,
+        "",
+        {AMBIGUOUS_QUESTION: AMBIGUOUS_INTENT},
+        localities=PADDINGTON_ROWS,
+    )
+    body = client.post("/chat", json={"message": AMBIGUOUS_QUESTION}).json()
+    assert body["status"] == "needs_input"
+    return client, body["thread_id"]
+
+
+def test_an_ambiguous_locality_answers_needs_input_with_the_pending_options(repos) -> None:
+    providers, catalogue = repos
+    client, thread_id = ambiguous_api(providers, catalogue)
+    body = client.post("/chat", json={"message": AMBIGUOUS_QUESTION, "thread_id": thread_id}).json()
+    assert body["status"] == "needs_input"
+    assert body["thread_id"] == thread_id
+    assert body["answer"] is None
+    assert body["standalone_question"] == AMBIGUOUS_QUESTION
+    pending = body["pending"]
+    assert pending["kind"] == "choose_locality"
+    assert pending["question"] == 'Which "Paddington" do you mean?'
+    assert pending["options"] == EXPECTED_OPTIONS
+    # The paused turn is not stored: the thread still holds no turns.
+    restored = client.get(f"/chat/{thread_id}").json()
+    assert restored["turns"] == []
+
+
+def test_get_returns_the_pending_question_so_a_reload_shows_it_again(repos) -> None:
+    providers, catalogue = repos
+    client, thread_id = ambiguous_api(providers, catalogue)
+    restored = client.get(f"/chat/{thread_id}").json()
+    assert restored["pending"] is not None
+    assert restored["pending"]["kind"] == "choose_locality"
+    assert restored["pending"]["options"] == EXPECTED_OPTIONS
+
+
+def test_the_resume_completes_the_same_turn_with_the_chosen_place(repos) -> None:
+    providers, catalogue = repos
+    client, thread_id = ambiguous_api(providers, catalogue)
+    response = client.post(f"/chat/{thread_id}/resume", json={"option_id": "qld-4064"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "answered"
+    assert body["pending"] is None
+    assert body["standalone_question"] == AMBIGUOUS_QUESTION
+    assert body["answer"]["refused"] is False
+    locality = body["answer"]["locality"]
+    assert (locality["outcome"], locality["state"], locality["postcode"]) == (
+        "resolved",
+        "QLD",
+        "4064",
+    )
+    # The resumed turn is stored like any other, and nothing is pending any more.
+    restored = client.get(f"/chat/{thread_id}").json()
+    assert restored["pending"] is None
+    assert [turn["message"] for turn in restored["turns"]] == [AMBIGUOUS_QUESTION]
+    assert restored["turns"][0]["answer"]["locality"]["postcode"] == "4064"
+
+
+def test_an_invalid_option_reasks_with_a_reason_and_a_valid_one_answers(repos) -> None:
+    providers, catalogue = repos
+    client, thread_id = ambiguous_api(providers, catalogue)
+    reask = client.post(f"/chat/{thread_id}/resume", json={"option_id": "qld-9999"})
+    assert reask.status_code == 200
+    body = reask.json()
+    assert body["status"] == "needs_input"
+    assert body["answer"] is None
+    assert body["pending"]["reason"] == "invalid_option"
+    assert body["pending"]["options"] == EXPECTED_OPTIONS
+    # The same options, asked again, until one of them is named.
+    answered = client.post(f"/chat/{thread_id}/resume", json={"option_id": "nsw-2021"})
+    assert answered.status_code == 200
+    assert answered.json()["status"] == "answered"
+    locality = answered.json()["answer"]["locality"]
+    assert (locality["state"], locality["postcode"]) == ("NSW", "2021")
+
+
+def test_resume_on_a_thread_with_nothing_pending_is_a_409(repos) -> None:
+    providers, catalogue = repos
+    client, _ = make_api(providers, catalogue, "", {FIRST_QUESTION: FIRST_INTENT})
+    # No thread at all, and a thread whose last turn already completed.
+    missing = str(uuid.uuid4())
+    assert client.post(f"/chat/{missing}/resume", json={"option_id": "qld-4064"}).status_code == 409
+    thread_id = client.post("/chat", json={"message": FIRST_QUESTION}).json()["thread_id"]
+    response = client.post(f"/chat/{thread_id}/resume", json={"option_id": "qld-4064"})
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "nothing_pending"
+
+
+def test_a_new_message_on_a_pending_thread_drops_the_question(repos) -> None:
+    providers, catalogue = repos
+    client, _ = make_api(
+        providers,
+        catalogue,
+        "",
+        {AMBIGUOUS_QUESTION: AMBIGUOUS_INTENT, FIRST_QUESTION: FIRST_INTENT},
+        localities=PADDINGTON_ROWS,
+    )
+    thread_id = client.post("/chat", json={"message": AMBIGUOUS_QUESTION}).json()["thread_id"]
+    response = client.post("/chat", json={"message": FIRST_QUESTION, "thread_id": thread_id})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "answered"
+    assert body["pending"] is None
+    assert body["answer"]["provider_total"] == 2  # the postcode turn, answered normally
+    restored = client.get(f"/chat/{thread_id}").json()
+    assert restored["pending"] is None
+    assert [turn["message"] for turn in restored["turns"]] == [FIRST_QUESTION]
+
+
+def test_the_shared_outcome_helper_shapes_both_statuses(repos) -> None:
+    """The helper both chat endpoints share: an answered turn shapes as before, a paused
+    one returns the pending question with no answer."""
+    from types import SimpleNamespace
+
+    providers, catalogue = repos
+    client, _ = make_api(providers, catalogue, "", {FIRST_QUESTION: FIRST_INTENT})
+    body = client.post("/chat", json={"message": FIRST_QUESTION}).json()
+    stored = client.get(f"/chat/{body['thread_id']}").json()["turns"][0]
+    answered = _chat_turn_outcome(body["thread_id"], {"turns": [stored]}, stored)
+    assert answered.status == "answered"
+    assert answered.answer is not None and answered.pending is None
+    assert answered.answer is not None and answered.answer.question == FIRST_QUESTION
+    payload = {
+        "kind": "choose_locality",
+        "question": 'Which "Paddington" do you mean?',
+        "options": [{"id": "qld-4064", "label": "QLD 4064"}],
+        "reason": None,
+    }
+    paused = _chat_turn_outcome(
+        body["thread_id"],
+        {"__interrupt__": [SimpleNamespace(value=payload)]},
+        {"message": AMBIGUOUS_QUESTION},
+    )
+    assert paused.status == "needs_input"
+    assert paused.answer is None
+    assert paused.pending is not None and paused.pending.options[0].id == "qld-4064"
+    assert paused.standalone_question == AMBIGUOUS_QUESTION
+
+
+def test_the_shared_invoke_helper_maps_model_failures_to_502() -> None:
+    from fastapi import HTTPException
+
+    class ExplodingGraph:
+        def invoke(self, request: object, config: object) -> object:
+            del request, config
+            raise LlmError("endpoint down")
+
+    with pytest.raises(HTTPException) as excinfo:
+        _invoke_turn(ExplodingGraph(), {}, {"message": FIRST_QUESTION})
+    assert excinfo.value.status_code == 502
+    assert "endpoint down" in str(excinfo.value.detail)
+
+
+class _GatedResumeGraph:
+    """The real chat graph with the first resume's invoke gated mid-flight: it signals
+    ``started`` and then waits for ``may_proceed``, so the turn is still pending while
+    another request is dispatched against the same thread."""
+
+    def __init__(self, inner: Any, may_proceed: threading.Event) -> None:
+        self._inner = inner
+        self._may_proceed = may_proceed
+        self.started = threading.Event()
+        self._gated = False
+
+    def get_state(self, config: object) -> object:
+        return self._inner.get_state(config)  # type: ignore[attr-defined]
+
+    def invoke(self, request: object, config: object) -> object:
+        from langgraph.types import Command
+
+        if isinstance(request, Command) and not self._gated:
+            self._gated = True
+            self.started.set()
+            assert self._may_proceed.wait(timeout=30), "the gated resume was never released"
+        return self._inner.invoke(request, config)  # type: ignore[attr-defined]
+
+
+class _DoorTracingLock:
+    """A lock that signals when an acquire found it held — the moment another request is
+    standing at the lock's door. Program order puts the pre-fix nothing-pending check
+    *before* the acquire, so by the time a waiter is at the door, that check has run;
+    after the fix the waiter's check happens later, under the lock."""
+
+    def __init__(self) -> None:
+        self._inner = threading.Lock()
+        self.waiter_seen = threading.Event()
+
+    def acquire(self, blocking: bool = True) -> bool:
+        if self._inner.acquire(blocking=False):
+            return True
+        self.waiter_seen.set()
+        return self._inner.acquire(blocking=blocking)
+
+    def release(self) -> None:
+        self._inner.release()
+
+    def __enter__(self) -> "_DoorTracingLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.release()
+
+
+def test_two_overlapping_resumes_answer_exactly_once(
+    repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (review round 2): the nothing-pending check ran outside the chat lock,
+    so two overlapping resumes both passed it, serialized on the lock, and the loser
+    silently replayed the completed turn as its own answer (a no-op ``Command(resume=...)``
+    returns the previous turn unchanged). The check now runs under the lock with the
+    invoke, so exactly one resume answers and the other is refused with 409
+    ``nothing_pending`` — never a replayed turn, and never a new message's turn."""
+    from ndis.api import app as app_module
+
+    providers, catalogue = repos
+    client, _ = ambiguous_api(providers, catalogue)
+    thread_id = client.post("/chat", json={"message": AMBIGUOUS_QUESTION}).json()["thread_id"]
+    may_proceed = threading.Event()
+    gated = _GatedResumeGraph(
+        client.app.dependency_overrides[dependencies.chat_graph](), may_proceed
+    )
+    client.app.dependency_overrides[dependencies.chat_graph] = lambda: gated
+    tracing_lock = _DoorTracingLock()
+    monkeypatch.setattr(app_module, "_chat_turn_lock", tracing_lock)
+
+    outcomes: dict[str, object] = {}
+
+    def resume_with(racer: TestClient, option: str, name: str) -> None:
+        response = racer.post(f"/chat/{thread_id}/resume", json={"option_id": option})
+        outcomes[name] = (response.status_code, response.json())
+
+    first = TestClient(client.app)
+    second = TestClient(client.app)
+    thread_a = threading.Thread(target=resume_with, args=(first, "qld-4064", "a"))
+    thread_a.start()
+    # The first resume holds the lock, mid-invoke, turn still pending. Dispatch the
+    # second one only now; when it is standing at the lock's door, let the first one
+    # finish — in the pre-fix world the second resume's nothing-pending check has
+    # already run by then (it sat outside the lock), after the fix it has not.
+    assert gated.started.wait(timeout=30)
+    thread_b = threading.Thread(target=resume_with, args=(second, "qld-4064", "b"))
+    thread_b.start()
+    assert tracing_lock.waiter_seen.wait(timeout=30), "the second resume never reached the lock"
+    may_proceed.set()
+    thread_a.join(timeout=30)
+    thread_b.join(timeout=30)
+    assert set(outcomes) == {"a", "b"}
+
+    (winner_status, winner_body), (loser_status, loser_body) = (
+        outcomes["a"],
+        outcomes["b"],
+    )
+    assert sorted([winner_status, loser_status]) == [200, 409]
+    if winner_status == 200:
+        answered, refused = (winner_status, winner_body), (loser_status, loser_body)
+    else:
+        answered, refused = (loser_status, loser_body), (winner_status, winner_body)
+    # The winner answered the resumed turn; the loser was refused with the machine
+    # reason and carries neither an answer nor a replayed one.
+    assert answered[1]["status"] == "answered"
+    assert answered[1]["answer"]["locality"]["postcode"] == "4064"
+    assert refused[0] == 409
+    assert refused[1]["detail"]["reason"] == "nothing_pending"
+    assert "answer" not in refused[1] or refused[1].get("answer") is None
+    # The turn was stored exactly once.
+    restored = client.get(f"/chat/{thread_id}").json()
+    assert [turn["message"] for turn in restored["turns"]] == [AMBIGUOUS_QUESTION]
+    assert restored["pending"] is None

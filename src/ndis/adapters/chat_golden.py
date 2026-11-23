@@ -15,7 +15,8 @@ contained with. A turn carries exactly one of ``service``, ``rule_contains`` or
 ``refusal`` — except that ``filters`` may accompany ``service``: the rewrite is
 instructed to copy the place forward, so a price follow-up may legitimately answer with
 the combined intent shape the /ask golden SA service case already treats as correct
-(provider filters plus the price query).
+(provider filters plus the price query). ``choose`` marks a turn that paused to ask
+which place the user meant (ticket 18): it names the option id the turn is resumed with.
 
 The cache holds three sections: ``rewrites`` (the contextualise payloads, keyed by the
 digest of exactly what the model saw — see :func:`rewrite_payload_key`), ``intents``
@@ -39,7 +40,15 @@ from ndis.application.extraction import LlmRequest
 from ndis.domain.intent import ProviderFilters
 
 CONVERSATION_FIELDS = ("id", "turns")
-TURN_FIELDS = ("message", "filters", "service", "service_state", "rule_contains", "refusal")
+TURN_FIELDS = (
+    "message",
+    "filters",
+    "service",
+    "service_state",
+    "rule_contains",
+    "refusal",
+    "choose",
+)
 TURN_EXPECTATIONS = ("filters", "service", "rule_contains", "refusal")
 REWRITE_FIELDS = ("message", "key", "payload")
 CACHE_INTENT_FIELDS = ("question", "payload")
@@ -53,7 +62,9 @@ class ChatGoldenFormatError(ValueError):
 @dataclass(frozen=True)
 class GoldenTurn:
     """One golden turn: the user's message and the expectation the turn's final parsed
-    intent (or its refusal) must satisfy."""
+    intent (or its refusal) must satisfy. ``choose`` names the option id a paused turn
+    is resumed with (ticket 18): the turn stopped to ask which place the user meant, the
+    replay answers it with this id, and the stored turn is then compared as usual."""
 
     message: str
     filters: ProviderFilters | None = None
@@ -61,6 +72,7 @@ class GoldenTurn:
     service_state: str | None = None
     rule_contains: str | None = None
     refusal: str | None = None
+    choose: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,20 +202,29 @@ def _golden_turn(  # type: ignore[no-untyped-def]
     message = str(row["message"])
     if not message:
         raise ChatGoldenFormatError(f"{path}: a turn needs a non-empty message")
-    kinds = frozenset(name for name in TURN_EXPECTATIONS if name in row)
+    expectations = frozenset(name for name in TURN_EXPECTATIONS if name in row)
+    choose = row.get("choose")
+    has_choice = "choose" in row
+    kinds = expectations | (frozenset({"choose"}) if has_choice else frozenset())
     allowed = (
         frozenset({"filters"}),
         frozenset({"service"}),
         frozenset({"rule_contains"}),
         frozenset({"refusal"}),
         frozenset({"filters", "service"}),
+        # The paused turns (ticket 18): the choice always accompanies provider filters,
+        # because the question paused on a suburb those filters name.
+        frozenset({"filters", "choose"}),
+        frozenset({"filters", "service", "choose"}),
     )
-    if not kinds:
+    if not expectations:
         raise ChatGoldenFormatError(f"{path}: turn {message!r} carries no expectation")
     if kinds not in allowed:
         raise ChatGoldenFormatError(
             f"{path}: turn {message!r} carries the impossible combination {sorted(kinds)}"
         )
+    if has_choice and (not isinstance(choose, str) or not choose):
+        raise ChatGoldenFormatError(f"{path}: turn {message!r} has a bad choose")
     filters = row.get("filters")
     if "filters" in kinds and (not isinstance(filters, dict) or not filters):
         raise ChatGoldenFormatError(f"{path}: turn {message!r} has bad filters")
@@ -228,6 +249,7 @@ def _golden_turn(  # type: ignore[no-untyped-def]
         service_state=state if isinstance(state, str) else None,
         rule_contains=rule if isinstance(rule, str) else None,
         refusal=refusal if isinstance(refusal, str) else None,
+        choose=choose if isinstance(choose, str) else None,
     )
 
 

@@ -1,6 +1,8 @@
 """``parse_intent``: the total intent parser. Adversarial model output must never raise;
 it must lose only its own data and leave machine-readable rejection reasons behind."""
 
+import json
+
 import pytest
 
 from ndis.domain.intent import (
@@ -11,6 +13,8 @@ from ndis.domain.intent import (
     ProviderFilters,
     item_in_question,
     parse_intent,
+    parsed_intent_document,
+    parsed_intent_of,
     postcode_in_question,
 )
 
@@ -335,3 +339,36 @@ def test_parsed_intent_defaults() -> None:
     parsed = ParsedIntent(Intent())
     assert parsed.intent is not None
     assert parsed.intent.empty()
+
+
+def test_the_parsed_intent_document_round_trips_every_shape() -> None:
+    """The document a checkpointed state carries rebuilds the exact same parsed intent,
+    for every shape the parser can produce."""
+    shapes = [
+        ParsedIntent(None, ("intent_not_json",)),
+        ParsedIntent(Intent(), ()),
+        ParsedIntent(
+            Intent(
+                provider_filters=ProviderFilters(
+                    state="QLD",
+                    postcode="4064",
+                    locality="Paddington",
+                    group="Plan Management",
+                    status="Approved",
+                    brisbane_area=True,
+                ),
+                price_query=PriceQuery(
+                    item="01_002_0107_1_1", service="physio", state="NSW", remoteness="remote"
+                ),
+                rule_question="cancellations",
+                decision_request=True,
+            ),
+            ("provider_filters_invalid",),
+        ),
+        ParsedIntent(Intent(provider_filters=ProviderFilters()), ()),
+    ]
+    for parsed in shapes:
+        document = parsed_intent_document(parsed)
+        assert parsed_intent_of(document) == parsed
+        # The document itself is JSON-plain by construction.
+        assert json.loads(json.dumps(document)) == document

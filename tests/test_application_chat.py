@@ -13,6 +13,8 @@ from ndis.application.chat import (
     ChatDeps,
     contextualise_prompt,
     contextualise_stage,
+    locality_choice_of,
+    locality_pending_question,
     thread_is_full,
     thread_turns,
     turn_document,
@@ -21,6 +23,7 @@ from ndis.application.chat import (
 from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.domain.chat import REWRITE_NOT_JSON
 from ndis.domain.extraction import TokenBudget
+from ndis.domain.locality import Locality, resolve_locality
 
 
 class RecordingClient:
@@ -157,3 +160,30 @@ def test_the_thread_cap_is_fifty_turns() -> None:
 def test_thread_turns_reads_the_persisted_state() -> None:
     assert thread_turns({}) == []
     assert thread_turns({"turns": [turn(0), turn(1)]}) == [turn(0), turn(1)]
+
+
+def test_the_pending_question_lists_one_stable_option_per_candidate() -> None:
+    resolution = resolve_locality(
+        "Paddington",
+        [Locality("PADDINGTON", "QLD", "4064"), Locality("PADDINGTON", "NSW", "2021")],
+    )
+    payload = locality_pending_question(resolution)
+    assert payload["kind"] == "choose_locality"
+    assert payload["question"] == 'Which "Paddington" do you mean?'
+    assert payload["options"] == [
+        {"id": "nsw-2021", "label": "NSW 2021"},
+        {"id": "qld-4064", "label": "QLD 4064"},
+    ]
+    # The payload is JSON-plain by construction: it travels inside the interrupt.
+    assert json.loads(json.dumps(payload)) == payload
+
+
+def test_the_resume_answer_is_valid_only_against_the_offered_options() -> None:
+    resolution = resolve_locality(
+        "Paddington",
+        [Locality("PADDINGTON", "QLD", "4064"), Locality("PADDINGTON", "NSW", "2021")],
+    )
+    assert locality_choice_of("qld-4064", resolution) == Locality("PADDINGTON", "QLD", "4064")
+    assert locality_choice_of("QLD 4064", resolution) is None  # the label is not the id
+    assert locality_choice_of("qld-9999", resolution) is None
+    assert locality_choice_of(None, resolution) is None

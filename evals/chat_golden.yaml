@@ -17,6 +17,12 @@
 #   refusal       - the machine reason the turn must be contained with (the existing
 #                   refusals run downstream of the rewritten question, so a follow-up
 #                   decision request or injection must still refuse)
+#   choose        - the option id a paused turn is resumed with (ticket 18): the turn
+#                   stopped to ask which place the user meant ("Paddington" matches one
+#                   suburb in QLD and one in NSW), the replay answers with this id, and
+#                   the resumed turn is compared like any other. The replay's fixture
+#                   gazetteer carries the same two Paddington rows the real one does, so
+#                   the offered option ids are the ones the served graph would offer.
 #
 # The register expectations below reuse the hand-verified cases of evals/golden.yaml
 # (filter, locality and service cases) as first turns; the follow-up expectations are the
@@ -114,3 +120,19 @@ conversations:
     service_state: null
   - message: "okay, and can a provider claim for travel time to the appointment?"
     rule_contains: "travel"
+- id: ambiguous_place_choice
+  turns:
+  - message: "plan managers in Paddington"
+    filters: {"locality": "Paddington", "group": "Plan Management"}
+    choose: "qld-4064"
+  - message: "only the approved ones"
+    filters: {"locality": "Paddington", "group": "Plan Management", "status": "Approved"}
+- id: ambiguous_place_with_price
+  turns:
+  - message: "what does physiotherapy cost per hour in Paddington?"
+    filters: {"locality": "Paddington"}
+    service: "physiotherapy"
+    service_state: null
+    choose: "nsw-2021"
+  - message: "okay, and what are the rules for short notice cancellations?"
+    rule_contains: "cancellation"

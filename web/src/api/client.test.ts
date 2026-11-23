@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { ApiError, NETWORK_ERROR_STATUS, createClient } from './client'
-import { ANSWER, META, REPLY_1, REPLY_2, THREAD, THREAD_NOT_FOUND_DETAIL } from './fixtures'
+import {
+  ANSWER,
+  META,
+  PENDING_LOCALITY,
+  REPLY_1,
+  REPLY_2,
+  REPLY_PENDING,
+  THREAD,
+  THREAD_NOT_FOUND_DETAIL,
+} from './fixtures'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -99,6 +108,21 @@ describe('createClient', () => {
       method: 'GET',
       headers: {},
       body: null,
+    })
+  })
+
+  it('POSTs the resume with the option id, and normalises the needs_input reply', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ ...REPLY_PENDING, pending: { ...PENDING_LOCALITY } }))
+    const client = createClient('http://api.test', fetchImpl)
+
+    await expect(client.resumeChat(REPLY_1.thread_id, 'qld-4064')).resolves.toEqual(REPLY_PENDING)
+
+    expect(fetchImpl).toHaveBeenCalledWith(`http://api.test/chat/${REPLY_1.thread_id}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ option_id: 'qld-4064' }),
     })
   })
 
