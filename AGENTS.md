@@ -12,4 +12,11 @@ Tests: pytest, fixtures in `tests/conftest.py`, LLM calls mocked via the `LLMCli
 
 Commits: Conventional Commits. One ticket per branch `ticket/NN-slug`.
 
+Token discipline (measured: screenshots + whole-file reads dominated tool context):
+- Never Read image files (`.png`/`.jpg`), including `docs/screenshots/` — they are for humans. Verify a screenshot exists with `ls -la` and `sips -g pixelWidth`; never view it.
+- `read` with `offset`/`limit` slices; `grep` first to locate, then read only the matching region. No multi-file `cat` one-liners.
+- Keep bash output small: prefer `-q`, `| tail -20`, targeted diffs (`git diff -- file`) over full `git diff origin/main...HEAD`.
+- Inner test loop: `uv run pytest -x -q --no-cov -k <affected>`; run the full gate chain once at the end.
+- Subagents: prefer several short runs (one per stage) over one long run; report findings, not raw file dumps.
+
 LangGraph (tickets 15–24): graphs live only in `src/ndis/adapters/graphs/`. A node is a thin wrapper around an `application` use case or stage function; no business rule lives in a graph module. Model calls go through the `LlmClient` port, never a LangChain model class. State that is checkpointed holds JSON-plain values and never page text. After changing a graph, regenerate its diagram in `docs/graphs/`; a test fails on drift.
