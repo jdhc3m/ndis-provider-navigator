@@ -20,3 +20,4 @@ One line per merged ticket: date, ticket, note, PR.
 - 2026-11-23 — 14 Service names instead of support item numbers — [note](14-service-names.md) — [PR #64](https://github.com/jdhc3m/ndis-provider-navigator/pull/64)
 - 2026-11-23 — 15 LangGraph foundations: one question through a graph — [note](15-langgraph-foundations.md) — [PR #65](https://github.com/jdhc3m/ndis-provider-navigator/pull/65)
 - 2026-11-23 — 16 Conversation memory: threads, checkpoints and follow-up questions — [note](16-conversation-memory.md) — [PR #68](https://github.com/jdhc3m/ndis-provider-navigator/pull/68)
+- 2026-11-23 — 17 Chat page in the web front end — [note](17-chat-page.md) — [PR #70](https://github.com/jdhc3m/ndis-provider-navigator/pull/70)

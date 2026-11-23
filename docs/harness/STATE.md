@@ -1,12 +1,14 @@
 # Foreman resume state
 
-Updated: 2026-11-23 (Australia/Brisbane), after ticket 16 merged (PR #68, squash
-`0818cfb`) and the leaner-process decision below. Tickets 00–16 are on `main` with
-green CI. The board now carries tickets 17–24 (issues #56–#63, created 2026-11-22)
-— a LangGraph/chat/research phase; see "Decision 2026-11-22" below. Tickets 14
-and 15 each consumed a full day; the owner approved process cuts (see "Decision
-2026-11-23: leaner harness process") that bind the loop from ticket 17 on —
-ticket 16 merged before the decision landed and ran on the old process.
+Updated: 2026-11-23 (Australia/Brisbane), after ticket 16 (PR #68, squash
+`0818cfb`) and the leaner-process PR (#69, squash `158e4a5`). Tickets 00–16 plus
+the process PR are on `main` with green CI; the board now carries tickets
+17–24 (issues #56–#63) — the LangGraph/chat/research phase ("Decision
+2026-11-22" below). Tickets 14 and 15 each consumed a full day; the owner
+approved process cuts ("Decision 2026-11-23: leaner harness process") that
+bound the loop from ticket 17 on — ticket 16 merged before the decision
+landed and ran on the old process. Ticket 17 is the first lean-protocol
+ticket: builder + one review round + one PR in about a quarter of the time.
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -485,13 +487,37 @@ updated. Facts the Builder of ticket 09 needs:
   (capture stores per-turn summaries; replay rebuilds history from the cache,
   zero SQL); a live `POST /chat` check through the running server is pending.
 
+- Ticket 17 — Chat page in the web front end (issue #56, PR #70, squash
+  pending). Note: `docs/learning/17-chat-page.md`. Two hash-routed tabs
+  (`#/chat` default, `#/search` unchanged verbatim incl. `?q=`); the browser
+  keeps only the `thread_id` (localStorage), reload restores via `GET
+  /chat/{id}`, restart shows the not-kept notice; rewrite disclosure
+  ("Follow-up understood as …"); composer Enter/Shift+Enter (IME-safe),
+  disabled while pending; `role="log"` message list, focus back to the
+  composer, 44 px targets, reduced-motion scroll; states for pending/error +
+  retry/`thread_full`/refusal/zero-match; mock client gained a two-turn
+  conversation, a refusal and `thread_not_found`/`thread_full` scenarios;
+  screenshots `chat-*` at 1440/375 px. First commit made the chat golden
+  eval intent-level: the cache gained a per-turn `summaries:` section
+  (derived offline from the committed payloads + register; rewrite/intent
+  rows byte-identical), the replay rebuilds the contextualise prompt from
+  the cache (digest hit = byte-identity proof) over seeded fixture repos —
+  eval 2.4 s (was 21–25 min), floors unchanged (13/13, 2/2), every stored
+  summary asserted consumed. Measured: default `uv run pytest` 928 passed /
+  9 skipped in ~45 s; 40 Vitest tests. Review: round 1 REQUEST_CHANGES —
+  must-fix: a stale reply landing after "New chat" resurrected the cleared
+  conversation and re-wrote the old thread id (fixed with a generation
+  counter; regression test red before the fix); nits applied (summary-
+  consumption invariant, keyboard-only tab switch). Live check partial on
+  this machine: first turn from the register, reload restore, restart notice
+  observed live; one live follow-up (rewrite) turn + a third turn pending
+  the daily quota reset (the rewrite path is covered by eval + Vitest).
+  Follow-ups (not ticketed): complete the live follow-up check; ticket 19
+  will add live step progress to the composer area.
+
 ## In progress
 
-- None. Ticket 16 merged (PR #68, squash `0818cfb`); **ticket 17 (issue #56) is
-  next**, the first ticket run under the leaner-process decision of 2026-11-23
-  (one PR per ticket, one review round, full Reviewer because the chat page is
-  a new class of behaviour, plus the chat-eval intent-level replay as its
-  first commit).
+- None. Ticket 17 in final review (PR #70); ticket 18 (issue #57) is next.
 
 ## Blocked
 
@@ -570,11 +596,10 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- **Ticket 17 — Chat page in the web front end (issue #56) is next**, then
-  18–24 in number order (each depends on the previous). Ticket 16 is merged
-  (Done entry below carries the details); ticket 17 runs under the
-  leaner-process decision of 2026-11-23 and owns the chat-eval intent-level
-  replay (its first commit).
+- **Ticket 18 — Clarifying questions: pause and resume with interrupt (issue
+  #57) is next**, then 19–24 in number order (each depends on the previous).
+  Ticket 17's Done entry is appended in this branch's docs commit; ticket 18
+  runs under the leaner-process decision.
 - **LLM quota facts for the phase (2026-11-23).** The free-tier daily quota
   was exhausted again after ticket 14's captures + live demo: the native
   endpoint returns 429, and the OpenAI-compat surface returns an empty 404 in
