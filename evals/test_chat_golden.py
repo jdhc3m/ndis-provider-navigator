@@ -243,11 +243,6 @@ def _answer_to_json(answer: Any) -> dict[str, Any]:
 
 
 @pytest.fixture
-def golden() -> ChatGoldenSet:
-    return read_chat_golden(GOLDEN)
-
-
-@pytest.fixture
 def replay() -> tuple[Any, ReplayChatClient, ChatGoldenSet]:
     if not CACHE.is_file():
         pytest.skip(f"chat cache not captured yet: {CACHE} is missing")
@@ -275,6 +270,9 @@ def test_followup_turns_match_the_expectations_at_the_floor(
     graph, client, golden = replay
     outcome = run_replay(graph, golden, client)
     assert not outcome.missing, "\n".join(outcome.missing)
+    # The floor's own denominator: the golden set must keep its follow-up expectations,
+    # or the accuracy below would be a vacuous 1.0.
+    assert outcome.followup_total >= 10, outcome.followup_total
     floor = read_thresholds(THRESHOLDS).followup_accuracy
     accuracy = outcome.followup_hits / outcome.followup_total if outcome.followup_total else 1.0
     assert accuracy >= floor, "\n".join(outcome.failures)
@@ -287,6 +285,9 @@ def test_followup_refusals_are_contained(
     graph, client, golden = replay
     outcome = run_replay(graph, golden, client)
     assert not outcome.missing, "\n".join(outcome.missing)
+    # The refusal floor's denominator: the decision-request and injection follow-ups
+    # must both stay in the golden set.
+    assert outcome.refusal_total >= 2, outcome.refusal_total
     floor = read_thresholds(THRESHOLDS).followup_refusal_recall
     recall = outcome.refusal_hits / outcome.refusal_total if outcome.refusal_total else 1.0
     assert recall >= floor, "\n".join(outcome.failures)
