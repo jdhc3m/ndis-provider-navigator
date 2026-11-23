@@ -11,3 +11,5 @@ Never commit anything under `data/private/`. Never put model/vendor names outsid
 Tests: pytest, fixtures in `tests/conftest.py`, LLM calls mocked via the `LLMClient` port; integration tests use a temp SQLite file. Evals live in `evals/` and are marked `@pytest.mark.eval`.
 
 Commits: Conventional Commits. One ticket per branch `ticket/NN-slug`.
+
+LangGraph (tickets 15–24): graphs live only in `src/ndis/adapters/graphs/`. A node is a thin wrapper around an `application` use case or stage function; no business rule lives in a graph module. Model calls go through the `LlmClient` port, never a LangChain model class. State that is checkpointed holds JSON-plain values and never page text. After changing a graph, regenerate its diagram in `docs/graphs/`; a test fails on drift.
