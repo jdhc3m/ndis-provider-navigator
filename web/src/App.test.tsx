@@ -127,7 +127,8 @@ describe('App', () => {
       expect(evidence).toHaveAttribute('aria-expanded', 'true')
       expect(screen.getByText(/our speech pathologists work/i)).toBeInTheDocument()
 
-      await user.click(screen.getByRole('link', { name: 'Search' }))
+      screen.getByRole('link', { name: 'Search' }).focus()
+      await user.keyboard('{Enter}')
       expect(screen.getByLabelText(/ask about ndis providers/i)).toBeInTheDocument()
     })
   })

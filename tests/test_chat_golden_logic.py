@@ -222,6 +222,9 @@ def test_the_eval_logic_scores_a_clean_synthetic_capture(
     graph, replay_client, summarizer = replay(cache, repos)
     outcome = run_replay(graph, golden, replay_client, summarizer)
     assert outcome.missing == []
+    # The same full-consumption invariant the real eval pins: a clean cache has every
+    # summary read and nothing consumed without one.
+    assert outcome.consumed_questions == set(cache.summaries)
     assert outcome.first_turn_failures == []
     assert outcome.followup_total == 2 and outcome.followup_hits == 2
     assert outcome.refusal_total == 1 and outcome.refusal_hits == 1

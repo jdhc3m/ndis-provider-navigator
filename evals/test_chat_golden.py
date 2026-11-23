@@ -122,6 +122,11 @@ class CachedSummarizer:
         self._summaries = dict(summaries)
         self.missing: list[str] = []
 
+    @property
+    def known_questions(self) -> frozenset[str]:
+        """The standalone questions the cache holds summaries for."""
+        return frozenset(self._summaries)
+
     def __call__(self, turns: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
         for turn in turns:
@@ -137,7 +142,8 @@ class CachedSummarizer:
 @dataclass
 class ReplayOutcome:
     """What one replay pass scored: the follow-up floors' numerators and denominators,
-    the first-turn mismatches, the per-problem failure lines, and any cache misses."""
+    the first-turn mismatches, the per-problem failure lines, any cache misses, and the
+    standalone questions the replayed turns actually ended with."""
 
     followup_total: int = 0
     followup_hits: int = 0
@@ -146,6 +152,7 @@ class ReplayOutcome:
     first_turn_failures: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+    consumed_questions: frozenset[str] = field(default_factory=frozenset)
 
 
 def _intent_of(answer: Mapping[str, Any]) -> dict[str, Any]:
@@ -204,13 +211,18 @@ def run_replay(
     graph: Any, golden: ChatGoldenSet, client: ReplayChatClient, summarizer: CachedSummarizer
 ) -> ReplayOutcome:
     """Run every golden conversation on its own thread and score the outcome; any cache
-    miss the replay client or the summarizer hit is carried in the outcome."""
+    miss the replay client or the summarizer hit is carried in the outcome, along with
+    every replayed turn's standalone question so the caller can pin full summary
+    consumption (``consumed_questions`` against :attr:`CachedSummarizer.known_questions`
+    flags both orphaned rows and consumed questions without a row)."""
     outcome = ReplayOutcome()
+    consumed: set[str] = set()
     for conversation in golden.conversations:
         config = {"configurable": {"thread_id": GOLDEN_ROOT_NS + conversation.id}}
         for index, turn in enumerate(conversation.turns):
             final = graph.invoke({"message": turn.message}, config)
             stored = final["turns"][-1]
+            consumed.add(str(stored["standalone_question"]))
             answer: dict[str, Any] = stored["answer"]
             if index == 0:
                 problems = _compare_expectation(turn, answer)
@@ -237,6 +249,7 @@ def run_replay(
             else:
                 outcome.followup_hits += 1
     outcome.missing = [*client.missing, *summarizer.missing]
+    outcome.consumed_questions = frozenset(consumed)
     return outcome
 
 
@@ -336,6 +349,10 @@ def test_first_turns_match_the_expectations_exactly(
     graph, client, summarizer, golden = replay
     outcome = run_replay(graph, golden, client, summarizer)
     assert not outcome.missing, "\n".join(outcome.missing)
+    # Every cached summary was consumed by the replay and nothing was consumed without
+    # one: a row the golden set never reads (or a consumed question with no row) is
+    # capture drift and must fail here, not only when a rewrite window happens to need it.
+    assert outcome.consumed_questions == summarizer.known_questions
     assert not outcome.first_turn_failures, "\n".join(outcome.first_turn_failures)
 
 
@@ -346,6 +363,7 @@ def test_followup_turns_match_the_expectations_at_the_floor(
     graph, client, summarizer, golden = replay
     outcome = run_replay(graph, golden, client, summarizer)
     assert not outcome.missing, "\n".join(outcome.missing)
+    assert outcome.consumed_questions == summarizer.known_questions
     # The floor's own denominator: the golden set must keep its follow-up expectations,
     # or the accuracy below would be a vacuous 1.0.
     assert outcome.followup_total >= 10, outcome.followup_total
@@ -361,6 +379,7 @@ def test_followup_refusals_are_contained(
     graph, client, summarizer, golden = replay
     outcome = run_replay(graph, golden, client, summarizer)
     assert not outcome.missing, "\n".join(outcome.missing)
+    assert outcome.consumed_questions == summarizer.known_questions
     # The refusal floor's denominator: the decision-request and injection follow-ups
     # must both stay in the golden set.
     assert outcome.refusal_total >= 2, outcome.refusal_total
