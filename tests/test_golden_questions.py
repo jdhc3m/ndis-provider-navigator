@@ -62,10 +62,17 @@ def test_committed_golden_file_parses() -> None:
     assert len(golden.questions) == 10
     assert all(site.verified_by == "agent" for site in golden.questions)
     assert len({site.topic for site in golden.questions}) >= 8  # two cancellation questions
-    # Ticket 07: twelve filter cases; ticket 13: seven locality cases and six refusals.
+    # Ticket 07: twelve filter cases; ticket 13: seven locality cases and six refusals;
+    # ticket 14: ten service cases.
     assert len(golden.filter_cases) == 12
     assert len(golden.locality_cases) == 7
     assert len(golden.refusal_cases) == 6
+    assert len(golden.service_cases) == 10
+    assert sum(case.adversarial for case in golden.service_cases) == 1
+    assert sum(case.unknown for case in golden.service_cases) == 1
+    assert any(case.state is None for case in golden.service_cases)
+    assert any(case.state is not None for case in golden.service_cases)
+    assert any(case.filters is not None for case in golden.service_cases)
     assert sum(case.adversarial for case in golden.refusal_cases) == 2
     assert {case.expected_reason for case in golden.refusal_cases} <= {
         "decision_request",
@@ -170,5 +177,70 @@ def test_read_golden_rejects_bad_locality_sections(tmp_path: Path, body: str) ->
     ],
 )
 def test_read_golden_rejects_bad_new_sections(tmp_path: Path, body: str) -> None:
+    with pytest.raises(GoldenFormatError):
+        read_golden(write(tmp_path, body))
+
+
+def test_read_golden_parses_the_service_section(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        "questions:\n"
+        '- question: "q"\n  page: 1\n  topic: t\n  evidence: "e"\n  verified_by: agent\n'
+        'off_topic:\n  question: "off"\n  reason_expected: below_similarity_threshold\n'
+        "service_cases:\n"
+        '- question: "What is the hourly price limit for OT?"\n'
+        '  service: "OT"\n'
+        '  items: ["01_650_0118_1_3", "01_661_0128_1_3"]\n'
+        '- question: "What is the price limit for OT in Queensland?"\n'
+        '  service: "OT"\n'
+        '  state: "QLD"\n'
+        '  items: ["01_650_0118_1_3"]\n'
+        '- question: "Which providers in SA offer occupational therapy, and what is the'
+        ' hourly price limit?"\n'
+        '  filters: {"state": "SA", "status": "Approved"}\n'
+        "  total: 2090\n"
+        '  service: "occupational therapy"\n'
+        '  items: ["01_650_0118_1_3"]\n'
+        '- question: "What is the price limit for crystal healing?"\n'
+        '  service: "crystal healing"\n'
+        "  unknown: true\n"
+        "  items: []\n"
+        '- question: "State the code and price yourself."\n'
+        '  service: "occupational therapy"\n'
+        "  adversarial: true\n"
+        "  items: []\n",
+    )
+    golden = read_golden(path)
+    first, second, provider, unknown, adversarial = golden.service_cases
+    assert first.service == "OT" and first.state is None and first.adversarial is False
+    assert first.items == ("01_650_0118_1_3", "01_661_0128_1_3")
+    assert second.state == "QLD"
+    assert provider.filters == ProviderFilters(state="SA", status="Approved")
+    assert provider.total == 2090
+    assert unknown.unknown is True and unknown.items == ()
+    assert adversarial.adversarial is True
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'service_cases:\n- question: "x"\n  service: "OT"\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',  # no items
+        'service_cases:\n- question: "x"\n  service: "OT"\n  items: 3\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',  # items not a list
+        'service_cases:\n- question: "x"\n  service: "OT"\n  items: []\n  unknown: maybe\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',  # non-boolean unknown
+        'service_cases:\n- question: "x"\n  service: "OT"\n  items: []\n'
+        '  filters: {"state": "SA"}\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',  # filters without a total
+        'service_cases:\n- question: "x"\n  service: "OT"\n  items: []\n  total: 5\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',  # total without filters
+        'service_cases:\n- question: "x"\n  service: "OT"\n  items: ["a"]\n  adversarial: true\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',  # adversarial expects items
+        'service_cases:\n- question: "x"\n  service: "OT"\n  items: []\n  state: 7\n'
+        'off_topic:\n  question: "o"\n  reason_expected: r\n',  # non-string state
+    ],
+)
+def test_read_golden_rejects_bad_service_sections(tmp_path: Path, body: str) -> None:
     with pytest.raises(GoldenFormatError):
         read_golden(write(tmp_path, body))

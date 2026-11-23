@@ -207,11 +207,18 @@ def test_built_front_end_is_served_after_the_api_routes(
 def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Path) -> None:
     first = tmp_path / "a.json"
     second = tmp_path / "b.json"
-    assert export_openapi(first) == 5
+    assert export_openapi(first) == 6
     export_openapi(second)
     assert first.read_bytes() == second.read_bytes()
     document = json.loads(first.read_text())
-    assert set(document["paths"]) == {"/providers", "/price-limits", "/ask-rule", "/ask", "/meta"}
+    assert set(document["paths"]) == {
+        "/providers",
+        "/price-limits",
+        "/support-items",
+        "/ask-rule",
+        "/ask",
+        "/meta",
+    }
     assert "StepOut" in document["components"]["schemas"]
     assert "MetaOut" in document["components"]["schemas"]
     result = subprocess.run(
@@ -221,5 +228,5 @@ def test_export_openapi_is_deterministic_and_documents_every_route(tmp_path: Pat
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "wrote 5 paths" in result.stdout
+    assert "wrote 6 paths" in result.stdout
     assert (tmp_path / "cli.json").read_bytes() == first.read_bytes()

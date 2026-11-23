@@ -13,6 +13,8 @@ import {
   LOCALITY,
   META,
   REFUSAL,
+  SERVICE,
+  UNKNOWN_SERVICE,
 } from './api/fixtures'
 import { EXAMPLE_QUESTIONS } from './examples'
 
@@ -203,6 +205,81 @@ describe('locality resolution', () => {
     expect(screen.getByLabelText<HTMLInputElement>(/ask about ndis providers/i).value).toBe(
       `${AMBIGUOUS.question} (postcode 4101)`,
     )
+  })
+})
+
+describe('service price list', () => {
+  it('renders the catalogue list with the chip, the phrase and the match count', async () => {
+    const client = fakeClient({ ask: () => Promise.resolve(SERVICE) })
+    await renderAndAsk(client, SERVICE.question)
+
+    // The "Understood as" row carries the phrase and the match count.
+    const row = await screen.findByRole('region', { name: 'Understood as' })
+    expect(
+      within(row).getByText('price_query: service "occupational therapy" · QLD · matched 6'),
+    ).toBeInTheDocument()
+
+    // The price column is the list, not a single price card.
+    const card = await screen.findByRole('article', { name: 'Price limits' })
+    expect(within(card).getByText(/from support catalogue — not generated/i)).toBeInTheDocument()
+    expect(within(card).getByText(/showing 6 of 6 support items matching/i)).toBeInTheDocument()
+    expect(within(card).getAllByText('$193.99').length).toBeGreaterThanOrEqual(3)
+    expect(within(card).getByText('$97.00')).toBeInTheDocument()
+    expect(within(card).getByText(/01_999_0128_1_3/)).toBeInTheDocument()
+    expect(within(card).getAllByText(/per hour/).length).toBeGreaterThanOrEqual(5)
+    expect(within(card).queryByText(/per month/)).not.toBeInTheDocument()
+    expect(within(card).getByText('Quotable item')).toBeInTheDocument()
+    expect(within(card).queryByText(/legacy item/)).not.toBeInTheDocument()
+    // No single-item price card renders next to the list.
+    expect(screen.queryByText('15_999_0128_1_3')).not.toBeInTheDocument()
+  })
+
+  it('says the national limit applies when the question stated no state', async () => {
+    const national = {
+      ...SERVICE,
+      intent: SERVICE.intent
+        ? {
+            ...SERVICE.intent,
+            price_query: SERVICE.intent.price_query
+              ? { ...SERVICE.intent.price_query, state: null }
+              : null,
+          }
+        : null,
+      service_prices: SERVICE.service_prices ? { ...SERVICE.service_prices, state: null } : null,
+    } satisfies typeof SERVICE
+    const client = fakeClient({ ask: () => Promise.resolve(national) })
+    await renderAndAsk(client, 'What is the price limit for occupational therapy?')
+
+    const card = await screen.findByRole('article', { name: 'Price limits' })
+    expect(
+      within(card).getByText(/no state stated, so the national limit applies/i),
+    ).toBeInTheDocument()
+    const row = screen.getByRole('region', { name: 'Understood as' })
+    expect(within(row).getByText(/national \(no state stated\)/)).toBeInTheDocument()
+  })
+
+  it('shows the unknown-service state without inventing a price', async () => {
+    const client = fakeClient({ ask: () => Promise.resolve(UNKNOWN_SERVICE) })
+    await renderAndAsk(client, UNKNOWN_SERVICE.question)
+
+    const status = await screen.findByRole('status')
+    expect(within(status).getByText(/no catalogue match/i)).toBeInTheDocument()
+    expect(within(status).getByText(/underwater basket weaving/i)).toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: 'Price limits' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: 'Price limit' })).not.toBeInTheDocument()
+    // The intent chip still shows the phrase, with zero matches.
+    const row = screen.getByRole('region', { name: 'Understood as' })
+    expect(
+      within(row).getByText(
+        'price_query: service "underwater basket weaving" · national (no state stated) · matched 0',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('offers no example chip that contains an item number', () => {
+    for (const question of EXAMPLE_QUESTIONS) {
+      expect(question).not.toMatch(/\d{2}_\d{3}/)
+    }
   })
 })
 

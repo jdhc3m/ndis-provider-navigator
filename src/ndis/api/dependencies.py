@@ -22,7 +22,7 @@ from ndis.adapters.sqlite_repository import (
 )
 from ndis.adapters.tracing import traced
 from ndis.application.ask import Ask, ClaimEvidenceSource, MissingIndexRuleAnswerer, RuleAnswerer
-from ndis.application.catalogue import GetPriceLimit, SupportItemRepository
+from ndis.application.catalogue import GetPriceLimit, SearchSupportItems, SupportItemRepository
 from ndis.application.extraction import TokenBudget
 from ndis.application.pricing import AskRule, EmbeddingClient
 from ndis.application.providers import (
@@ -157,6 +157,13 @@ def get_price_limit_use_case(
     return GetPriceLimit(repository)
 
 
+def search_support_items_use_case(
+    repository: Annotated[SupportItemRepository, Depends(support_item_repository)],
+) -> SearchSupportItems:
+    """The service-phrase search over the same loaded catalogue; pure code, no model."""
+    return SearchSupportItems(repository)
+
+
 # --- Pricing rules RAG ----------------------------------------------------------------------
 
 
@@ -267,6 +274,7 @@ def ask_use_case(
     catalogue: Annotated[GetPriceLimit, Depends(get_price_limit_use_case)],
     evidence: Annotated[ClaimEvidenceSource, Depends(claim_evidence_source)],
     localities: Annotated[LocalityResolver, Depends(locality_resolver)],
+    service_search: Annotated[SearchSupportItems, Depends(search_support_items_use_case)],
 ) -> Ask:
     """One use case per question; the intent-parse client and its token budget are
     fresh per request, the rule answerer degrades to refusals without an index."""
@@ -277,6 +285,7 @@ def ask_use_case(
         rule_answerer_for(rule_store_maybe()),
         evidence,
         locality_resolver=localities,
+        service_search=service_search,
         token_prices=token_price(llm_model()),
     )
 

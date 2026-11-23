@@ -20,7 +20,24 @@ OFF_TOPIC_FIELDS = ("question", "reason_expected")
 FILTER_FIELDS = ("question", "filters", "total", "first")
 REFUSAL_FIELDS = ("question", "expected_reason", "adversarial")
 LOCALITY_FIELDS = ("question", "filters", "outcome", "total", "first", "candidates")
-SECTIONS = ("questions", "off_topic", "filter_cases", "locality_cases", "refusal_cases")
+SERVICE_FIELDS = (
+    "question",
+    "service",
+    "items",
+    "state",
+    "unknown",
+    "adversarial",
+    "filters",
+    "total",
+)
+SECTIONS = (
+    "questions",
+    "off_topic",
+    "filter_cases",
+    "locality_cases",
+    "service_cases",
+    "refusal_cases",
+)
 INTENT_FIELDS = ("question", "payload")
 
 
@@ -61,6 +78,28 @@ class GoldenRefusalCase:
 
 
 @dataclass(frozen=True)
+class GoldenServiceCase:
+    """One /ask service case (ticket 14): the question, the service phrase a correct
+    intent parse must carry (the phrase as the question writes it), and the state it
+    must carry (``None`` when the question states none — the national tier applies).
+
+    ``items`` lists the support item numbers a correct answer must show (verified
+    against the catalogue workbook); a case with no expected items is either an
+    ``unknown`` phrase (the answer must show nothing and give ``unknown_service``) or an
+    ``adversarial`` question that tells the model to state a code or a price itself —
+    containment there means the parse never carries an item and nothing invented shows."""
+
+    question: str
+    service: str
+    items: tuple[str, ...]
+    state: str | None = None
+    unknown: bool = False
+    adversarial: bool = False
+    filters: ProviderFilters | None = None
+    total: int | None = None
+
+
+@dataclass(frozen=True)
 class GoldenLocalityCase:
     """One /ask locality case (ticket 13): the question, the filters a correct intent
     parse must produce, and the expected resolution. ``outcome`` is ``resolved`` (with
@@ -79,13 +118,15 @@ class GoldenLocalityCase:
 @dataclass(frozen=True)
 class GoldenSet:
     """The whole golden file: the rule questions, the off-topic refusal case, the /ask
-    filter cases, the /ask locality cases and the /ask refusal cases."""
+    filter cases, the /ask locality cases, the /ask service cases and the /ask refusal
+    cases."""
 
     questions: tuple[GoldenQuestion, ...]
     off_topic_question: str
     off_topic_reason: str
     filter_cases: tuple[GoldenFilterCase, ...] = ()
     locality_cases: tuple[GoldenLocalityCase, ...] = ()
+    service_cases: tuple[GoldenServiceCase, ...] = ()
     refusal_cases: tuple[GoldenRefusalCase, ...] = ()
 
 
@@ -104,6 +145,7 @@ def read_golden(path) -> GoldenSet:  # type: ignore[no-untyped-def]
     rows: list[dict[str, object]] = []
     filter_rows: list[dict[str, object]] = []
     locality_rows: list[dict[str, object]] = []
+    service_rows: list[dict[str, object]] = []
     refusal_rows: list[dict[str, object]] = []
     off_topic: dict[str, object] | None = None
     section: str | None = None
@@ -137,6 +179,7 @@ def read_golden(path) -> GoldenSet:  # type: ignore[no-untyped-def]
                 "questions": rows,
                 "filter_cases": filter_rows,
                 "locality_cases": locality_rows,
+                "service_cases": service_rows,
                 "refusal_cases": refusal_rows,
             }[section].append(current)
             line = "  " + line[2:]
@@ -146,6 +189,7 @@ def read_golden(path) -> GoldenSet:  # type: ignore[no-untyped-def]
             "questions": FIELDS,
             "filter_cases": FILTER_FIELDS,
             "locality_cases": LOCALITY_FIELDS,
+            "service_cases": SERVICE_FIELDS,
             "refusal_cases": REFUSAL_FIELDS,
         }[section]
         field, _, value = line.strip().partition(":")
@@ -180,6 +224,7 @@ def read_golden(path) -> GoldenSet:  # type: ignore[no-untyped-def]
         off_topic_reason=str(off_topic["reason_expected"]),
         filter_cases=tuple(_filter_case(path, row) for row in filter_rows),
         locality_cases=tuple(_locality_case(path, row) for row in locality_rows),
+        service_cases=tuple(_service_case(path, row) for row in service_rows),
         refusal_cases=tuple(_refusal_case(path, row) for row in refusal_rows),
     )
 
@@ -275,6 +320,54 @@ def _locality_case(path, row: dict[str, object]) -> GoldenLocalityCase:  # type:
         total=total if isinstance(total, int) and not isinstance(total, bool) else None,
         first=tuple(str(name) for name in first) if isinstance(first, list) else (),
         candidates=tuple(tuple(str(pair).split()) for pair in candidates if isinstance(pair, str)),
+    )
+
+
+def _service_case(path, row: dict[str, object]) -> GoldenServiceCase:  # type: ignore[no-untyped-def]
+    """Validate one service case: the phrase and the expected item numbers are required;
+    a resolved case must not carry provider results it does not verify."""
+    missing = [field for field in ("question", "service", "items") if field not in row]
+    if missing:
+        raise GoldenFormatError(
+            f"{path}: service case {row.get('question')!r} is missing {missing}"
+        )
+    items = row["items"]
+    if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+        raise GoldenFormatError(f"{path}: service case {row['question']!r} has a bad items list")
+    unknown = row.get("unknown", False)
+    adversarial = row.get("adversarial", False)
+    if not isinstance(unknown, bool) or not isinstance(adversarial, bool):
+        raise GoldenFormatError(
+            f"{path}: service case {row['question']!r} has a non-boolean unknown/adversarial"
+        )
+    filters = row.get("filters")
+    if filters is not None and not isinstance(filters, dict):
+        raise GoldenFormatError(f"{path}: service case {row['question']!r} has non-object filters")
+    total = row.get("total")
+    if total is not None and (not isinstance(total, int) or isinstance(total, bool)):
+        raise GoldenFormatError(f"{path}: service case {row['question']!r} has a non-integer total")
+    if filters is not None and total is None:
+        raise GoldenFormatError(
+            f"{path}: service case {row['question']!r} states filters without a total"
+        )
+    if filters is None and total is not None:
+        raise GoldenFormatError(
+            f"{path}: service case {row['question']!r} states a total without filters"
+        )
+    state = row.get("state")
+    if state is not None and not isinstance(state, str):
+        raise GoldenFormatError(f"{path}: service case {row['question']!r} has a non-string state")
+    if items and (unknown or adversarial):
+        raise GoldenFormatError(f"{path}: service case {row['question']!r} must not expect items")
+    return GoldenServiceCase(
+        question=str(row["question"]),
+        service=str(row["service"]),
+        items=tuple(str(item) for item in items),
+        state=state,
+        unknown=unknown,
+        adversarial=adversarial,
+        filters=None if filters is None else _provider_filters_of(path, row, filters),
+        total=total if isinstance(total, int) and not isinstance(total, bool) else None,
     )
 
 

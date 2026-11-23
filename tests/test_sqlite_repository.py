@@ -271,6 +271,16 @@ def test_support_item_prices_are_stored_as_text(
     ]
 
 
+def test_support_item_all_items_lists_every_row_in_number_order(
+    seeded_support_items: SqlAlchemySupportItemRepository,
+) -> None:
+    items = seeded_support_items.all_items()
+    assert [item.item_number for item in items] == sorted(
+        item.item_number for item in SEED_SUPPORT_ITEMS
+    )
+    assert len(items) == len(SEED_SUPPORT_ITEMS)
+
+
 def test_support_items_share_the_register_database(
     seeded_repository: SqlAlchemyProviderRepository, db_path: Path
 ) -> None:

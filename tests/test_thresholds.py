@@ -10,6 +10,7 @@ filter_accuracy: 0.85
 rule_hit_at_3: 0.7
 extraction_precision: 0.8
 refusal_recall: 1.0
+service_resolution_accuracy: 0.85
 """
 
 
@@ -19,12 +20,13 @@ def write(tmp_path, text):  # type: ignore[no-untyped-def]
     return path
 
 
-def test_valid_file_parses_to_all_four_floors(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_valid_file_parses_to_all_five_floors(tmp_path) -> None:  # type: ignore[no-untyped-def]
     thresholds = read_thresholds(write(tmp_path, VALID))
     assert thresholds.filter_accuracy == 0.85
     assert thresholds.rule_hit_at_3 == 0.7
     assert thresholds.extraction_precision == 0.8
     assert thresholds.refusal_recall == 1.0
+    assert thresholds.service_resolution_accuracy == 0.85
 
 
 @pytest.mark.parametrize(

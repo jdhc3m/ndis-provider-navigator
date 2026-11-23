@@ -15,7 +15,13 @@ from ndis.adapters.sqlite_repository import (
     create_sqlite_engine,
 )
 from ndis.api import app as api_app
-from ndis.api.app import _locality_422, create_app, get_price_limit, list_providers
+from ndis.api.app import (
+    _locality_422,
+    create_app,
+    get_price_limit,
+    list_providers,
+    search_support_items,
+)
 from ndis.api.dependencies import (
     DB_PATH_ENV,
     DEFAULT_DB_PATH,
@@ -527,4 +533,75 @@ def test_get_price_limit_rejects_bad_parameters(
 def test_endpoints_are_the_registered_handlers() -> None:
     # The static mount of a built web/dist has no endpoint; only handler routes count.
     names = {route.endpoint.__name__ for route in create_app().routes if hasattr(route, "endpoint")}
-    assert {list_providers.__name__, get_price_limit.__name__} <= names
+    assert {
+        list_providers.__name__,
+        get_price_limit.__name__,
+        search_support_items.__name__,
+    } <= names
+
+
+def test_search_support_items_matches_names_in_code(client: TestClient) -> None:
+    body = client.get("/support-items", params={"q": "self-care activities"}).json()
+    assert body == {
+        "query": "self-care activities",
+        "total": 1,
+        "limit": 20,
+        "items": [
+            {
+                "item_number": "01_002_0107_1_1",
+                "name": "Assistance With Self-Care Activities - Weekday Night",
+                "unit": "H",
+                "quotable": False,
+                "legacy": False,
+                "limits": {
+                    "national": "82.57",
+                    "remote": "115.60",
+                    "very_remote": "123.86",
+                },
+            }
+        ],
+        "source": "NDIS Support Catalogue 2026-27",
+    }
+
+
+def test_search_support_items_orders_deterministically(client: TestClient) -> None:
+    body = client.get("/support-items", params={"q": "assistance"}).json()
+    assert body["total"] == 3
+    assert [item["item_number"] for item in body["items"]] == [
+        "01_002_0107_1_1",
+        "01_003_0107_1_1",
+        "01_045_0115_1_1",
+    ]
+    assert body["items"][1]["quotable"] is True and body["items"][1]["limits"]["national"] is None
+    assert body["items"][2]["legacy"] is True
+
+
+def test_search_support_items_caps_the_page_and_keeps_the_total(client: TestClient) -> None:
+    page = client.get("/support-items", params={"q": "assistance", "limit": 2}).json()
+    assert (page["total"], page["limit"]) == (3, 2)
+    assert [item["item_number"] for item in page["items"]] == [
+        "01_002_0107_1_1",
+        "01_003_0107_1_1",
+    ]
+
+
+def test_search_support_items_no_match_is_an_empty_result(client: TestClient) -> None:
+    body = client.get("/support-items", params={"q": "underwater basket weaving"}).json()
+    assert body["total"] == 0 and body["items"] == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"q": "   "},
+        {"q": "assistance", "limit": 0},
+        {"q": "assistance", "limit": 51},
+    ],
+)
+def test_search_support_items_rejects_bad_parameters(
+    client: TestClient, params: dict[str, str]
+) -> None:
+    response = client.get("/support-items", params=params)
+    assert response.status_code == 422
+    assert response.json()["detail"]

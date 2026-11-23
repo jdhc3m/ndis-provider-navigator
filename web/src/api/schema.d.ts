@@ -110,6 +110,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/support-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search Support Items
+         * @description Match a service phrase ("occupational therapy", "OT") against the support
+         *     catalogue in code — no model, so no key is needed — and return the deterministic
+         *     match list (base items before claim-type variants, current before legacy, then item
+         *     number) with its total match count.
+         */
+        get: operations["search_support_items_support_items_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -168,7 +191,9 @@ export interface components {
          * @description The combined answer: the parsed intent, the executed sections, and the refusal
          *     fields. ``caveat`` carries the exact services sentence whenever services are used;
          *     ``steps`` lists the stages that built the answer, in order; ``locality`` discloses
-         *     the suburb resolution when the question named one.
+         *     the suburb resolution when the question named one; ``service_prices`` carries the
+         *     service phrase's catalogue price list when the question named a service instead of
+         *     an item number.
          */
         AskOut: {
             /** Caveat */
@@ -193,20 +218,25 @@ export interface components {
             /** Refused */
             refused: boolean;
             rule: components["schemas"]["AskRuleOut"] | null;
+            service_prices?: components["schemas"]["ServicePricesOut"] | null;
             /** Steps */
             steps: components["schemas"]["StepOut"][];
         };
         /**
          * AskPriceQueryOut
-         * @description The price query the intent parse produced.
+         * @description The price query the intent parse produced: an item number the question itself
+         *     stated, or the service phrase as the user wrote it. ``state`` is ``null`` when the
+         *     question stated none (the national tier applies).
          */
         AskPriceQueryOut: {
             /** Item */
-            item: string;
+            item: string | null;
             /** Remoteness */
             remoteness: string | null;
+            /** Service */
+            service: string | null;
             /** State */
-            state: string;
+            state: string | null;
         };
         /**
          * AskProviderOut
@@ -377,7 +407,7 @@ export interface components {
              */
             start_date: string;
             /** State */
-            state: string;
+            state: string | null;
             /** Unit */
             unit: string;
         };
@@ -464,6 +494,49 @@ export interface components {
             url: string;
         };
         /**
+         * ServicePriceOut
+         * @description One catalogue row in a service-phrase answer: its number, name, unit and the
+         *     limit that applies (``null`` when none is published, e.g. a quotable item).
+         */
+        ServicePriceOut: {
+            /** Item Number */
+            item_number: string;
+            /** Legacy */
+            legacy: boolean;
+            /** Name */
+            name: string;
+            /** Price Limit */
+            price_limit: string | null;
+            /** Quotable */
+            quotable: boolean;
+            /** Remoteness */
+            remoteness: string;
+            /** State */
+            state: string | null;
+            /** Unit */
+            unit: string;
+        };
+        /**
+         * ServicePricesOut
+         * @description The price section for a service phrase: the phrase as the user wrote it, the
+         *     state (``null`` when none was stated — the national tier applies), the total match
+         *     count, and the capped rows shown. Every row comes from the support catalogue.
+         */
+        ServicePricesOut: {
+            /** Items */
+            items: components["schemas"]["ServicePriceOut"][];
+            /** Phrase */
+            phrase: string;
+            /** Remoteness */
+            remoteness: string;
+            /** Source */
+            source: string;
+            /** State */
+            state: string | null;
+            /** Total */
+            total: number;
+        };
+        /**
          * StepOut
          * @description One stage of building the answer: its kind, short in/out summaries, wall time and,
          *     for the model call, tokens and cost (``null`` where not applicable or unpriced).
@@ -483,6 +556,42 @@ export interface components {
             output_summary: string;
             /** Output Tokens */
             output_tokens: number | null;
+        };
+        /**
+         * SupportItemSearchOut
+         * @description The result of a service-phrase search over the support catalogue: the phrase,
+         *     the total match count, the page (capped by ``limit``), and the source the rows come
+         *     from. No model is involved, so the mapping can be checked without a key.
+         */
+        SupportItemSearchOut: {
+            /** Items */
+            items: components["schemas"]["SupportItemSummaryOut"][];
+            /** Limit */
+            limit: number;
+            /** Query */
+            query: string;
+            /** Source */
+            source: string;
+            /** Total */
+            total: number;
+        };
+        /**
+         * SupportItemSummaryOut
+         * @description One support item in a search result: its number, name, unit and the published
+         *     limits per remoteness tier (``null`` where none is published).
+         */
+        SupportItemSummaryOut: {
+            /** Item Number */
+            item_number: string;
+            /** Legacy */
+            legacy: boolean;
+            limits: components["schemas"]["PriceLimitsOut"];
+            /** Name */
+            name: string;
+            /** Quotable */
+            quotable: boolean;
+            /** Unit */
+            unit: string;
         };
         /**
          * TracingOut
@@ -662,6 +771,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProviderPageOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_support_items_support_items_get: {
+        parameters: {
+            query: {
+                q: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SupportItemSearchOut"];
                 };
             };
             /** @description Validation Error */

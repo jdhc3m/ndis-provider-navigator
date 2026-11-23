@@ -3,11 +3,14 @@ set, services need verbatim page evidence, and the services caveat is exact. Adv
 fixtures (fabricated providers, reworded and zero-width quotes) must be rejected."""
 
 from datetime import date
+from decimal import Decimal
 
 from ndis.domain.answer import (
     CAVEAT_SERVICES,
     AnswerDocument,
     ClaimedService,
+    GuardResult,
+    PriceEntry,
     ProviderEntry,
     ServiceMention,
     check_answer,
@@ -15,8 +18,16 @@ from ndis.domain.answer import (
     mentions_for_provider,
     uses_services,
 )
-from ndis.domain.entities import AddressParts, Provider, RegistrationGroup
+from ndis.domain.catalogue import price_limit
+from ndis.domain.entities import (
+    AddressParts,
+    Provider,
+    RegistrationGroup,
+    Remoteness,
+    SupportItem,
+)
 from ndis.domain.taxonomy import Service
+from tests.conftest import SEED_SUPPORT_ITEMS
 
 PAGE = (
     "Aspire Care offers speech pathology and occupational therapy for NDIS participants "
@@ -190,3 +201,62 @@ class TestMentions:
         assert [mention.service.value for mention in mentions] == sorted(
             mention.service.value for mention in mentions
         )
+
+
+class TestPrices:
+    """Every price shown must equal what ``price_limit`` publishes for its item, state
+    and tier: a fabricated price is rejected, never shown."""
+
+    def entry(
+        self,
+        item: SupportItem,
+        state: str | None,
+        remoteness: Remoteness,
+        limit: Decimal | None,
+    ) -> PriceEntry:
+        return PriceEntry(item=item, state=state, remoteness=remoteness, limit=limit)
+
+    def test_a_true_price_passes(self) -> None:
+        item = SEED_SUPPORT_ITEMS[0]
+        entry = self.entry(
+            item, "QLD", Remoteness.REMOTE, price_limit(item, "QLD", Remoteness.REMOTE)
+        )
+        assert check_answer(AnswerDocument(prices=(entry,)), RESULTS, TEXTS) == GuardResult(
+            True, ()
+        )
+
+    def test_a_fabricated_price_is_rejected(self) -> None:
+        item = SEED_SUPPORT_ITEMS[0]
+        entry = self.entry(item, "QLD", Remoteness.REMOTE, Decimal("1.00"))
+        result = check_answer(AnswerDocument(prices=(entry,)), RESULTS, TEXTS)
+        assert not result.valid
+        assert result.violations == ("price_limit_mismatch",)
+
+    def test_a_drifted_remoteness_tier_is_rejected(self) -> None:
+        """The shown limit is the national one but the entry claims the remote tier."""
+        item = SEED_SUPPORT_ITEMS[0]
+        entry = self.entry(item, "QLD", Remoteness.REMOTE, item.limits.national)
+        result = check_answer(AnswerDocument(prices=(entry,)), RESULTS, TEXTS)
+        assert not result.valid
+        assert result.violations == ("price_limit_mismatch",)
+
+    def test_no_state_means_the_national_limit(self) -> None:
+        item = SEED_SUPPORT_ITEMS[0]
+        entry = self.entry(item, None, Remoteness.NATIONAL, item.limits.national)
+        assert check_answer(AnswerDocument(prices=(entry,)), RESULTS, TEXTS).valid
+        wrong_tier = self.entry(item, None, Remoteness.REMOTE, item.limits.national)
+        result = check_answer(AnswerDocument(prices=(wrong_tier,)), RESULTS, TEXTS)
+        assert result.violations == ("price_limit_mismatch",)
+
+    def test_an_unknown_state_is_rejected_before_the_price_is_even_checked(self) -> None:
+        item = SEED_SUPPORT_ITEMS[0]
+        entry = self.entry(item, "NZ", Remoteness.NATIONAL, item.limits.national)
+        result = check_answer(AnswerDocument(prices=(entry,)), RESULTS, TEXTS)
+        assert not result.valid
+        assert result.violations == ("price_state_invalid",)
+
+    def test_expected_limit_is_none_for_a_quotable_item(self) -> None:
+        item = SEED_SUPPORT_ITEMS[1]
+        entry = self.entry(item, "QLD", Remoteness.NATIONAL, None)
+        assert entry.expected_limit() is None
+        assert check_answer(AnswerDocument(prices=(entry,)), RESULTS, TEXTS).valid

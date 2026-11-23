@@ -6,13 +6,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ndis.application.ask import CombinedAnswer, Step
-from ndis.application.catalogue import PriceLimitResult
+from ndis.application.ask import CombinedAnswer, ServicePrices, Step
+from ndis.application.catalogue import PriceLimitResult, ServiceSearchResult
 from ndis.application.pricing import RuleAnswer
 from ndis.application.providers import RankedProvider
-from ndis.domain.answer import ServiceMention
+from ndis.domain.answer import PriceEntry, ServiceMention
 from ndis.domain.catalogue import CATALOGUE_TITLE
-from ndis.domain.entities import Provider
+from ndis.domain.entities import Provider, SupportItem
 from ndis.domain.geo import Distance
 from ndis.domain.intent import Intent
 from ndis.domain.locality import LocalityResolution
@@ -142,7 +142,7 @@ class PriceLimitOut(BaseModel):
     legacy: bool
     start_date: date
     end_date: date | None
-    state: str
+    state: str | None
     remoteness: str
     price_limit: Decimal | None
     limits: PriceLimitsOut
@@ -169,6 +169,55 @@ class PriceLimitOut(BaseModel):
                 remote=item.limits.remote,
                 very_remote=item.limits.very_remote,
             ),
+            source=CATALOGUE_TITLE,
+        )
+
+
+class SupportItemSummaryOut(BaseModel):
+    """One support item in a search result: its number, name, unit and the published
+    limits per remoteness tier (``null`` where none is published)."""
+
+    item_number: str
+    name: str
+    unit: str
+    quotable: bool
+    legacy: bool
+    limits: PriceLimitsOut
+
+    @classmethod
+    def from_item(cls, item: "SupportItem") -> "SupportItemSummaryOut":
+        return cls(
+            item_number=item.item_number,
+            name=item.name,
+            unit=item.unit,
+            quotable=item.quotable,
+            legacy=item.legacy,
+            limits=PriceLimitsOut(
+                national=item.limits.national,
+                remote=item.limits.remote,
+                very_remote=item.limits.very_remote,
+            ),
+        )
+
+
+class SupportItemSearchOut(BaseModel):
+    """The result of a service-phrase search over the support catalogue: the phrase,
+    the total match count, the page (capped by ``limit``), and the source the rows come
+    from. No model is involved, so the mapping can be checked without a key."""
+
+    query: str
+    total: int
+    limit: int
+    items: list[SupportItemSummaryOut]
+    source: str
+
+    @classmethod
+    def from_result(cls, result: ServiceSearchResult, limit: int) -> "SupportItemSearchOut":
+        return cls(
+            query=result.phrase,
+            total=result.total,
+            limit=limit,
+            items=[SupportItemSummaryOut.from_item(item) for item in result.items[:limit]],
             source=CATALOGUE_TITLE,
         )
 
@@ -226,10 +275,13 @@ class AskIntentFiltersOut(BaseModel):
 
 
 class AskPriceQueryOut(BaseModel):
-    """The price query the intent parse produced."""
+    """The price query the intent parse produced: an item number the question itself
+    stated, or the service phrase as the user wrote it. ``state`` is ``null`` when the
+    question stated none (the national tier applies)."""
 
-    item: str
-    state: str
+    item: str | None
+    service: str | None
+    state: str | None
     remoteness: str | None
 
 
@@ -259,10 +311,67 @@ class AskIntentOut(BaseModel):
             ),
             price_query=None
             if price is None
-            else AskPriceQueryOut(item=price.item, state=price.state, remoteness=price.remoteness),
+            else AskPriceQueryOut(
+                item=price.item,
+                service=price.service,
+                state=price.state,
+                remoteness=price.remoteness,
+            ),
             rule_question=intent.rule_question,
             decision_request=intent.decision_request,
             parse_rejections=list(rejections),
+        )
+
+
+class ServicePriceOut(BaseModel):
+    """One catalogue row in a service-phrase answer: its number, name, unit and the
+    limit that applies (``null`` when none is published, e.g. a quotable item)."""
+
+    item_number: str
+    name: str
+    unit: str
+    quotable: bool
+    legacy: bool
+    state: str | None
+    remoteness: str
+    price_limit: Decimal | None
+
+    @classmethod
+    def from_entry(cls, entry: PriceEntry) -> "ServicePriceOut":
+        item = entry.item
+        return cls(
+            item_number=item.item_number,
+            name=item.name,
+            unit=item.unit,
+            quotable=item.quotable,
+            legacy=item.legacy,
+            state=entry.state,
+            remoteness=entry.remoteness.value,
+            price_limit=entry.limit,
+        )
+
+
+class ServicePricesOut(BaseModel):
+    """The price section for a service phrase: the phrase as the user wrote it, the
+    state (``null`` when none was stated — the national tier applies), the total match
+    count, and the capped rows shown. Every row comes from the support catalogue."""
+
+    phrase: str
+    state: str | None
+    remoteness: str
+    total: int
+    items: list[ServicePriceOut]
+    source: str
+
+    @classmethod
+    def from_result(cls, result: ServicePrices) -> "ServicePricesOut":
+        return cls(
+            phrase=result.phrase,
+            state=result.state,
+            remoteness=result.remoteness,
+            total=result.total,
+            items=[ServicePriceOut.from_entry(entry) for entry in result.entries],
+            source=CATALOGUE_TITLE,
         )
 
 
@@ -321,7 +430,9 @@ class AskOut(BaseModel):
     """The combined answer: the parsed intent, the executed sections, and the refusal
     fields. ``caveat`` carries the exact services sentence whenever services are used;
     ``steps`` lists the stages that built the answer, in order; ``locality`` discloses
-    the suburb resolution when the question named one."""
+    the suburb resolution when the question named one; ``service_prices`` carries the
+    service phrase's catalogue price list when the question named a service instead of
+    an item number."""
 
     question: str
     refused: bool
@@ -334,6 +445,7 @@ class AskOut(BaseModel):
     distance_origin: str | None
     price: PriceLimitOut | None
     price_error: str | None
+    service_prices: ServicePricesOut | None = None
     rule: AskRuleOut | None
     caveat: str | None
     steps: list[StepOut]
@@ -367,6 +479,9 @@ class AskOut(BaseModel):
             distance_origin=result.distance_origin,
             price=None if result.price is None else PriceLimitOut.from_result(result.price),
             price_error=result.price_error,
+            service_prices=None
+            if result.service_prices is None
+            else ServicePricesOut.from_result(result.service_prices),
             rule=None if result.rule is None else AskRuleOut.from_result(result.rule),
             caveat=result.caveat,
             steps=[StepOut.from_step(step) for step in result.steps],

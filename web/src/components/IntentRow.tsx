@@ -1,11 +1,14 @@
 import type { AskIntentOut, LocalityOut } from '../api/client'
-import { candidateQuestion, filterPairs, localityChipText } from '../format'
+import { candidateQuestion, filterPairs, localityChipText, priceQueryChipText } from '../format'
 import { Chip } from './Chip'
 
 interface IntentRowProps {
   intent: AskIntentOut | null
   /** The suburb resolution the API produced, when the question named one. */
   locality: LocalityOut | null
+  /** How many catalogue items the service phrase matched (null when no search ran;
+   * 0 is the unknown-service case). */
+  serviceMatchCount: number | null
   /** The question the answer answered: the candidate buttons ask it again, plus a postcode. */
   question: string
   /** Re-asks the page with the candidate's postcode (the chosen one). */
@@ -15,7 +18,13 @@ interface IntentRowProps {
 /** "Understood as": one chip per intent code the parser produced, plus the locality
  * resolution chip and — when a suburb matched several postcodes — the candidate buttons
  * that ask again with the chosen one. */
-export function IntentRow({ intent, locality, question, onPickCandidate }: IntentRowProps) {
+export function IntentRow({
+  intent,
+  locality,
+  serviceMatchCount,
+  question,
+  onPickCandidate,
+}: IntentRowProps) {
   return (
     <section aria-labelledby="intent-heading" className="flex flex-col gap-2">
       <h2 id="intent-heading" className="text-sm font-bold text-muted-foreground">
@@ -74,8 +83,10 @@ export function IntentRow({ intent, locality, question, onPickCandidate }: Inten
           {intent.price_query && (
             <li>
               <Chip tone="accent" mono wrap>
-                price_query: {intent.price_query.item} · {intent.price_query.state}
-                {intent.price_query.remoteness ? ` · ${intent.price_query.remoteness}` : ''}
+                {priceQueryChipText(
+                  intent.price_query,
+                  intent.price_query.service !== null ? serviceMatchCount : null,
+                )}
               </Chip>
             </li>
           )}

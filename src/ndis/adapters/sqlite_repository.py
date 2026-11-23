@@ -768,3 +768,10 @@ class SqlAlchemySupportItemRepository:
         with Session(self._engine) as session:
             row = session.get(SupportItemRow, item_number)
             return None if row is None else _to_support_item(row)
+
+    def all_items(self) -> tuple[SupportItem, ...]:
+        """Every stored support item in item-number order; the service search matches
+        over them in code (about a thousand small rows, one indexed scan)."""
+        with Session(self._engine) as session:
+            rows = session.scalars(select(SupportItemRow).order_by(SupportItemRow.item_number))
+            return tuple(_to_support_item(row) for row in rows)

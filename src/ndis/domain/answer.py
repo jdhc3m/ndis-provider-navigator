@@ -10,9 +10,12 @@ stored text, and the services caveat must appear exactly whenever services are u
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 
-from ndis.domain.entities import Provider
+from ndis.domain.catalogue import price_limit
+from ndis.domain.entities import Provider, Remoteness, SupportItem
 from ndis.domain.extraction import quote_supported
+from ndis.domain.register import STATES
 from ndis.domain.taxonomy import Service, entry_of
 
 # The exact sentence the output must carry whenever services from provider websites are
@@ -63,11 +66,35 @@ class ProviderEntry:
 
 
 @dataclass(frozen=True)
+class PriceEntry:
+    """One price the answer shows, with the executed facts it must match: the support
+    item as the catalogue returned it, the state (``None`` when the question stated none
+    — the national tier applies), the remoteness tier, and the limit as it will be
+    shown. The guard recomputes the limit from the item and rejects any difference, so a
+    fabricated price can never reach the page."""
+
+    item: SupportItem
+    state: str | None
+    remoteness: Remoteness
+    limit: Decimal | None
+
+    def expected_limit(self) -> Decimal | None:
+        """The limit ``domain.catalogue.price_limit`` publishes for this item, state and
+        tier. With no state stated the catalogue's national limit is the answer (the
+        2026-27 catalogue has no per-state columns), which is what ``price_limit``
+        returns for any state."""
+        if self.state is not None:
+            return price_limit(self.item, self.state, self.remoteness)
+        return self.item.limits.for_remoteness(self.remoteness)
+
+
+@dataclass(frozen=True)
 class AnswerDocument:
     """The whole answer as the output guard sees it."""
 
     providers: tuple[ProviderEntry, ...] = ()
     caveat: str | None = None
+    prices: tuple[PriceEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,6 +154,9 @@ def check_answer(
       text (``evidence_page_missing`` / ``evidence_quote_not_in_page``).
     - The exact services caveat must be present whenever any entry uses services, and
       absent otherwise (``caveat_missing`` / ``caveat_unneeded``).
+    - Every price shown must equal what ``price_limit`` publishes for its item, state
+      and tier (``price_state_invalid`` / ``price_limit_mismatch``): the model never
+      supplies a price, and a composed one that drifts from the catalogue is withheld.
     """
     violations: list[str] = []
     allowed = {provider.abn: provider for provider in results}
@@ -147,4 +177,10 @@ def check_answer(
         violations.append("caveat_missing")
     if not uses_services(document) and document.caveat is not None:
         violations.append("caveat_unneeded")
+    for price_entry in document.prices:
+        if price_entry.state is not None and price_entry.state not in STATES:
+            violations.append("price_state_invalid")
+            continue
+        if price_entry.limit != price_entry.expected_limit():
+            violations.append("price_limit_mismatch")
     return GuardResult(not violations, tuple(violations))

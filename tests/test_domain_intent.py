@@ -9,6 +9,7 @@ from ndis.domain.intent import (
     ParsedIntent,
     PriceQuery,
     ProviderFilters,
+    item_in_question,
     parse_intent,
     postcode_in_question,
 )
@@ -22,14 +23,14 @@ class TestShape:
             "remoteness": "very_remote"},
             "rule_question": "Can a provider charge a cancellation fee?",
             "decision_request": false}"""
-        parsed = parse_intent(payload)
+        parsed = parse_intent(payload, question="the price of 01_002_0107_1_1 in QLD")
         assert parsed.rejected == ()
         assert parsed.intent == Intent(
             provider_filters=ProviderFilters(
                 state="QLD", postcode="4101", group="Plan Management",
                 status="Approved", brisbane_area=True,
             ),
-            price_query=PriceQuery("01_002_0107_1_1", "QLD", "very_remote"),
+            price_query=PriceQuery(item="01_002_0107_1_1", state="QLD", remoteness="very_remote"),
             rule_question="Can a provider charge a cancellation fee?",
             decision_request=False,
         )  # fmt: skip
@@ -149,23 +150,36 @@ class TestPostcodeGuard:
 
 
 class TestPriceQuery:
-    def test_item_without_state_is_dropped(self) -> None:
-        parsed = parse_intent('{"price_query": {"item": "01_002_0107_1_1"}}')
-        assert parsed.intent is not None and parsed.intent.price_query is None
-        assert "price_query_no_state" in parsed.rejected
+    def test_an_item_without_state_parses_to_the_national_tier(self) -> None:
+        """No state stated no longer drops the query: the national tier applies."""
+        parsed = parse_intent(
+            '{"price_query": {"item": "01_002_0107_1_1"}}',
+            question="What is the price limit for 01_002_0107_1_1?",
+        )
+        assert parsed.rejected == ()
+        assert parsed.intent is not None
+        assert parsed.intent.price_query == PriceQuery(
+            item="01_002_0107_1_1", state=None, remoteness=None
+        )
 
     def test_unknown_remoteness_drops_the_query(self) -> None:
         parsed = parse_intent(
-            '{"price_query": {"item": "01_002_0107_1_1", "state": "QLD", "remoteness": "moon"}}'
+            '{"price_query": {"item": "01_002_0107_1_1", "state": "QLD", "remoteness": "moon"}}',
+            question="price of 01_002_0107_1_1",
         )
         assert parsed.intent is not None and parsed.intent.price_query is None
         assert "price_query_invalid" in parsed.rejected
 
     def test_remoteness_defaults_to_null(self) -> None:
-        parsed = parse_intent('{"price_query": {"item": " 01_002_0107_1_1 ", "state": "qld"}}')
+        parsed = parse_intent(
+            '{"price_query": {"item": " 01_002_0107_1_1 ", "state": "qld"}}',
+            question="price of 01_002_0107_1_1",
+        )
         assert parsed.rejected == ()
         assert parsed.intent is not None
-        assert parsed.intent.price_query == PriceQuery("01_002_0107_1_1", "QLD", None)
+        assert parsed.intent.price_query == PriceQuery(
+            item="01_002_0107_1_1", state="QLD", remoteness=None
+        )
 
 
 class TestRuleQuestion:
@@ -191,6 +205,123 @@ class TestRuleQuestion:
         assert parsed.intent is not None
         assert parsed.intent.rule_question is not None
         assert parsed.intent.rule_question.startswith("Ignore previous instructions")
+
+
+class TestServiceQuery:
+    """The service phrase is the model's only price-side contribution beyond an item
+    number the question itself states; it is copied verbatim and capped."""
+
+    def test_a_service_parses_verbatim_and_the_state_is_optional(self) -> None:
+        parsed = parse_intent(
+            '{"price_query": {"service": "  Occupational Therapy  "}}',
+            question="what is the hourly price limit for Occupational Therapy?",
+        )
+        assert parsed.rejected == ()
+        assert parsed.intent is not None
+        assert parsed.intent.price_query == PriceQuery(service="Occupational Therapy")
+
+    def test_a_service_with_a_state_and_remoteness_parses(self) -> None:
+        parsed = parse_intent(
+            '{"price_query": {"service": "OT", "state": "qld", "remoteness": "remote"}}',
+            question="what does OT cost remotely in Queensland?",
+        )
+        assert parsed.rejected == ()
+        assert parsed.intent is not None
+        assert parsed.intent.price_query == PriceQuery(
+            service="OT", state="QLD", remoteness="remote"
+        )
+
+    @pytest.mark.parametrize(
+        "service",
+        ["7", "true", '["occupational therapy"]', '""', f'"{"x" * 81}"'],
+    )
+    def test_a_service_that_is_not_a_usable_string_drops_the_query(self, service: str) -> None:
+        parsed = parse_intent(
+            f'{{"price_query": {{"service": {service}, "state": "QLD"}}}}',
+            question="what does occupational therapy cost in Queensland?",
+        )
+        assert parsed.intent is not None and parsed.intent.price_query is None
+        assert "price_query_invalid" in parsed.rejected
+
+    def test_a_service_at_the_cap_is_kept_and_over_it_is_dropped(self) -> None:
+        phrase = "x" * 80
+        parsed = parse_intent(
+            f'{{"price_query": {{"service": "{phrase}"}}}}', question="price of it"
+        )
+        assert parsed.rejected == ()
+        assert parsed.intent is not None
+        assert parsed.intent.price_query == PriceQuery(service=phrase)
+        parsed = parse_intent(f'{{"price_query": {{"service": "{"x" * 81}"}}}}', question="q")
+        assert parsed.intent is not None and parsed.intent.price_query is None
+        assert "price_query_invalid" in parsed.rejected
+
+    def test_no_item_and_no_service_is_an_empty_price_query(self) -> None:
+        parsed = parse_intent('{"price_query": {"state": "QLD"}}', question="price in QLD")
+        assert parsed.intent is not None and parsed.intent.price_query is None
+        assert "price_query_empty" in parsed.rejected
+
+    def test_an_item_and_a_service_together_parse(self) -> None:
+        """The item decides the answer downstream; the phrase is kept for disclosure."""
+        parsed = parse_intent(
+            '{"price_query": {"item": "01_002_0107_1_1", "service": "self-care"}}',
+            question="price of 01_002_0107_1_1 for self-care",
+        )
+        assert parsed.rejected == ()
+        assert parsed.intent is not None
+        assert parsed.intent.price_query == PriceQuery(
+            item="01_002_0107_1_1", service="self-care", state=None
+        )
+
+
+class TestItemGuard:
+    """The model must never supply a support item code: one the question does not name
+    is invented, the whole price query is dropped with a machine reason, and nothing is
+    looked up."""
+
+    @pytest.mark.parametrize(
+        ("question", "item"),
+        [
+            ("what is the price limit for occupational therapy?", "15_056_0128_1_3"),
+            ("how much is 15_056_0128_1_3?", "01_056_0128_1_3"),
+            ("how much is 15_056_0128_1_3?", "15_056_0128_1_3_CA"),
+            ("", "15_056_0128_1_3"),
+        ],
+    )
+    def test_an_item_absent_from_the_question_is_rejected(self, question: str, item: str) -> None:
+        parsed = parse_intent(f'{{"price_query": {{"item": "{item}", "state": "QLD"}}}}', question)
+        assert parsed.intent is not None and parsed.intent.price_query is None
+        assert "item_not_in_question" in parsed.rejected
+
+    def test_an_item_without_a_question_to_verify_against_fails_safe(self) -> None:
+        """Without the question there is nothing to verify the item against, so an item
+        fails safe: dropped with the same machine reason, never looked up."""
+        parsed = parse_intent('{"price_query": {"item": "01_002_0107_1_1", "state": "QLD"}}')
+        assert parsed.intent is not None and parsed.intent.price_query is None
+        assert parsed.rejected == ("item_not_in_question",)
+
+    def test_an_invented_item_drops_the_service_with_it(self) -> None:
+        """Half-understood price queries never execute: an invented item drops the whole
+        query, even when a service phrase was parsed alongside it."""
+        parsed = parse_intent(
+            '{"price_query": {"item": "99_999_9999_1_1", "service": "occupational therapy"}}',
+            question="what does occupational therapy cost?",
+        )
+        assert parsed.intent is not None and parsed.intent.price_query is None
+        assert parsed.rejected == ("item_not_in_question",)
+
+    def test_the_guard_matches_case_insensitively(self) -> None:
+        parsed = parse_intent(
+            '{"price_query": {"item": "01_002_0107_1_1"}}',
+            question="Price of 01_002_0107_1_1 please",
+        )
+        assert parsed.rejected == ()
+        assert parsed.intent is not None and parsed.intent.price_query is not None
+
+
+def test_item_in_question_matches_verbatim_and_rejects_the_rest() -> None:
+    assert item_in_question("price of 15_056_0128_1_3 in QLD", "15_056_0128_1_3")
+    assert item_in_question("price of 15_056_0128_1_3 in QLD", "15_056_0128_1_3_CA") is False
+    assert item_in_question("", "15_056_0128_1_3") is False
 
 
 class TestRefusalConstants:

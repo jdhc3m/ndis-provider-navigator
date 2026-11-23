@@ -13,6 +13,7 @@ import { ProvidersColumn } from './components/ProvidersColumn'
 import { QueryForm } from './components/QueryForm'
 import { RefusalBanner } from './components/RefusalBanner'
 import { RuleCard } from './components/RuleCard'
+import { ServicePriceCard } from './components/ServicePriceCard'
 
 type AskState =
   | { status: 'idle' }
@@ -136,13 +137,20 @@ interface ResultProps {
 }
 
 function Result({ answer, meta, onPickExample, onAsk }: ResultProps) {
+  const servicePrices = answer.service_prices ?? null
   const hasRightColumn =
-    answer.price !== null || answer.price_error !== null || answer.rule !== null
+    answer.price !== null ||
+    answer.price_error !== null ||
+    servicePrices !== null ||
+    answer.rule !== null
+  const serviceMatchCount =
+    servicePrices?.total ?? (answer.price_error === 'unknown_service' ? 0 : null)
   return (
     <div className="flex flex-col gap-6">
       <IntentRow
         intent={answer.intent}
         locality={answer.locality ?? null}
+        serviceMatchCount={serviceMatchCount}
         question={answer.question}
         onPickCandidate={onAsk}
       />
@@ -157,7 +165,22 @@ function Result({ answer, meta, onPickExample, onAsk }: ResultProps) {
           />
           <aside aria-label="Pricing" className="flex flex-col gap-6">
             {answer.price && <PriceLimitCard price={answer.price} />}
-            {answer.price_error && (
+            {servicePrices && <ServicePriceCard prices={servicePrices} />}
+            {answer.price_error === 'unknown_service' && (
+              <p
+                role="status"
+                className="rounded-lg border-l-4 border-warning bg-warning-tint p-4 text-sm text-warning"
+              >
+                <span className="font-bold">No catalogue match: </span>
+                no support item in the loaded catalogue matches{' '}
+                <span className="font-bold">
+                  &ldquo;{answer.intent?.price_query?.service ?? 'that service'}&rdquo;
+                </span>
+                , so no price is shown. Check the spelling, or search the catalogue with an item
+                number.
+              </p>
+            )}
+            {answer.price_error && answer.price_error !== 'unknown_service' && (
               <p
                 role="status"
                 className="rounded-lg border-l-4 border-warning bg-warning-tint p-4 text-sm text-warning"

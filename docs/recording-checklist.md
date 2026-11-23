@@ -17,9 +17,9 @@ slack. Written after the 2026-11-10 live walkthrough.
 - [ ] Second desktop/space with a terminal already in the repo root, env sourced, and a
       `curl` snippet pasted into the command line for the raw rule answer (step C4).
 - [ ] **Start the eval gate just before recording**: `uv run pytest -m eval --no-cov`
-      takes ~95 s with the register loaded. Start it as you hit record; it finishes
-      during shot D and you show its summary there. (Full gate measured 2026-11-10:
-      8 passed, 1 skipped, ~97 s.)
+      takes ~3–5 min with the register loaded (the /ask golden suites run the register
+      queries). Start it as you hit record; it finishes during shot D and you show its
+      summary there. (Full gate measured 2026-11-23: 11 passed, 3 skipped.)
 - [ ] Optionally pre-run every question once so you know what each answer looks like.
 - [ ] Screen recorder: 1080p, capture system audio off (you narrate), record at 30 fps.
       Do a 10 s test clip and check the terminal text is legible.
@@ -34,7 +34,7 @@ slack. Written after the 2026-11-10 live walkthrough.
 | B2 | 1:25–1:45 | Browser | Open **How this answer was built**; point at rows and the cost column. | "One model call in this whole answer — the parse. Everything downstream is deterministic, and every step discloses its time, tokens and cost." |
 | C1 | 1:45–2:10 | Browser | Ask: `Can a provider charge for a short-notice cancellation?` Show the citation: page 26, quoted span, "every citation verified on its page". | "Rule answers must cite a page, and the citation check — a verbatim span of that page — is pure code, not a second model opinion." |
 | C2 | 2:10–2:25 | Terminal | Switch desktop, press Enter on the prepared `curl` of `/ask-rule`; highlight `"page": 26` and the quote. | "Same answer over the raw API — citations are part of the response contract, not page decoration." |
-| D1 | 2:25–2:45 | Terminal | The eval gate summary has landed: `8 passed, 1 skipped` (+ the skip line about owner verdicts). | "Quality floors are enforced by an eval gate that replays committed captures — no quota, no trust-me numbers. Filter accuracy, rule retrieval, extraction precision, refusal recall." |
+| D1 | 2:25–2:45 | Terminal | The eval gate summary has landed: `11 passed, 3 skipped` (+ the skip lines). | "Quality floors are enforced by an eval gate that replays committed captures — no quota, no trust-me numbers. Filter accuracy, rule retrieval, extraction precision, refusal recall, service resolution." |
 | D2 | 2:45–3:00 | Browser or docs | Open `docs/learning/LEARNING_LOG.md` (or the README results table). | "One note per ticket — decisions, rejected alternatives, measured numbers." |
 
 If you have 10 spare seconds, add the refusal shot (recommendation + prompt injection,

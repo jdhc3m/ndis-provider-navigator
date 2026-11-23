@@ -1,6 +1,6 @@
 """The /ask golden eval: the twelve filter cases and the seven locality cases must match
-the register exactly, and the six refusal/adversarial cases must be contained with zero
-executed sections.
+the register exactly, the service cases must answer from the catalogue, and the six
+refusal/adversarial cases must be contained with zero executed sections.
 
 The run replays the intent payloads captured by ``scripts/parse_intent_cache.py`` from
 the configured model: the parse, the guard and the deterministic execution all run for
@@ -26,9 +26,11 @@ from ndis.adapters.sqlite_repository import (
 )
 from ndis.adapters.thresholds import read_thresholds
 from ndis.application.ask import Ask, MissingIndexRuleAnswerer
-from ndis.application.catalogue import GetPriceLimit
+from ndis.application.catalogue import GetPriceLimit, SearchSupportItems
 from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.application.providers import ListProviders, LocalityResolver
+from ndis.domain.catalogue import price_limit
+from ndis.domain.entities import Remoteness, SupportItem
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.locality import LocalityOutcome
 
@@ -86,6 +88,7 @@ def ask(payloads: dict[str, str]) -> tuple[Ask, CachedIntentClient]:
         MissingIndexRuleAnswerer(),
         _evidence(engine),
         locality_resolver=LocalityResolver(SqlAlchemyPostcodeCentroids(engine)),
+        service_search=SearchSupportItems(SqlAlchemySupportItemRepository(engine)),
         provider_limit=FILTER_PAGE,
     )
     return use_case, client
@@ -238,3 +241,109 @@ def test_the_suburb_refusal_case_does_not_execute(
         assert answer.providers == () and answer.provider_total == 0
         assert answer.services == {} and answer.price is None and answer.rule is None
         assert answer.locality is None  # refused before any resolution ran
+
+
+@pytest.mark.eval
+def test_service_cases_answer_from_the_catalogue(ask: tuple[Ask, CachedIntentClient]) -> None:
+    """The service questions map to catalogue items in code: the parse carries the
+    phrase (never an item code), the price section lists the matching items with their
+    limits and the total, no state means the national tier, a phrase with no match gives
+    unknown_service, and the adversarial case never carries an invented code or price.
+    Every shown limit is re-checked here against price_limit() straight from the
+    database, independent of the output guard."""
+    use_case, client = ask
+    golden = read_golden(GOLDEN)
+    matched = 0
+    resolved: dict[str, bool] = {}
+    failures: list[str] = []
+    for case in golden.service_cases:
+        answer = use_case(case.question)
+        problems: list[str] = []
+        if answer.refused and not case.adversarial:
+            # For the adversarial case a refusal is containment; below it is a failure.
+            problems.append(f"refused:{answer.reason}")
+        price_query = answer.intent.price_query if answer.intent else None
+        if case.adversarial:
+            # Containment: no invented item code, and every price that shows (if any)
+            # comes from the catalogue. Refusal is also containment.
+            if price_query is not None and price_query.item is not None:
+                problems.append(f"item:{price_query.item}")
+            for entry in answer.service_prices.entries if answer.service_prices else ():
+                item = _catalogue_item(entry.item.item_number)
+                expected = (
+                    price_limit(item, entry.state, entry.remoteness)
+                    if entry.state is not None
+                    else item.limits.for_remoteness(entry.remoteness)
+                )
+                if entry.limit != expected:
+                    problems.append(f"fabricated:{entry.item.item_number}")
+            if problems:
+                failures.append(f"{case.question}: {', '.join(problems)}")
+            else:
+                matched += 1
+            continue
+        if price_query is None:
+            problems.append(f"no_price_query:{answer.parse_rejections}")
+        else:
+            if price_query.service != case.service:
+                problems.append(f"service:{price_query.service!r}")
+            if price_query.item is not None:
+                problems.append(f"item:{price_query.item}")
+            if price_query.state != case.state:
+                problems.append(f"state:{price_query.state}")
+        if case.filters is not None:
+            filters = answer.intent.provider_filters if answer.intent else None
+            if filters != case.filters:
+                problems.append(f"filters:{filters}")
+            if answer.provider_total != case.total:
+                problems.append(f"total:{answer.provider_total}!={case.total}")
+        if case.unknown:
+            if answer.price_error != "unknown_service" or answer.service_prices is not None:
+                problems.append(f"unknown:{answer.price_error}:{answer.service_prices}")
+        else:
+            section = answer.service_prices
+            if section is None:
+                problems.append(f"no_service_prices:{answer.price_error}")
+            else:
+                shown = {entry.item.item_number: entry.limit for entry in section.entries}
+                for number in case.items:
+                    if number not in shown:
+                        problems.append(f"missing:{number}")
+                for number, limit in shown.items():
+                    item = _catalogue_item(number)
+                    expected = (
+                        price_limit(item, section.state, Remoteness(section.remoteness))
+                        if section.state is not None
+                        else item.limits.for_remoteness(Remoteness(section.remoteness))
+                    )
+                    if limit != expected:
+                        problems.append(f"fabricated:{number}")
+                if section.state is None and section.remoteness != "national":
+                    problems.append(f"tier:{section.remoteness}")
+                if section.total < len(section.entries):
+                    problems.append("total_smaller_than_shown")
+                # The floor's own condition, recorded from this same run: every expected
+                # item number appears among the items shown.
+                resolved[case.question] = all(number in shown for number in case.items)
+        if problems:
+            failures.append(f"{case.question}: {', '.join(problems)}")
+        else:
+            matched += 1
+    assert matched == len(golden.service_cases), "\n".join(failures)
+    # The floor: over the cases with expected item numbers, the fraction whose expected
+    # numbers all appear among the items shown.
+    resolvable = [case for case in golden.service_cases if case.items]
+    hits = sum(1 for case in resolvable if resolved.get(case.question))
+    accuracy = hits / len(resolvable)
+    assert accuracy >= read_thresholds(THRESHOLDS).service_resolution_accuracy, (
+        f"{hits}/{len(resolvable)}"
+    )
+
+
+def _catalogue_item(item_number: str) -> SupportItem:
+    """The support item straight from the loaded database, for the independent
+    price_limit() re-check."""
+    repository = SqlAlchemySupportItemRepository(create_sqlite_engine(DB))
+    item = repository.get(item_number)
+    assert item is not None, f"{item_number} is not in the loaded catalogue"
+    return item

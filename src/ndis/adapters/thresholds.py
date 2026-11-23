@@ -9,7 +9,13 @@ deleted floor fails loudly instead of silently unenforcing a gate.
 import json
 from dataclasses import dataclass
 
-FLOORS = ("filter_accuracy", "rule_hit_at_3", "extraction_precision", "refusal_recall")
+FLOORS = (
+    "filter_accuracy",
+    "rule_hit_at_3",
+    "extraction_precision",
+    "refusal_recall",
+    "service_resolution_accuracy",
+)
 
 
 class ThresholdFormatError(ValueError):
@@ -18,12 +24,13 @@ class ThresholdFormatError(ValueError):
 
 @dataclass(frozen=True)
 class Thresholds:
-    """The four eval-gate floors, each a fraction of the metric's denominator."""
+    """The five eval-gate floors, each a fraction of the metric's denominator."""
 
     filter_accuracy: float
     rule_hit_at_3: float
     extraction_precision: float
     refusal_recall: float
+    service_resolution_accuracy: float
 
 
 def read_thresholds(path) -> Thresholds:  # type: ignore[no-untyped-def]
