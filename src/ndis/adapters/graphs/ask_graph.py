@@ -14,6 +14,7 @@ from the graph's final state with :func:`ndis.application.ask.compose_stage`.
 
 from typing import Any
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -32,8 +33,17 @@ from ndis.application.ask import (
 )
 
 
-def build_ask_graph(deps: AskDeps) -> CompiledStateGraph:
-    """The compiled ask graph over the given use-case dependencies."""
+def build_ask_graph(
+    deps: AskDeps, checkpointer: BaseCheckpointSaver | bool | None = None
+) -> CompiledStateGraph:
+    """The compiled ask graph over the given use-case dependencies.
+
+    ``checkpointer`` is passed straight to ``compile()``: ``None`` (the default) keeps
+    the ticket 15 behaviour — no checkpointer of its own, but inheritable from a parent
+    graph when embedded as a subgraph — while ``False`` refuses any checkpointer, even
+    one a parent lends through the run config. The chat graph embeds this graph inside a
+    node function and compiles it with ``False``: its state carries page text, which must
+    never be checkpointed, so the inner invoke stays ephemeral."""
 
     def parse_intent_node(state: AskState) -> dict[str, Any]:
         outcome = parse_intent_stage(deps, state["question"])
@@ -135,4 +145,4 @@ def build_ask_graph(deps: AskDeps) -> CompiledStateGraph:
     builder.add_edge("evidence", "guard")
     builder.add_edge("guard", END)
     builder.add_edge("refuse", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
