@@ -16,6 +16,7 @@ dependencies = [
     "trafilatura>=2.3,<3",
     "uvicorn>=0.34,<1",
     "langfuse>=5.2.0",
+    "langgraph>=1.2,<2",
 ]
 
 [project.optional-dependencies]
@@ -79,4 +80,5 @@ source_modules = ["ndis.domain", "ndis.application"]
 forbidden_modules = [
     "fastapi", "pydantic", "sqlalchemy", "httpx", "langfuse", "openai",
     "sqlite_vec", "chromadb", "trafilatura", "pymupdf", "openpyxl", "rapidfuzz",
+    "langgraph", "langchain_core",
 ]

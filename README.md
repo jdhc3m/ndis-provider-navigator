@@ -49,6 +49,18 @@ Four call sites go to the model — everything else is deterministic code:
 Import-linter enforces the layering; `web/` reaches the API only over HTTP. Tracing
 (Langfuse) wraps every model call site and is a no-op without keys.
 
+The same ask pipeline also exists as a LangGraph graph (`ticket 15`):
+`src/ndis/adapters/graphs/ask_graph.py` wraps the named stages of `application/ask.py`
+one node each — the intent parse routes to a pre-execution refusal or fans out to the
+provider, price and rule sections, which run in parallel in one super-step and join once
+at the service-evidence step before the output guard. `POST /ask` still runs the
+straight-line `Ask` use case; the graph is proved equivalent by an eval that replays the
+intent cache through both and requires field-for-field identical answers
+(`evals/test_ask_graph_parity.py`). Its committed diagram is
+[docs/graphs/ask_graph.md](docs/graphs/ask_graph.md) (regenerate with
+`uv run python scripts/run_ask_graph.py --diagram`; a test fails on drift), and the
+concepts are mapped in [docs/learning/langgraph-map.md](docs/learning/langgraph-map.md).
+
 ## Data sources and licences
 
 | Source | Used for | Licence / credit (checked 2026-11-10) |
