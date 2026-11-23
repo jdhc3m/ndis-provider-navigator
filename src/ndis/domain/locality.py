@@ -108,6 +108,40 @@ class LocalityResolution:
     candidates: tuple[Locality, ...] = ()
 
 
+def locality_option_id(locality: Locality) -> str:
+    """The stable id of one locality candidate as a question option: the state's
+    lowercase code and the postcode. Derived only from the (state, postcode) pair the
+    candidates are distinct by, so the same question offers the same ids on every run —
+    the answer can be validated against them long after the question was asked."""
+    return f"{locality.state.casefold()}-{locality.postcode}"
+
+
+def locality_document(locality: Locality) -> dict[str, str]:
+    """One locality as the JSON-plain document a checkpointed state carries;
+    :func:`locality_of` rebuilds the exact same object from it."""
+    return {"name": locality.name, "state": locality.state, "postcode": locality.postcode}
+
+
+def locality_of(document: Mapping[str, str]) -> Locality:
+    """The :class:`Locality` a :func:`locality_document` document carries — the pure
+    inverse, so a paused turn's chosen place can cross the checkpoint as plain strings."""
+    return Locality(
+        name=str(document["name"]), state=str(document["state"]), postcode=str(document["postcode"])
+    )
+
+
+def locality_by_option_id(option_id: object, candidates: Sequence[Locality]) -> Locality | None:
+    """The candidate whose option id the given resume value names, or ``None`` when the
+    value is not exactly one of the offered options (wrong type, unknown id) — the pure
+    check that keeps a resume from naming a place the question never offered."""
+    if not isinstance(option_id, str):
+        return None
+    for candidate in candidates:
+        if locality_option_id(candidate) == option_id:
+            return candidate
+    return None
+
+
 def resolve_locality(
     name: str,
     candidates: Sequence[Locality],

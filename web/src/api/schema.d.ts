@@ -60,7 +60,12 @@ export interface paths {
          *     new thread and costs one model call; a follow-up turn is rewritten into a standalone
          *     question from the thread's recent turns first, so it costs two — and the answer
          *     names the standalone question so the page can show how the follow-up was understood.
-         *     The thread lives in the server's RAM only: a restart loses every conversation.
+         *     A question that cannot run without knowing which place the user meant stops with
+         *     ``needs_input`` instead, and the thread stays paused until the resume.
+         *
+         *     A new message on a paused thread drops the pending question: the message is handled
+         *     as a normal turn from the start. The thread lives in the server's RAM only: a
+         *     restart loses every conversation.
          */
         post: operations["chat_chat_post"];
         delete?: never;
@@ -78,11 +83,46 @@ export interface paths {
         };
         /**
          * Chat Thread
-         * @description The turns of one stored conversation, in order, so a page can restore it.
+         * @description The turns of one stored conversation, in order, so a page can restore it — plus
+         *     the pending question when a turn is paused, so a reloaded page shows the options
+         *     again.
          */
         get: operations["chat_thread_chat__thread_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/{thread_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Resume
+         * @description Answer a paused turn's pending question with the chosen option id and let the
+         *     same turn carry on from where it stopped — the graph re-enters the paused node on
+         *     the same checkpoint, so the question's earlier work is never redone. An answer that
+         *     names none of the offered options re-asks the same question with a reason; anything
+         *     else waiting on nothing is a 409.
+         *
+         *     The nothing-pending check runs under the same lock as the invoke, exactly as the
+         *     turn cap does in ``chat``: ``Command(resume=...)`` on a thread whose turn already
+         *     completed is a silent no-op that returns the previous turn unchanged, so a check
+         *     taken outside the lock would let a second overlapping resume (a double-click, a
+         *     second tab) replay the first one's answer — or, racing a new message, return that
+         *     message's turn as the resume's own. Under the lock the check and the invoke are one
+         *     atomic step: whichever resume gets there first answers, the other finds nothing
+         *     pending and is refused.
+         */
+        post: operations["chat_resume_chat__thread_id__resume_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -353,28 +393,62 @@ export interface components {
             thread_id?: string | null;
         };
         /**
+         * ChatOptionOut
+         * @description One offered answer to a pending question: the stable id the client sends back on
+         *     resume, and the label the page shows on its button.
+         */
+        ChatOptionOut: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+        };
+        /**
          * ChatOut
          * @description One turn's result: the thread to keep sending, the standalone question the
          *     follow-up was understood as (equal to the message on a first turn, or when a bad
-         *     rewrite fell back to it), and the answer in the /ask shape.
+         *     rewrite fell back to it), and — when the turn completed — the answer in the /ask
+         *     shape. A turn that stopped to ask which place the user meant instead returns
+         *     ``status: "needs_input"`` with ``pending`` set and no answer; resuming it with
+         *     ``POST /chat/{thread_id}/resume`` finishes the same turn.
          */
         ChatOut: {
-            answer: components["schemas"]["AskOut"];
+            answer?: components["schemas"]["AskOut"] | null;
+            pending?: components["schemas"]["PendingOut"] | null;
             /** Rewrite Reason */
-            rewrite_reason: string | null;
-            /** Rewritten */
+            rewrite_reason?: string | null;
+            /**
+             * Rewritten
+             * @default false
+             */
             rewritten: boolean;
             /** Standalone Question */
-            standalone_question: string;
+            standalone_question?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "answered" | "needs_input";
             /** Thread Id */
             thread_id: string;
         };
         /**
+         * ChatResumeIn
+         * @description The answer to a thread's pending question: the chosen option's id, exactly as an
+         *     option of the pending question offered it.
+         */
+        ChatResumeIn: {
+            /** Option Id */
+            option_id: string;
+        };
+        /**
          * ChatThreadOut
          * @description A whole stored conversation, for a page restoring it; the turns are in
-         *     conversation order.
+         *     conversation order. ``pending`` carries the question a paused turn is waiting on, so
+         *     a reloaded page can show the options again.
          */
         ChatThreadOut: {
+            pending?: components["schemas"]["PendingOut"] | null;
             /** Thread Id */
             thread_id: string;
             /** Turns */
@@ -479,6 +553,22 @@ export interface components {
             /** Rule Chunk Strategy */
             rule_chunk_strategy: string;
             tracing: components["schemas"]["TracingOut"];
+        };
+        /**
+         * PendingOut
+         * @description The question a paused turn is waiting on: which place the user meant, with one
+         *     option per candidate. ``reason`` is set when the last resume answer named none of
+         *     the options (the question is asked again with the same options).
+         */
+        PendingOut: {
+            /** Kind */
+            kind: string;
+            /** Options */
+            options: components["schemas"]["ChatOptionOut"][];
+            /** Question */
+            question: string;
+            /** Reason */
+            reason?: string | null;
         };
         /** PriceLimitOut */
         PriceLimitOut: {
@@ -844,6 +934,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatThreadOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_resume_chat__thread_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatResumeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatOut"];
                 };
             };
             /** @description Validation Error */

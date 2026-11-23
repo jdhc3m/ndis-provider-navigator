@@ -18,6 +18,10 @@ from ndis.domain.locality import (
     Locality,
     LocalityOutcome,
     LocalityResolution,
+    locality_by_option_id,
+    locality_document,
+    locality_of,
+    locality_option_id,
     normalise_locality,
     parse_locality_row,
     resolve_locality,
@@ -251,3 +255,29 @@ def test_the_loaded_store_resolves_through_the_port(
     assert pair_of(narrow) == ("QLD", "4101")
     unknown = resolver("Nowhereville")
     assert unknown.outcome is LocalityOutcome.UNKNOWN
+
+
+def test_the_option_id_is_stable_and_distinct_per_candidate() -> None:
+    candidates = [
+        Locality("PADDINGTON", "QLD", "4064"),
+        Locality("PADDINGTON", "NSW", "2021"),
+    ]
+    assert locality_option_id(candidates[0]) == "qld-4064"
+    assert locality_option_id(candidates[1]) == "nsw-2021"
+    assert len({locality_option_id(item) for item in candidates}) == len(candidates)
+
+
+def test_the_resume_answer_must_name_one_offered_option() -> None:
+    candidates = [Locality("PADDINGTON", "QLD", "4064"), Locality("PADDINGTON", "NSW", "2021")]
+    assert locality_by_option_id("qld-4064", candidates) == candidates[0]
+    assert locality_by_option_id("nsw-2021", candidates) == candidates[1]
+    # The label is not the id, an unknown id is nothing, and so is any non-string.
+    assert locality_by_option_id("QLD 4064", candidates) is None
+    assert locality_by_option_id("qld-9999", candidates) is None
+    assert locality_by_option_id(None, candidates) is None
+    assert locality_by_option_id(4064, candidates) is None
+
+
+def test_the_locality_document_round_trips() -> None:
+    locality = Locality("PADDINGTON", "QLD", "4064")
+    assert locality_of(locality_document(locality)) == locality

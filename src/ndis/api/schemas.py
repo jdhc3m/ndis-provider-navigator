@@ -533,6 +533,32 @@ class ChatIn(BaseModel):
         return value
 
 
+class ChatOptionOut(BaseModel):
+    """One offered answer to a pending question: the stable id the client sends back on
+    resume, and the label the page shows on its button."""
+
+    id: str
+    label: str
+
+
+class PendingOut(BaseModel):
+    """The question a paused turn is waiting on: which place the user meant, with one
+    option per candidate. ``reason`` is set when the last resume answer named none of
+    the options (the question is asked again with the same options)."""
+
+    kind: str
+    question: str
+    options: list[ChatOptionOut]
+    reason: str | None = None
+
+
+class ChatResumeIn(BaseModel):
+    """The answer to a thread's pending question: the chosen option's id, exactly as an
+    option of the pending question offered it."""
+
+    option_id: str = Field(min_length=1)
+
+
 class ChatTurnOut(BaseModel):
     """One stored conversation turn: the user's message, the standalone question it was
     understood as (the rewrite disclosure included), and the answer in the /ask shape."""
@@ -547,18 +573,25 @@ class ChatTurnOut(BaseModel):
 class ChatOut(BaseModel):
     """One turn's result: the thread to keep sending, the standalone question the
     follow-up was understood as (equal to the message on a first turn, or when a bad
-    rewrite fell back to it), and the answer in the /ask shape."""
+    rewrite fell back to it), and — when the turn completed — the answer in the /ask
+    shape. A turn that stopped to ask which place the user meant instead returns
+    ``status: "needs_input"`` with ``pending`` set and no answer; resuming it with
+    ``POST /chat/{thread_id}/resume`` finishes the same turn."""
 
     thread_id: str
-    standalone_question: str
-    rewritten: bool
-    rewrite_reason: str | None
-    answer: AskOut
+    status: Literal["answered", "needs_input"]
+    standalone_question: str | None = None
+    rewritten: bool = False
+    rewrite_reason: str | None = None
+    answer: AskOut | None = None
+    pending: PendingOut | None = None
 
 
 class ChatThreadOut(BaseModel):
     """A whole stored conversation, for a page restoring it; the turns are in
-    conversation order."""
+    conversation order. ``pending`` carries the question a paused turn is waiting on, so
+    a reloaded page can show the options again."""
 
     thread_id: str
     turns: list[ChatTurnOut]
+    pending: PendingOut | None = None

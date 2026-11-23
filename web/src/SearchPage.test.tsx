@@ -28,6 +28,7 @@ function fakeClient(overrides: Partial<NavigatorApi> = {}): NavigatorApi {
     meta: vi.fn(() => Promise.resolve(META)),
     ask: vi.fn(() => Promise.resolve(ANSWER)),
     chat: vi.fn(() => Promise.resolve(REPLY_1)),
+    resumeChat: vi.fn(() => Promise.resolve(REPLY_1)),
     getThread: vi.fn(() => Promise.resolve(THREAD)),
     ...overrides,
   }

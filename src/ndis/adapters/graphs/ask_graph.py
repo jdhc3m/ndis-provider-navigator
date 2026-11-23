@@ -10,6 +10,11 @@ super-step. All three run every time — a section whose part of the intent is n
 returns an empty update — so ``evidence`` is joined once after all of them, then
 ``guard`` checks the composed document and the run ends. The final answer is composed
 from the graph's final state with :func:`ndis.application.ask.compose_stage`.
+
+Two optional inputs exist for the chat graph's resumed turns (ticket 18) and change
+nothing when absent: ``parsed`` skips the model's intent parse, and ``chosen_locality``
+pins the place the user picked while the turn was paused. ``POST /ask`` and the parity
+eval always invoke with ``{"question": ...}`` alone.
 """
 
 from typing import Any
@@ -46,6 +51,10 @@ def build_ask_graph(
     never be checkpointed, so the inner invoke stays ephemeral."""
 
     def parse_intent_node(state: AskState) -> dict[str, Any]:
+        if state.get("parsed") is not None:
+            # The chat graph hands the parse in (ticket 18: a resumed turn must not
+            # parse twice); the pipeline then starts from it directly.
+            return {}
         outcome = parse_intent_stage(deps, state["question"])
         return {
             "question": outcome.question,
@@ -68,7 +77,12 @@ def build_ask_graph(
         intent = state["parsed"].intent
         if intent is None or intent.provider_filters is None:
             return {}
-        outcome = provider_section_stage(deps, state["question"], intent.provider_filters)
+        outcome = provider_section_stage(
+            deps,
+            state["question"],
+            intent.provider_filters,
+            chosen_locality=state.get("chosen_locality"),
+        )
         return {
             "providers": outcome.providers,
             "provider_total": outcome.total,

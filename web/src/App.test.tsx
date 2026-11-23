@@ -9,9 +9,13 @@ import {
   ANSWER,
   EMPTY,
   META,
+  PENDING_LOCALITY,
+  PENDING_REASK,
   REPLY_1,
   REPLY_2,
+  REPLY_PENDING,
   REPLY_REFUSAL,
+  REPLY_RESUMED,
   STANDALONE_QUESTION,
   THREAD,
   THREAD_ID,
@@ -26,6 +30,7 @@ function fakeClient(overrides: Partial<NavigatorApi> = {}): NavigatorApi {
     meta: vi.fn(() => Promise.resolve(META)),
     ask: vi.fn(() => Promise.resolve(ANSWER)),
     chat: vi.fn(() => Promise.resolve(REPLY_1)),
+    resumeChat: vi.fn(() => Promise.resolve(REPLY_RESUMED)),
     getThread: vi.fn(() => Promise.resolve(THREAD)),
     ...overrides,
   }
@@ -211,7 +216,7 @@ describe('App', () => {
       }
       const getThread = vi
         .fn<NavigatorApi['getThread']>()
-        .mockResolvedValue({ thread_id: THREAD_ID, turns: [turn] })
+        .mockResolvedValue({ thread_id: THREAD_ID, turns: [turn], pending: null })
       render(<App client={fakeClient({ getThread })} />)
       expect(await screen.findByText('0 matched')).toBeInTheDocument()
       expect(screen.getByText('postcode: 4999', { selector: 'span *' })).toBeInTheDocument()
@@ -379,6 +384,131 @@ describe('App', () => {
       await user.keyboard('{Enter}')
       expect(await screen.findByText('Example Therapy Pty Ltd')).toBeInTheDocument()
       expect(chat).toHaveBeenCalledWith(QUESTION, null)
+    })
+  })
+
+  describe('the pending question', () => {
+    const PADDINGTON = 'plan managers in Paddington'
+
+    it('stops on an ambiguous place: the question shows as the assistant message with one button per option', async () => {
+      const user = userEvent.setup()
+      const chat = vi.fn<NavigatorApi['chat']>().mockResolvedValue(REPLY_PENDING)
+      render(<App client={fakeClient({ chat })} />)
+      const composer = screen.getByLabelText<HTMLTextAreaElement>(/your message/i)
+      await user.type(composer, PADDINGTON)
+      await user.keyboard('{Enter}')
+
+      expect(await screen.findByText('Which "Paddington" do you mean?')).toBeInTheDocument()
+      expect(screen.getByText(PADDINGTON)).toBeInTheDocument() // the asking message
+      expect(screen.queryByText('Example Therapy Pty Ltd')).toBeNull() // no answer yet
+      const group = screen.getByRole('group', { name: /the places the question could mean/i })
+      expect(within(group).getByRole('button', { name: 'NSW 2021' })).toBeInTheDocument()
+      expect(within(group).getByRole('button', { name: 'QLD 4064' })).toBeInTheDocument()
+      expect(screen.queryByLabelText(/conversation not kept/i)).toBeNull()
+    })
+
+    it('sends the chosen option id on resume, shows it as the user message and answers the turn', async () => {
+      const user = userEvent.setup()
+      const chat = vi.fn<NavigatorApi['chat']>().mockResolvedValue(REPLY_PENDING)
+      const resumeChat = vi.fn<NavigatorApi['resumeChat']>().mockResolvedValue(REPLY_RESUMED)
+      render(<App client={fakeClient({ chat, resumeChat })} />)
+      const composer = screen.getByLabelText<HTMLTextAreaElement>(/your message/i)
+      await user.type(composer, PADDINGTON)
+      await user.keyboard('{Enter}')
+      await screen.findByText('Which "Paddington" do you mean?')
+
+      await user.click(screen.getByRole('button', { name: 'QLD 4064' }))
+      expect(resumeChat).toHaveBeenCalledWith(REPLY_PENDING.thread_id, 'qld-4064')
+      // The chosen option reads as the user's message, the answer below it.
+      expect(await screen.findByText('QLD 4064')).toBeInTheDocument()
+      expect(screen.getByText('Example Therapy Pty Ltd')).toBeInTheDocument()
+      // The question and its buttons are gone once the turn was answered.
+      expect(screen.queryByText('Which "Paddington" do you mean?')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'NSW 2021' })).toBeNull()
+    })
+
+    it('restores the pending question after a reload, with its buttons', async () => {
+      const user = userEvent.setup()
+      window.localStorage.setItem('ndis-provider-navigator-thread', THREAD_ID)
+      const thread: ChatThreadOut = {
+        thread_id: THREAD_ID,
+        turns: [],
+        pending: PENDING_LOCALITY,
+      }
+      const getThread = vi.fn<NavigatorApi['getThread']>().mockResolvedValue(thread)
+      const resumeChat = vi.fn<NavigatorApi['resumeChat']>().mockResolvedValue(REPLY_RESUMED)
+      render(<App client={fakeClient({ getThread, resumeChat })} />)
+
+      expect(await screen.findByText('Which "Paddington" do you mean?')).toBeInTheDocument()
+      const group = screen.getByRole('group', { name: /the places the question could mean/i })
+      await user.click(within(group).getByRole('button', { name: 'NSW 2021' }))
+      expect(resumeChat).toHaveBeenCalledWith(THREAD_ID, 'nsw-2021')
+      expect(await screen.findByText('NSW 2021')).toBeInTheDocument()
+    })
+
+    it('asks the same question again with the reason when the answer named none of the options', async () => {
+      const user = userEvent.setup()
+      const chat = vi.fn<NavigatorApi['chat']>().mockResolvedValue(REPLY_PENDING)
+      const resumeChat = vi
+        .fn<NavigatorApi['resumeChat']>()
+        .mockResolvedValueOnce({ ...REPLY_PENDING, pending: PENDING_REASK })
+        .mockResolvedValueOnce(REPLY_RESUMED)
+      render(<App client={fakeClient({ chat, resumeChat })} />)
+      const composer = screen.getByLabelText<HTMLTextAreaElement>(/your message/i)
+      await user.type(composer, PADDINGTON)
+      await user.keyboard('{Enter}')
+      await screen.findByText('Which "Paddington" do you mean?')
+
+      await user.click(screen.getByRole('button', { name: 'QLD 4064' }))
+      expect(await screen.findByText(/that answer named none of the options/i)).toBeInTheDocument()
+      // The same options, still offered, and one of them then answers the turn.
+      expect(screen.getByRole('button', { name: 'NSW 2021' })).toBeEnabled()
+      await user.click(screen.getByRole('button', { name: 'NSW 2021' }))
+      expect(await screen.findByText('NSW 2021')).toBeInTheDocument()
+    })
+
+    it('drops the pending question when a new message is sent instead of an answer', async () => {
+      const user = userEvent.setup()
+      const chat = vi
+        .fn<NavigatorApi['chat']>()
+        .mockResolvedValueOnce(REPLY_PENDING)
+        .mockResolvedValueOnce(REPLY_1)
+      render(<App client={fakeClient({ chat })} />)
+      const composer = screen.getByLabelText<HTMLTextAreaElement>(/your message/i)
+      await user.type(composer, PADDINGTON)
+      await user.keyboard('{Enter}')
+      await screen.findByText('Which "Paddington" do you mean?')
+
+      await user.type(composer, QUESTION)
+      await user.keyboard('{Enter}')
+      expect(await screen.findByText('Example Therapy Pty Ltd')).toBeInTheDocument()
+      expect(chat).toHaveBeenLastCalledWith(QUESTION, REPLY_PENDING.thread_id)
+      // The dropped question and its buttons are gone; the new turn was answered.
+      expect(screen.queryByText('Which "Paddington" do you mean?')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'QLD 4064' })).toBeNull()
+    })
+
+    it('disables the option buttons while the chosen answer is on its way', async () => {
+      const user = userEvent.setup()
+      const chat = vi.fn<NavigatorApi['chat']>().mockResolvedValue(REPLY_PENDING)
+      let settle!: (value: ChatOut) => void
+      const resumeChat = vi
+        .fn<NavigatorApi['resumeChat']>()
+        .mockImplementation(() => new Promise<ChatOut>((resolve) => (settle = resolve)))
+      render(<App client={fakeClient({ chat, resumeChat })} />)
+      const composer = screen.getByLabelText<HTMLTextAreaElement>(/your message/i)
+      await user.type(composer, PADDINGTON)
+      await user.keyboard('{Enter}')
+      await screen.findByText('Which "Paddington" do you mean?')
+
+      await user.click(screen.getByRole('button', { name: 'QLD 4064' }))
+      expect(screen.getByRole('button', { name: 'QLD 4064' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'NSW 2021' })).toBeDisabled()
+      await act(async () => {
+        settle(REPLY_RESUMED)
+        await Promise.resolve()
+      })
+      expect(await screen.findByText('QLD 4064')).toBeInTheDocument()
     })
   })
 })

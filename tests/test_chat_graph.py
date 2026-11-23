@@ -1,15 +1,17 @@
 """The chat graph: one model call on a first turn and two on a follow-up, the rewritten
 question being what the intent parser receives, refusals and injections still contained
 downstream of the rewrite, checkpointed turns staying JSON-plain (and never carrying
-page text), thread isolation, and the committed diagram staying in sync."""
+page text), the pause that asks which place the user meant, and the committed diagram
+staying in sync."""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from ndis.adapters.graphs.chat_graph import build_chat_graph
 from ndis.adapters.sqlite_repository import (
@@ -23,6 +25,7 @@ from ndis.application.catalogue import GetPriceLimit, SearchSupportItems
 from ndis.application.chat import CONTEXTUALISE_SYSTEM_PROMPT, ChatDeps
 from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.answer import ClaimedService
+from ndis.domain.locality import Locality
 from ndis.domain.taxonomy import Service
 from tests.conftest import (
     SEED_PROVIDERS,
@@ -31,6 +34,17 @@ from tests.conftest import (
     ChatFakeEvidence,
     LocalityDirectoryStub,
     chat_intent_payload,
+    make_support_item,
+)
+
+# The catalogue row the price section needs: the seeds' three items name none of the
+# service phrases, so this one coordination row makes the service search match.
+SEED_COORDINATION = make_support_item(
+    "07_002_0106_8_3",
+    "Support Coordination Level 2: Coordination of Supports",
+    national="100.14",
+    remote="140.19",
+    very_remote="150.21",
 )
 
 # The page texts carry a marker that must never reach a checkpoint; the claims quote a
@@ -54,6 +68,9 @@ def make_deps(
     catalogue: SqlAlchemySupportItemRepository,
     *,
     evidence: ChatFakeEvidence | None = None,
+    localities: Sequence[Locality] = (),
+    locality_resolver: LocalityResolver | None = None,
+    service_search: SearchSupportItems | None = None,
 ) -> tuple[ChatDeps, ChatFakeClient]:
     client = ChatFakeClient(rewrite_payload, intent_payloads)
     return (
@@ -65,8 +82,9 @@ def make_deps(
                 catalogue=GetPriceLimit(catalogue),
                 rule_answerer=MissingIndexRuleAnswerer(),
                 evidence=evidence or ChatFakeEvidence(),
-                locality_resolver=LocalityResolver(LocalityDirectoryStub(())),
-                service_search=SearchSupportItems(catalogue),
+                locality_resolver=locality_resolver
+                or LocalityResolver(LocalityDirectoryStub(localities)),
+                service_search=service_search or SearchSupportItems(catalogue),
             ),
             answer_to_json=lambda answer: AskOut.from_result(answer).model_dump(mode="json"),
         ),
@@ -317,3 +335,225 @@ class _NoCalls:
 
     def __getattr__(self, name: str) -> object:
         raise AssertionError(f"building the diagram runs no node ({name!r} was read)")
+
+
+# --- The pause (ticket 18) -------------------------------------------------------------------
+
+# The real gazetteer spells Paddington twice: QLD 4064 and NSW 2021 (the fixture rows keep
+# the CSV's uppercase spelling, as the loader stores them).
+PADDINGTON_ROWS = [
+    Locality(name="PADDINGTON", state="QLD", postcode="4064"),
+    Locality(name="PADDINGTON", state="NSW", postcode="2021"),
+]
+AMBIGUOUS_QUESTION = "plan managers in Paddington"
+AMBIGUOUS_INTENT = chat_intent_payload(
+    provider_filters='{"locality": "Paddington", "group": "Plan Management"}'
+)
+PLACE_AND_PRICE_QUESTION = "what does support coordination cost per hour in Paddington?"
+PLACE_AND_PRICE_INTENT = chat_intent_payload(
+    provider_filters='{"locality": "Paddington"}',
+    price_query='{"service": "support coordination"}',
+)
+PRICE_QUESTION = "what is the price limit for support coordination?"
+PRICE_INTENT = chat_intent_payload(price_query='{"service": "support coordination"}')
+
+# The options an ambiguous Paddington offers, in the resolver's (state, postcode) order.
+EXPECTED_OPTIONS = [
+    {"id": "nsw-2021", "label": "NSW 2021"},
+    {"id": "qld-4064", "label": "QLD 4064"},
+]
+
+
+class CountingResolver:
+    """A ``LocalityResolver`` that counts lookups: the paused node's pure prelude runs
+    once per node run, so a pause plus a resume means exactly two — and nothing else."""
+
+    def __init__(self, inner: LocalityResolver) -> None:
+        self._inner = inner
+        self.calls = 0
+
+    def __call__(
+        self, name: str, *, state: str | None = None, brisbane_area: bool | None = None
+    ) -> object:
+        self.calls += 1
+        return self._inner(name, state=state, brisbane_area=brisbane_area)
+
+
+class CountingServiceSearch:
+    """A ``SearchSupportItems`` that counts searches: the price section's executions."""
+
+    def __init__(self, inner: SearchSupportItems) -> None:
+        self._inner = inner
+        self.calls = 0
+
+    def __call__(self, phrase: str) -> object:
+        self.calls += 1
+        return self._inner(phrase)
+
+
+def paused(graph, config: dict[str, Any]) -> dict[str, Any]:
+    """The interrupt payload the graph's last run paused on, asserting it did pause."""
+    snapshot = graph.get_state(config)
+    assert snapshot.next == ("precheck_locality",)
+    interrupts = [item for task in snapshot.tasks for item in task.interrupts]
+    assert len(interrupts) == 1
+    return interrupts[0].value
+
+
+def ambiguous_deps(
+    providers: SqlAlchemyProviderRepository,
+    catalogue: SqlAlchemySupportItemRepository,
+    question: str = AMBIGUOUS_QUESTION,
+    intent: str = AMBIGUOUS_INTENT,
+) -> tuple[ChatDeps, ChatFakeClient, CountingResolver]:
+    resolver = CountingResolver(LocalityResolver(LocalityDirectoryStub(PADDINGTON_ROWS)))
+    deps, client = make_deps(
+        "",
+        {question: intent},
+        providers,
+        catalogue,
+        locality_resolver=resolver,  # type: ignore[arg-type]
+    )
+    return deps, client, resolver
+
+
+def test_an_ambiguous_locality_pauses_and_the_choice_answers_that_postcode(repos) -> None:
+    providers, catalogue = repos
+    deps, client, _ = ambiguous_deps(providers, catalogue)
+    graph = make_graph(deps)
+    config = {"configurable": {"thread_id": "t1"}}
+    paused_result = graph.invoke({"message": AMBIGUOUS_QUESTION}, config)
+    payload = paused(graph, config)
+    assert payload["kind"] == "choose_locality"
+    assert payload["question"] == 'Which "Paddington" do you mean?'
+    assert payload["options"] == EXPECTED_OPTIONS
+    assert "reason" not in payload
+    # Nothing was stored and the pre-parsed intent is waiting in the state: the turn is
+    # not over, and no further model call has been made.
+    assert paused_result["turns"] == []
+    assert [request.system for request in client.requests] == [INTENT_SYSTEM_PROMPT]
+    final = graph.invoke(Command(resume="qld-4064"), config)
+    turn = final["turns"][-1]
+    assert turn["message"] == AMBIGUOUS_QUESTION
+    assert turn["answer"]["refused"] is False
+    # The choice pinned the query: the answer is the one QLD 4064 would have had, with
+    # the resolution disclosed as the choice decided it (no seed provider is in 4064).
+    locality = turn["answer"]["locality"]
+    assert locality["outcome"] == "resolved"
+    assert (locality["state"], locality["postcode"]) == ("QLD", "4064")
+    assert turn["answer"]["provider_total"] == 0
+    # The resume made no model call at all: the parse was handed to the pipeline.
+    assert [request.system for request in client.requests] == [INTENT_SYSTEM_PROMPT]
+
+
+def test_the_paused_prelude_reruns_purely_on_resume(repos) -> None:
+    providers, catalogue = repos
+    deps, client, resolver = ambiguous_deps(providers, catalogue)
+    graph = make_graph(deps)
+    config = {"configurable": {"thread_id": "t1"}}
+    graph.invoke({"message": AMBIGUOUS_QUESTION}, config)
+    after_pause_state = graph.get_state(config).values
+    assert resolver.calls == 1  # the prelude ran once before the pause
+    # Nothing was written before the pause: the recorded error and the choice are both
+    # still unset, exactly as the parse node left them.
+    assert after_pause_state.get("locality_error") is None
+    assert after_pause_state.get("chosen_locality") is None
+    requests_at_pause = list(client.requests)
+    graph.invoke(Command(resume="qld-4064"), config)
+    # The node ran once more, from its first line — plus the pipeline's own planning of
+    # the same filters, the one deterministic lookup every /ask run also makes.
+    assert resolver.calls == 3
+    # The repeat was pure: no model call before or after the pause beyond the one parse.
+    assert client.requests == requests_at_pause
+    # And the choice was written only once the interrupt had returned.
+    final_state = graph.get_state(config).values
+    assert final_state.get("chosen_locality") == {
+        "name": "PADDINGTON",
+        "state": "QLD",
+        "postcode": "4064",
+    }
+    assert final_state.get("locality_error") is None
+
+
+def test_the_price_section_runs_once_across_pause_and_resume(repos) -> None:
+    providers, catalogue = repos
+    catalogue.replace_all([*SEED_SUPPORT_ITEMS, SEED_COORDINATION])
+    search = CountingServiceSearch(SearchSupportItems(catalogue))
+    deps, client, _ = ambiguous_deps(
+        providers,
+        catalogue,
+        question=PLACE_AND_PRICE_QUESTION,
+        intent=PLACE_AND_PRICE_INTENT,
+    )
+    graph = make_graph(
+        ChatDeps(
+            client=client,
+            ask_deps=AskDeps(
+                client=client,
+                providers=ListProviders(providers),
+                catalogue=GetPriceLimit(catalogue),
+                rule_answerer=MissingIndexRuleAnswerer(),
+                evidence=ChatFakeEvidence(),
+                locality_resolver=LocalityResolver(LocalityDirectoryStub(PADDINGTON_ROWS)),
+                service_search=search,  # type: ignore[arg-type]
+            ),
+            answer_to_json=lambda answer: AskOut.from_result(answer).model_dump(mode="json"),
+        )
+    )
+    config = {"configurable": {"thread_id": "t1"}}
+    graph.invoke({"message": PLACE_AND_PRICE_QUESTION}, config)
+    assert search.calls == 0  # the pause happens before any section runs
+    final = graph.invoke(Command(resume="qld-4064"), config)
+    # The price section executed exactly once across the pause and the resume.
+    assert search.calls == 1
+    turn = final["turns"][-1]
+    assert turn["answer"]["service_prices"]["phrase"] == "support coordination"
+    assert turn["answer"]["locality"]["postcode"] == "4064"
+
+
+def test_an_invalid_option_reasks_with_a_reason_and_a_valid_one_succeeds(repos) -> None:
+    providers, catalogue = repos
+    deps, _, _ = ambiguous_deps(providers, catalogue)
+    graph = make_graph(deps)
+    config = {"configurable": {"thread_id": "t1"}}
+    graph.invoke({"message": AMBIGUOUS_QUESTION}, config)
+    graph.invoke(Command(resume="qld-9999"), config)  # a postcode nobody offered
+    payload = paused(graph, config)
+    assert payload["reason"] == "invalid_option"
+    assert payload["options"] == EXPECTED_OPTIONS  # the same options, asked again
+    graph.invoke(Command(resume="QLD 4064"), config)  # the label, not the id: refused too
+    assert paused(graph, config)["reason"] == "invalid_option"
+    final = graph.invoke(Command(resume="nsw-2021"), config)
+    turn = final["turns"][-1]
+    locality = turn["answer"]["locality"]
+    assert (locality["outcome"], locality["state"], locality["postcode"]) == (
+        "resolved",
+        "NSW",
+        "2021",
+    )
+
+
+def test_a_new_message_drops_the_pending_question_and_answers_normally(repos) -> None:
+    providers, catalogue = repos
+    catalogue.replace_all([*SEED_SUPPORT_ITEMS, SEED_COORDINATION])
+    deps, _, _ = ambiguous_deps(
+        providers,
+        catalogue,
+        question=AMBIGUOUS_QUESTION,
+        intent=AMBIGUOUS_INTENT,
+    )
+    client = deps.client
+    client._intents = {AMBIGUOUS_QUESTION: AMBIGUOUS_INTENT, PRICE_QUESTION: PRICE_INTENT}  # noqa: SLF001
+    graph = make_graph(deps)
+    config = {"configurable": {"thread_id": "t1"}}
+    graph.invoke({"message": AMBIGUOUS_QUESTION}, config)
+    assert paused(graph, config)["kind"] == "choose_locality"
+    final = graph.invoke({"message": PRICE_QUESTION}, config)
+    turn = final["turns"][-1]
+    assert turn["message"] == PRICE_QUESTION
+    assert turn["answer"]["refused"] is False
+    assert turn["answer"]["service_prices"]["phrase"] == "support coordination"
+    snapshot = graph.get_state(config)
+    assert snapshot.next == ()
+    assert not any(task.interrupts for task in snapshot.tasks)
+    assert [turn["message"] for turn in snapshot.values["turns"]] == [PRICE_QUESTION]

@@ -21,7 +21,7 @@ import operator
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Annotated, Protocol, TypedDict
+from typing import Annotated, Any, Protocol, TypedDict
 
 from ndis.application.catalogue import (
     GetPriceLimit,
@@ -178,6 +178,35 @@ class Step:
     cost_usd: float | None = None
 
 
+def step_document(step: Step) -> dict[str, Any]:
+    """One step as the JSON-plain document a checkpointed state carries;
+    :func:`step_of` rebuilds the exact same object from it."""
+    return {
+        "kind": step.kind,
+        "input_summary": step.input_summary,
+        "output_summary": step.output_summary,
+        "ms": step.ms,
+        "input_tokens": step.input_tokens,
+        "output_tokens": step.output_tokens,
+        "cost_usd": step.cost_usd,
+    }
+
+
+def step_of(document: Mapping[str, Any]) -> Step:
+    """The :class:`Step` a :func:`step_document` document carries — the pure inverse, so
+    a stage run in an earlier graph step can hand its disclosure to a later one without
+    the step object ever entering a checkpoint."""
+    return Step(
+        kind=str(document["kind"]),
+        input_summary=str(document["input_summary"]),
+        output_summary=str(document["output_summary"]),
+        ms=int(document["ms"]),
+        input_tokens=document.get("input_tokens"),
+        output_tokens=document.get("output_tokens"),
+        cost_usd=document.get("cost_usd"),
+    )
+
+
 # USD per 1M input tokens, USD per 1M output tokens — the composition root looks the pair
 # up for the configured model; ``None`` means the model is unpriced and the step says so.
 TokenPrices = tuple[float, float] | None
@@ -270,6 +299,10 @@ class AskState(TypedDict, total=False):
     refused: bool
     reason: str | None
     explanation: str | None
+    chosen_locality: Locality | None
+    """The place the user picked when the chat graph paused the turn to ask which one
+    they meant (JSON-rebuilt by the caller); ``None`` resolves from the text as always.
+    This graph is never checkpointed, so the domain object is safe here."""
     providers: tuple[Provider, ...]
     provider_total: int
     distances: Mapping[str, Distance]
@@ -468,10 +501,23 @@ class ProviderStage:
     step: Step
 
 
-def provider_section_stage(deps: AskDeps, question: str, filters: ProviderFilters) -> ProviderStage:
-    """Resolve the filters and execute the provider page, recording the step."""
+def provider_section_stage(
+    deps: AskDeps,
+    question: str,
+    filters: ProviderFilters,
+    chosen_locality: Locality | None = None,
+) -> ProviderStage:
+    """Resolve the filters and execute the provider page, recording the step.
+
+    ``chosen_locality`` pins the place when the caller already asked the user which one
+    they meant (the chat graph's paused turn): the plan is still built the same way, and
+    the choice overrides an ambiguity it cannot run past. ``None`` (the /ask path)
+    resolves from the text alone, exactly as before."""
     started = deps.clock()
-    section, resolution, rejections, ran = _provider_section(deps, question, filters)
+    plan = plan_provider_section(deps, question, filters)
+    if chosen_locality is not None and plan.needs_locality_choice:
+        plan = plan.resolved_by(chosen_locality)
+    section, resolution, rejections, ran = _execute_provider_plan(deps, plan)
     step = _stage_step(
         deps.clock,
         "provider_filter",
@@ -763,35 +809,80 @@ class Ask:
         return compose_stage(state)
 
 
-def _provider_section(
-    deps: AskDeps, question: str, filters: ProviderFilters
-) -> tuple[_ProviderSection, LocalityResolution | None, tuple[str, ...], bool]:
-    """Resolve the filters into an executed section, a locality resolution and the
-    machine reasons for everything that was dropped.
+@dataclass(frozen=True)
+class ProviderPlan:
+    """What the provider section decided before executing anything: the filters exactly
+    as parsed, the disclosed locality resolution, the machine reasons already decided,
+    and the filters the register query runs with — ``None`` when nothing may run.
 
-    The postcode guard runs first: a model-supplied postcode the question never
-    states is invented, so the whole filter set is dropped with
-    ``postcode_not_in_question``. A locality is then resolved in code: a resolution
-    that agrees with a stated postcode (or states none) runs through the postcode
-    filter unchanged; a suburb that contradicts the stated postcode is reported as
-    a rejection while the postcode runs; an unknown or ambiguous suburb runs no
-    provider query at all, unless a stated postcode of its own carries the filter.
-    """
+    The planning is pure apart from the deterministic gazetteer lookup, so the chat
+    graph can run it again before resuming a paused question without a model call and
+    without writing anything."""
+
+    filters: ProviderFilters
+    resolution: LocalityResolution | None
+    rejections: tuple[str, ...]
+    execute: ProviderFilters | None
+
+    @property
+    def needs_locality_choice(self) -> bool:
+        """True when the plan is blocked and the only blocker is an ambiguous suburb:
+        the question cannot run at all until the user picks which place they meant."""
+        return (
+            self.execute is None
+            and self.resolution is not None
+            and self.resolution.outcome is LocalityOutcome.AMBIGUOUS
+        )
+
+    def resolved_by(self, chosen: Locality) -> "ProviderPlan":
+        """The plan with the user's locality choice pinned in: the query runs on the
+        chosen (state, postcode) and discloses the resolution the choice decided."""
+        return ProviderPlan(
+            filters=self.filters,
+            resolution=LocalityResolution(LocalityOutcome.RESOLVED, self.resolution_name(), chosen),
+            rejections=tuple(
+                reason
+                for reason in self.rejections
+                if self.resolution is None or reason != self.resolution.outcome.value
+            ),
+            execute=replace(
+                self.filters, state=chosen.state, postcode=chosen.postcode, locality=None
+            ),
+        )
+
+    def resolution_name(self) -> str:
+        """The locality name the plan's resolution carries, or the parsed name."""
+        if self.resolution is not None:
+            return self.resolution.name
+        return self.filters.locality or ""
+
+
+def plan_provider_section(deps: AskDeps, question: str, filters: ProviderFilters) -> ProviderPlan:
+    """Resolve the filters into a plan without executing anything: the postcode guard
+    runs first (a model-supplied postcode the question never states is invented, so the
+    whole filter set is dropped with ``postcode_not_in_question``); a locality is then
+    resolved in code — a resolution that agrees with a stated postcode (or states none)
+    runs through the postcode filter unchanged, a suburb that contradicts the stated
+    postcode is reported as a rejection while the postcode runs, and an unknown or
+    ambiguous suburb with no stated postcode of its own blocks the query entirely.
+
+    Pure apart from the gazetteer lookup: no model call, no register query, no write."""
     rejections: list[str] = []
     resolution: LocalityResolution | None = None
+    execute: ProviderFilters | None = filters
     if filters.postcode is not None and not postcode_in_question(question, filters.postcode):
         rejections.append(REJECTION_POSTCODE_NOT_IN_QUESTION)
-        filters = None  # type: ignore[assignment]
-    if filters is not None and filters.locality is not None:
+        execute = None
+    if execute is not None and filters.locality is not None:
         resolution = deps.locality_resolver(
             filters.locality, state=filters.state, brisbane_area=filters.brisbane_area
         )
         if resolution.outcome is LocalityOutcome.RESOLVED and resolution.locality:
             if filters.postcode is not None and filters.postcode != resolution.locality.postcode:
                 rejections.append(REJECTION_LOCALITY_POSTCODE_MISMATCH)
-                filters = replace(filters, locality=None)
+                execute = replace(filters, locality=None)
             else:
-                filters = replace(filters, postcode=resolution.locality.postcode, locality=None)
+                execute = replace(filters, postcode=resolution.locality.postcode, locality=None)
         elif filters.postcode is not None:
             # The stated postcode is a fully understood filter; the suburb only
             # decides what the answer discloses about it.
@@ -806,15 +897,40 @@ def _provider_section(
                 )
             else:
                 rejections.append(resolution.outcome.value)
-            filters = replace(filters, locality=None)
+            execute = replace(filters, locality=None)
         else:
             # No stated postcode and no resolvable suburb: half-understood location,
             # so nothing executes.
             rejections.append(resolution.outcome.value)
-            filters = None  # type: ignore[assignment]
-    if filters is None:
-        return _ProviderSection((), 0, {}, None, False), resolution, tuple(rejections), False
-    return _execute_filters(deps, filters), resolution, tuple(rejections), True
+            execute = None
+    return ProviderPlan(
+        filters=filters,
+        resolution=resolution,
+        rejections=tuple(rejections),
+        execute=execute,
+    )
+
+
+def _execute_provider_plan(
+    deps: AskDeps, plan: ProviderPlan
+) -> tuple[_ProviderSection, LocalityResolution | None, tuple[str, ...], bool]:
+    """Execute one plan: the register query when the plan allows one, the empty section
+    with the disclosed resolution and rejections when it does not."""
+    if plan.execute is None:
+        return _ProviderSection((), 0, {}, None, False), plan.resolution, plan.rejections, False
+    return (
+        _execute_filters(deps, plan.execute),
+        plan.resolution,
+        plan.rejections,
+        True,
+    )
+
+
+def _provider_section(
+    deps: AskDeps, question: str, filters: ProviderFilters
+) -> tuple[_ProviderSection, LocalityResolution | None, tuple[str, ...], bool]:
+    """Resolve the filters and execute the provider page: the plan, then its execution."""
+    return _execute_provider_plan(deps, plan_provider_section(deps, question, filters))
 
 
 def _execute_filters(deps: AskDeps, filters: ProviderFilters) -> _ProviderSection:

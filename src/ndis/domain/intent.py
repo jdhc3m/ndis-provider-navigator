@@ -10,7 +10,9 @@ response — never a crash and never a half-understood execution.
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from ndis.domain.entities import Remoteness
 from ndis.domain.register import REGISTRATION_STATUSES, STATES
@@ -131,6 +133,78 @@ class ParsedIntent:
 
     intent: Intent | None
     rejected: tuple[str, ...] = ()
+
+
+def parsed_intent_document(parsed: ParsedIntent) -> dict[str, Any]:
+    """The parsed intent as the JSON-plain document a checkpointed state carries: the
+    same fields the dataclasses hold, every filter part spelled out (``None`` when
+    unstated). :func:`parsed_intent_of` rebuilds the exact same object from it."""
+    intent = parsed.intent
+    filters = None if intent is None else intent.provider_filters
+    price = None if intent is None else intent.price_query
+    return {
+        "intent": None
+        if intent is None
+        else {
+            "provider_filters": None
+            if filters is None
+            else {
+                "state": filters.state,
+                "postcode": filters.postcode,
+                "locality": filters.locality,
+                "group": filters.group,
+                "status": filters.status,
+                "brisbane_area": filters.brisbane_area,
+            },
+            "price_query": None
+            if price is None
+            else {
+                "item": price.item,
+                "service": price.service,
+                "state": price.state,
+                "remoteness": price.remoteness,
+            },
+            "rule_question": intent.rule_question,
+            "decision_request": intent.decision_request,
+        },
+        "rejected": list(parsed.rejected),
+    }
+
+
+def parsed_intent_of(document: Mapping[str, Any]) -> ParsedIntent:
+    """The :class:`ParsedIntent` a :func:`parsed_intent_document` document carries,
+    rebuilt field by field — the pure inverse, so a graph node can hand a checkpointed
+    parse to the next stage without the parsed intent ever entering the checkpoint."""
+    intent = document.get("intent")
+    if intent is None:
+        return ParsedIntent(None, tuple(document.get("rejected") or ()))
+    filters = intent.get("provider_filters")
+    price = intent.get("price_query")
+    return ParsedIntent(
+        Intent(
+            provider_filters=None
+            if filters is None
+            else ProviderFilters(
+                state=filters.get("state"),
+                postcode=filters.get("postcode"),
+                locality=filters.get("locality"),
+                group=filters.get("group"),
+                status=filters.get("status"),
+                brisbane_area=filters.get("brisbane_area"),
+            ),
+            price_query=None
+            if price is None
+            else PriceQuery(
+                item=price.get("item"),
+                service=price.get("service"),
+                state=price.get("state"),
+                remoteness=price.get("remoteness"),
+            ),
+            rule_question=intent.get("rule_question"),
+            decision_request=bool(intent.get("decision_request")),
+        ),
+        tuple(document.get("rejected") or ()),
+    )
 
 
 def _valid_postcode(value: str) -> bool:

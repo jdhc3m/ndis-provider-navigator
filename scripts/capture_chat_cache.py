@@ -18,6 +18,13 @@ no-index stand-in: a rule follow-up is pinned at the intent level, and this keep
 capture from spending rule-judge quota. The contextualise and intent-parse calls are the
 only model calls a capture makes.
 
+A turn whose golden row names a ``choose`` id pauses the graph on the ambiguous locality
+(ticket 18) and is resumed with that id, exactly as the replay answers it.
+
+``--only id[,id...]`` captures only the named conversations and merges their payloads
+into the existing cache, so adding golden conversations does not recapture (and cannot
+drift) the existing ones.
+
 Usage: ``set -a; . ~/.config/ndis/.env; set +a; uv run python scripts/capture_chat_cache.py``
 """
 
@@ -25,8 +32,16 @@ import argparse
 from pathlib import Path
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
-from ndis.adapters.chat_golden import read_chat_golden, rewrite_payload_key, write_chat_cache
+from ndis.adapters.chat_golden import (
+    ChatCache,
+    ChatGoldenSet,
+    read_chat_cache,
+    read_chat_golden,
+    rewrite_payload_key,
+    write_chat_cache,
+)
 from ndis.adapters.graphs.chat_graph import build_chat_graph
 from ndis.adapters.llm_client import OpenAICompatibleClient
 from ndis.adapters.tracing import flush, traced
@@ -148,13 +163,63 @@ def _answer_to_json(answer: object) -> dict[str, object]:
     return AskOut.from_result(answer).model_dump(mode="json")  # type: ignore[arg-type]
 
 
+def _pending_of(graph: object, config: dict[str, object]) -> dict[str, object] | None:
+    """The pending question the thread's paused task waits on, or ``None``."""
+    snapshot = graph.get_state(config)  # type: ignore[attr-defined]
+    for task in snapshot.tasks:
+        for item in task.interrupts:
+            value = getattr(item, "value", None)
+            if isinstance(value, dict) and value.get("kind") == "choose_locality":
+                return value
+    return None
+
+
+def turn_final(graph: object, config: dict[str, object], turn: object) -> dict[str, object]:
+    """One conversation turn's final graph state: the turn's answer — or, when the turn
+    paused on an ambiguous locality (ticket 18), the resumed one. ``choose`` names the
+    option id the golden file answers the pending question with."""
+    final = graph.invoke({"message": turn.message}, config)  # type: ignore[attr-defined]
+    if turn.choose is not None:
+        pending = _pending_of(graph, config)
+        if pending is None:
+            raise SystemExit(
+                f"the turn {turn.message!r} names a choice but the graph did not pause"
+            )
+        final = graph.invoke(Command(resume=turn.choose), config)  # type: ignore[attr-defined]
+        if _pending_of(graph, config) is not None:
+            raise SystemExit(
+                f"the turn {turn.message!r} is still pending after resuming {turn.choose!r}"
+            )
+    return final
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--interval", type=float, default=6.0, help="seconds between requests")
+    parser.add_argument(
+        "--only",
+        default="",
+        help="comma-separated conversation ids to capture; the payloads are merged into "
+        "the existing cache instead of recapturing every conversation",
+    )
     args = parser.parse_args()
     if not llm_configured():
         raise SystemExit("LLM_BASE_URL, LLM_MODEL and LLM_API_KEY must be set")
     golden = read_chat_golden(GOLDEN)
+    if args.only:
+        wanted = [name.strip() for name in args.only.split(",") if name.strip()]
+        known = {conversation.id for conversation in golden.conversations}
+        missing = [name for name in wanted if name not in known]
+        if missing:
+            raise SystemExit(f"no such conversation(s) in {GOLDEN.name}: {missing}")
+        golden = ChatGoldenSet(
+            conversations=tuple(
+                conversation for conversation in golden.conversations if conversation.id in wanted
+            )
+        )
+    # An --only capture merges into the existing cache: the conversations it does not
+    # re-run keep their captured payloads, so quota is spent on the new turns alone.
+    existing = read_chat_cache(CACHE) if CACHE.is_file() else ChatCache()
     inner = traced(
         OpenAICompatibleClient(
             base_url=llm_base_url(),
@@ -172,12 +237,12 @@ def main() -> int:
     # One in-memory checkpointer across the whole capture: each conversation runs on its
     # own thread id, and the follow-up turns need the earlier turns' history.
     graph = build_chat_graph(deps, checkpointer=InMemorySaver())
+    summaries: dict[str, dict[str, object]] = dict(existing.summaries)
     try:
-        summaries: dict[str, dict[str, object]] = {}
         for conversation in golden.conversations:
             config = {"configurable": {"thread_id": f"golden:{conversation.id}"}}
             for turn in conversation.turns:
-                final = graph.invoke({"message": turn.message}, config)
+                final = turn_final(graph, config, turn)
                 stored = final["turns"][-1]
                 # The turn summary exactly as the rewrite stage built it; identical
                 # standalone questions (the same question never produced two different
@@ -187,10 +252,16 @@ def main() -> int:
     finally:
         client.close()
         flush()
-    rewrites = [(message, key, payload) for key, (message, payload) in client.rewrites.items()]
-    write_chat_cache(CACHE, rewrites, client.intents.items(), HEADER, summaries=summaries)
+    rewrites: dict[str, tuple[str, str]] = {
+        key: (existing.rewrite_messages[key], existing.rewrites[key]) for key in existing.rewrites
+    }
+    rewrites.update(client.rewrites)
+    intents: dict[str, str] = dict(existing.intents)
+    intents.update(client.intents)
+    ordered = [(message, key, payload) for key, (message, payload) in rewrites.items()]
+    write_chat_cache(CACHE, ordered, intents.items(), HEADER, summaries=summaries)
     print(
-        f"wrote {CACHE} ({len(rewrites)} rewrites, {len(client.intents)} intents, "
+        f"wrote {CACHE} ({len(ordered)} rewrites, {len(intents)} intents, "
         f"{len(summaries)} summaries)"
     )
     return 0

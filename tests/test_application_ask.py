@@ -20,10 +20,13 @@ from ndis.application.ask import (
     ASK_PROVIDER_LIMIT,
     INTENT_SYSTEM_PROMPT,
     Ask,
+    AskDeps,
     CombinedAnswer,
     MissingIndexRuleAnswerer,
     Step,
     intent_prompt,
+    plan_provider_section,
+    provider_section_stage,
     token_cost,
 )
 from ndis.application.catalogue import (
@@ -522,6 +525,128 @@ class TestLocalityExecution:
         assert [provider.abn for provider in answer.providers] == ["10000000002"]
         assert answer.locality is not None
         assert answer.locality.locality == Locality("BRISBANE CITY", "QLD", "4000")
+
+
+class TestProviderPlan:
+    """The provider section's planning, split out for the chat graph's pause: the plan
+    is pure apart from the gazetteer lookup, the choice pins the query, and /ask's own
+    path is unchanged."""
+
+    DIRECTORY = LocalityDirectoryStub(
+        [
+            Locality("PADDINGTON", "QLD", "4064"),
+            Locality("PADDINGTON", "NSW", "2021"),
+        ]
+    )
+
+    def deps(
+        self,
+        providers: RecordingProviders,
+        catalogue: SqlAlchemySupportItemRepository,
+    ) -> AskDeps:
+        return AskDeps(
+            client=FakeIntentClient([]),
+            providers=providers,
+            catalogue=RecordingPriceLimit(catalogue),
+            rule_answerer=FakeRuleAnswerer(),
+            evidence=FakeEvidence(),
+            locality_resolver=LocalityResolver(self.DIRECTORY),
+            service_search=SearchSupportItems(catalogue),
+        )
+
+    def test_the_ambiguous_plan_blocks_and_offers_its_candidates(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        recording = RecordingProviders(providers, None)
+        plan = plan_provider_section(
+            self.deps(recording, catalogue),
+            "plan managers in Paddington",
+            ProviderFilters(locality="Paddington", group="Plan Management"),
+        )
+        assert plan.needs_locality_choice
+        assert plan.execute is None
+        assert plan.rejections == ("locality_ambiguous",)
+        assert plan.resolution is not None
+        assert plan.resolution.name == "Paddington"
+        assert [(item.state, item.postcode) for item in plan.resolution.candidates] == [
+            ("NSW", "2021"),
+            ("QLD", "4064"),
+        ]
+        # Planning is pure: no register query ran.
+        assert recording.calls == []
+
+    def test_the_choice_pins_the_query_and_discloses_the_resolution(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        recording = RecordingProviders(providers, SqlAlchemyPostcodeCentroids(providers._engine))
+        deps = self.deps(recording, catalogue)
+        stage = provider_section_stage(
+            deps,
+            "plan managers in Paddington",
+            ProviderFilters(locality="Paddington", group="Plan Management"),
+            chosen_locality=Locality("PADDINGTON", "QLD", "4064"),
+        )
+        # The query the choice pinned: the chosen (state, postcode), the parsed group.
+        pinned = recording.calls[-1]
+        assert (pinned.state, pinned.postcode, pinned.group) == ("QLD", "4064", "Plan Management")
+        # The page is the one the equivalent stated-postcode question would have had.
+        from_postcode = provider_section_stage(
+            deps,
+            "plan managers in postcode 4064",
+            ProviderFilters(postcode="4064", group="Plan Management"),
+        )
+        assert [(p.abn, p.business_name) for p in stage.providers] == [
+            (p.abn, p.business_name) for p in from_postcode.providers
+        ]
+        assert stage.total == from_postcode.total
+        assert stage.locality is not None
+        assert stage.locality.outcome is LocalityOutcome.RESOLVED
+        assert stage.locality.name == "Paddington"
+        assert stage.locality.locality == Locality("PADDINGTON", "QLD", "4064")
+        assert stage.rejections == ()
+
+    def test_a_choice_never_touches_a_plan_that_was_not_blocked(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        recording = RecordingProviders(providers, None)
+        deps = self.deps(recording, catalogue)
+        filters = ProviderFilters(locality="Paddington", state="QLD")
+        plain = provider_section_stage(deps, "plan managers in Paddington QLD", filters)
+        chosen = provider_section_stage(
+            deps,
+            "plan managers in Paddington QLD",
+            filters,
+            chosen_locality=Locality("PADDINGTON", "NSW", "2021"),
+        )
+        assert [(p.abn, p.business_name) for p in plain.providers] == [
+            (p.abn, p.business_name) for p in chosen.providers
+        ]
+        assert chosen.locality is not None
+        assert chosen.locality.locality == Locality("PADDINGTON", "QLD", "4064")
+
+    def test_a_stated_postcode_that_contradicts_the_suburb_runs_without_asking(
+        self,
+        repos: tuple[SqlAlchemyProviderRepository, SqlAlchemySupportItemRepository],
+    ) -> None:
+        providers, catalogue = repos
+        recording = RecordingProviders(providers, None)
+        plan = plan_provider_section(
+            self.deps(recording, catalogue),
+            "plan managers in Paddington, postcode 2000",
+            ProviderFilters(locality="Paddington", postcode="2000"),
+        )
+        # No candidate carries the stated postcode: the suburb is disclosed as rejected
+        # and the stated postcode still runs — nothing to ask the user here.
+        assert not plan.needs_locality_choice
+        assert plan.execute == ProviderFilters(locality=None, postcode="2000")
+        assert plan.rejections == ("locality_ambiguous",)
+        assert recording.calls == []
 
 
 class TestRefusals:

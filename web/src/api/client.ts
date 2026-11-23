@@ -22,9 +22,43 @@ export type MetaOut = components['schemas']['MetaOut']
 export type ProviderPageOut = components['schemas']['ProviderPageOut']
 export type LocalityOut = components['schemas']['LocalityOut']
 export type LocalityCandidateOut = components['schemas']['LocalityCandidateOut']
-export type ChatOut = components['schemas']['ChatOut']
-export type ChatThreadOut = components['schemas']['ChatThreadOut']
 export type ChatTurnOut = components['schemas']['ChatTurnOut']
+
+/** The pending question a paused turn waits on: which place the user meant, one option
+ * per candidate, plus the reason when an answer named none of them. Strictly nullable:
+ * the API always sends every field (null when unset), so the page never sees undefined. */
+export interface PendingOut {
+  kind: string
+  question: string
+  options: ChatOptionOut[]
+  reason: string | null
+}
+
+/** One offered answer: the stable id to send back on resume, and the label the button
+ * shows. */
+export interface ChatOptionOut {
+  id: string
+  label: string
+}
+
+/** One turn's result, with the unset fields spelled null: `needs_input` carries the
+ * pending question and no answer; `answered` carries the answer and no pending. */
+export interface ChatOut {
+  thread_id: string
+  status: 'answered' | 'needs_input'
+  standalone_question: string | null
+  rewritten: boolean
+  rewrite_reason: string | null
+  answer: AskOut | null
+  pending: PendingOut | null
+}
+
+/** A whole stored conversation, with the pending question when a turn is paused. */
+export interface ChatThreadOut {
+  thread_id: string
+  turns: ChatTurnOut[]
+  pending: PendingOut | null
+}
 
 type JsonBody<T> = T extends { content: { 'application/json': infer B } } ? B : never
 type Ok<P extends keyof paths, M extends keyof paths[P]> = paths[P][M] extends {
@@ -92,13 +126,47 @@ function structuredDetailReason(detail: unknown): string | null {
 /** Status 0 marks a network failure (no response at all). */
 export const NETWORK_ERROR_STATUS = 0
 
+/** The wire shape of one turn's result, before the unset fields are spelled null. */
+type WireChatOut = components['schemas']['ChatOut']
+type WireChatThreadOut = components['schemas']['ChatThreadOut']
+
+function pendingOf(pending: WireChatOut['pending']): PendingOut | null {
+  return pending === null || pending === undefined
+    ? null
+    : { ...pending, reason: pending.reason ?? null }
+}
+
+function chatOutOf(reply: WireChatOut): ChatOut {
+  return {
+    thread_id: reply.thread_id,
+    status: reply.status,
+    standalone_question: reply.standalone_question ?? null,
+    rewritten: reply.rewritten,
+    rewrite_reason: reply.rewrite_reason ?? null,
+    answer: reply.answer ?? null,
+    pending: pendingOf(reply.pending),
+  }
+}
+
+function threadOutOf(thread: WireChatThreadOut): ChatThreadOut {
+  return {
+    thread_id: thread.thread_id,
+    turns: thread.turns,
+    pending: pendingOf(thread.pending),
+  }
+}
+
 export interface NavigatorApi {
   meta: () => Promise<MetaOut>
   ask: (question: string) => Promise<AskOut>
   /** One conversation turn: `threadId` continues a thread (null starts one); the
    * answer names the thread to keep sending and the standalone question a follow-up
-   * was understood as. */
+   * was understood as. A `needs_input` status carries the pending question instead of
+   * an answer. */
   chat: (message: string, threadId: string | null) => Promise<ChatOut>
+  /** The answer to a thread's pending question: the chosen option's id exactly as the
+   * pending question offered it; the same turn carries on and returns like `chat`. */
+  resumeChat: (threadId: string, optionId: string) => Promise<ChatOut>
   /** The turns of one stored conversation, for restoring a page after a reload. */
   getThread: (threadId: string) => Promise<ChatThreadOut>
 }
@@ -165,13 +233,26 @@ export function createClient(
       const body: RequestBody<'/ask', 'post'> = { question }
       return request('/ask', 'post', body)
     },
-    chat: (message: string, threadId: string | null) => {
+    chat: async (message: string, threadId: string | null) => {
       // `thread_id` absent means "start a new thread"; present means "continue it".
       const body: RequestBody<'/chat', 'post'> =
         threadId === null ? { message } : { message, thread_id: threadId }
-      return request('/chat', 'post', body)
+      return chatOutOf(await request('/chat', 'post', body))
     },
-    getThread: (threadId: string) =>
-      request('/chat/{thread_id}', 'get', null, `/chat/${encodeURIComponent(threadId)}`),
+    resumeChat: async (threadId: string, optionId: string) => {
+      const body: RequestBody<'/chat/{thread_id}/resume', 'post'> = { option_id: optionId }
+      return chatOutOf(
+        await request(
+          '/chat/{thread_id}/resume',
+          'post',
+          body,
+          `/chat/${encodeURIComponent(threadId)}/resume`,
+        ),
+      )
+    },
+    getThread: async (threadId: string) =>
+      threadOutOf(
+        await request('/chat/{thread_id}', 'get', null, `/chat/${encodeURIComponent(threadId)}`),
+      ),
   }
 }
