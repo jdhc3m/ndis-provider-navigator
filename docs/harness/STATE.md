@@ -517,7 +517,29 @@ updated. Facts the Builder of ticket 09 needs:
 
 ## In progress
 
-- None. Ticket 17 in final review (PR #70); ticket 18 (issue #57) is next.
+- None. Ticket 17 merged (PR #70, squash `58b6130`).
+
+## Handoff (2026-11-23)
+
+This Foreman thread processed four tickets — 14, 15, 16 and 17 (plus the
+leaner-process PR #69) — one over the brief's limit of three per thread.
+**Start a new Foreman thread** from this file, `gh issue list --label ticket
+--state open` (next: #57, ticket 18), and the brief at
+`~/NDIS/HARNESS_PROMPT.md`. Facts the next thread needs beyond what is above:
+
+- The leaner-process decision of 2026-11-23 is working: ticket 17 ran
+  builder → one review round → one PR in a fraction of a day. Keep applying
+  it; do not reintroduce the separate docs PR or per-round full eval runs.
+- The default `uv run pytest` is fast everywhere now (~45 s); the pre-push
+  full gate is `uv run pytest -m eval --no-cov` (selects the slow suites;
+  ~1–12 min — the chat golden is fast since ticket 17).
+- Pending verification items, first things to finish: one live follow-up
+  (rewrite) turn + a third turn through the chat page (ticket 17's AC) when
+  the daily quota resets, and ticket 15's live one-question run of
+  `scripts/run_ask_graph.py` if the demo needs it.
+- The free-tier quota resets roughly daily; captures (43 payloads for ticket
+  16's cache) should run right after a reset. `--only SUBSTRING` on
+  `scripts/parse_intent_cache.py` makes targeted re-captures cheap.
 
 ## Blocked
 
@@ -597,9 +619,8 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 ## Next
 
 - **Ticket 18 — Clarifying questions: pause and resume with interrupt (issue
-  #57) is next**, then 19–24 in number order (each depends on the previous).
-  Ticket 17's Done entry is appended in this branch's docs commit; ticket 18
-  runs under the leaner-process decision.
+  #57) is next**, then 19–24 in number order (each depends on the previous);
+  run under the leaner-process decision in the new Foreman thread.
 - **LLM quota facts for the phase (2026-11-23).** The free-tier daily quota
   was exhausted again after ticket 14's captures + live demo: the native
   endpoint returns 429, and the OpenAI-compat surface returns an empty 404 in
