@@ -21,3 +21,4 @@ One line per merged ticket: date, ticket, note, PR.
 - 2026-11-23 — 15 LangGraph foundations: one question through a graph — [note](15-langgraph-foundations.md) — [PR #65](https://github.com/jdhc3m/ndis-provider-navigator/pull/65)
 - 2026-11-23 — 16 Conversation memory: threads, checkpoints and follow-up questions — [note](16-conversation-memory.md) — [PR #68](https://github.com/jdhc3m/ndis-provider-navigator/pull/68)
 - 2026-11-23 — 17 Chat page in the web front end — [note](17-chat-page.md) — [PR #70](https://github.com/jdhc3m/ndis-provider-navigator/pull/70)
+- 2026-11-23 — 18 Clarifying questions: pause and resume with interrupt — [note](18-clarifying-questions.md) — [PR #74](https://github.com/jdhc3m/ndis-provider-navigator/pull/74)
