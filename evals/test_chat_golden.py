@@ -157,14 +157,16 @@ def _compare_expectation(turn: GoldenTurn, answer: Mapping[str, Any]) -> list[st
                 problems.append(f"item:{price.get('item')}")
             if price.get("state") != turn.service_state:
                 problems.append(f"state:{price.get('state')}")
-        if _filters_of(intent) is not None:
-            problems.append("provider_filters_leaked")
     if turn.rule_contains is not None:
         rule = intent.get("rule_question")
         if not isinstance(rule, str) or turn.rule_contains.casefold() not in rule.casefold():
             problems.append(f"rule_question:{rule!r}")
-        if _filters_of(intent) is not None:
-            problems.append("provider_filters_leaked")
+    # A price or rule follow-up that switched away from providers must not keep filters —
+    # unless the turn expects them: the rewrite copies the place forward, so a service
+    # follow-up may legitimately carry the combined shape (filters plus the price query).
+    switched_away = turn.service is not None or turn.rule_contains is not None
+    if switched_away and turn.filters is None and _filters_of(intent) is not None:
+        problems.append("provider_filters_leaked")
     return problems
 
 

@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from evals.test_chat_golden import ReplayChatClient, run_replay
 from ndis.adapters.chat_golden import (
     ChatCache,
+    ChatGoldenFormatError,
     read_chat_cache,
     read_chat_golden,
     rewrite_payload_key,
@@ -32,6 +33,7 @@ from ndis.application.chat import ChatDeps
 from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.extraction import TokenBudget
+from ndis.domain.intent import ProviderFilters
 from tests.conftest import (
     SEED_PROVIDERS,
     SEED_SUPPORT_ITEMS,
@@ -48,14 +50,23 @@ DECISION_INTENT = chat_intent_payload(decision_request=True)
 
 # What the model would answer: the rewrite per follow-up message, the intent per
 # standalone question.
+SERVICE_QUESTION = "how much does occupational therapy cost for providers in postcode 4101?"
+SERVICE_FOLLOWUP = "how much does occupational therapy cost?"
+COMBINED_INTENT = chat_intent_payload(
+    provider_filters='{"postcode": "4101"}',
+    price_query='{"service": "occupational therapy"}',
+)
+
 MODEL_REWRITES = {
     "only the approved ones": f'{{"standalone_question": "{NARROWED_QUESTION}"}}',
     "which is best? recommend one": f'{{"standalone_question": "{DECISION_QUESTION}"}}',
+    SERVICE_FOLLOWUP: f'{{"standalone_question": "{SERVICE_QUESTION}"}}',
 }
 MODEL_INTENTS = {
     FIRST_QUESTION: FIRST_INTENT,
     NARROWED_QUESTION: NARROWED_INTENT,
     DECISION_QUESTION: DECISION_INTENT,
+    SERVICE_QUESTION: COMBINED_INTENT,
 }
 
 GOLDEN_YAML = """\
@@ -72,6 +83,14 @@ conversations:
     filters: {"postcode": "4101"}
   - message: "which is best? recommend one"
     refusal: "decision_request"
+- id: synthetic_service_with_place
+  turns:
+  - message: "providers in postcode 4101"
+    filters: {"postcode": "4101"}
+  - message: "how much does occupational therapy cost?"
+    filters: {"postcode": "4101"}
+    service: "occupational therapy"
+    service_state: null
 """
 
 
@@ -211,14 +230,14 @@ def test_the_eval_logic_scores_a_clean_synthetic_capture(
     golden_path, cache_path = capture(repos, tmp_path, MODEL_REWRITES, MODEL_INTENTS)
     golden = read_chat_golden(golden_path)
     cache: ChatCache = read_chat_cache(cache_path)
-    assert len(cache.rewrites) == 2 and len(cache.intents) == 3
+    assert len(cache.rewrites) == 3 and len(cache.intents) == 4
 
     replay_client = ReplayChatClient(cache.rewrites, cache.intents)
     graph = replay_graph(replay_client, repos)
     outcome = run_replay(graph, golden, replay_client)
     assert outcome.missing == []
     assert outcome.first_turn_failures == []
-    assert outcome.followup_total == 1 and outcome.followup_hits == 1
+    assert outcome.followup_total == 2 and outcome.followup_hits == 2
     assert outcome.refusal_total == 1 and outcome.refusal_hits == 1
     assert outcome.failures == []
     # The floors the eval enforces from thresholds.yaml hold on this fixture.
@@ -243,7 +262,7 @@ def test_a_corrupted_rewrite_fails_the_followup_floor(
     graph = replay_graph(replay_client, repos)
     outcome = run_replay(graph, golden, replay_client)
     assert outcome.missing, "the corrupted rewrite must surface as a cache miss"
-    assert outcome.followup_hits == 0 and outcome.followup_total == 1
+    assert outcome.followup_hits < outcome.followup_total  # the poisoned turn scores 0
     assert outcome.followup_hits / outcome.followup_total < 0.85
 
 
@@ -319,3 +338,55 @@ class _DummyClient:
 
     def complete(self, request: object) -> object:
         raise AssertionError("building the deps never completes a call")
+
+
+def test_the_reader_allows_filters_alongside_a_service(tmp_path: Path) -> None:
+    """The rewrite copies the place forward, so a price follow-up may answer the
+    combined shape (filters plus the price query) — the golden file expects both."""
+    path = tmp_path / "chat_golden.yaml"
+    path.write_text(
+        """\
+conversations:
+- id: combined
+  turns:
+  - message: "Which providers are in Brisbane City?"
+    filters: {"locality": "Brisbane City"}
+  - message: "how much does occupational therapy cost per hour?"
+    filters: {"locality": "Brisbane City"}
+    service: "occupational therapy"
+    service_state: null
+""",
+        encoding="utf-8",
+    )
+    golden = read_chat_golden(path)
+    follow_up = golden.conversations[0].turns[1]
+    assert follow_up.filters == ProviderFilters(locality="Brisbane City")
+    assert follow_up.service == "occupational therapy"
+    assert follow_up.service_state is None and follow_up.refusal is None
+
+
+@pytest.mark.parametrize(
+    "combination",
+    [
+        'refusal: "decision_request"\n    service: "occupational therapy"',
+        'rule_contains: "cancellation"\n    filters: {"state": "QLD"}',
+        'rule_contains: "cancellation"\n    service: "occupational therapy"',
+        'refusal: "decision_request"\n    filters: {"state": "QLD"}',
+    ],
+)
+def test_the_reader_still_rejects_impossible_combinations(tmp_path: Path, combination: str) -> None:
+    path = tmp_path / "chat_golden.yaml"
+    path.write_text(
+        f"""\
+conversations:
+- id: broken
+  turns:
+  - message: "Which providers are in Brisbane City?"
+    filters: {{"locality": "Brisbane City"}}
+  - message: "how much does occupational therapy cost per hour?"
+    {combination}
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ChatGoldenFormatError):
+        read_chat_golden(path)

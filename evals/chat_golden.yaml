@@ -7,8 +7,11 @@
 # Each turn carries exactly one expectation for what the turn must produce:
 #   filters       - the ProviderFilters the final parsed intent must carry exactly
 #   service       - the service phrase the price query must name (never an item code);
-#                   provider_filters must be null (the follow-up switched away from
-#                   providers); service_state is the query's state (null when none stated)
+#                   service_state is the query's state (null when none stated). A turn
+#                   may carry filters alongside service: the rewrite copies the place
+#                   forward from the history, so a price follow-up may legitimately
+#                   answer the combined shape (filters plus the price query) — the same
+#                   combined shape the /ask golden SA service case treats as correct
 #   rule_contains - a substring the parsed rule_question must contain (case-insensitive);
 #                   provider_filters must be null
 #   refusal       - the machine reason the turn must be contained with (the existing
@@ -45,6 +48,7 @@ conversations:
   - message: "Which providers are in Brisbane City?"
     filters: {"locality": "Brisbane City"}
   - message: "how much does occupational therapy cost per hour?"
+    filters: {"locality": "Brisbane City"}
     service: "occupational therapy"
     service_state: null
 - id: rule_switch

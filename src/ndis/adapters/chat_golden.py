@@ -7,11 +7,15 @@ header, top-level sections, and block mappings whose values are JSON-quoted scal
 inline objects — parsed here without a YAML dependency, strictly, so a typo fails
 loudly instead of silently changing what the gate checks.
 
-Each golden turn carries exactly one expectation for what the turn must produce: the
-register ``filters`` the final parsed intent must carry, the ``service`` (and optional
+Each golden turn carries expectations for what the turn must produce: the register
+``filters`` the final parsed intent must carry, the ``service`` (and optional
 ``service_state``) a price follow-up must name, a substring a rule follow-up's
 ``rule_question`` must contain, or the machine ``refusal`` reason the follow-up must be
-contained with.
+contained with. A turn carries exactly one of ``service``, ``rule_contains`` or
+``refusal`` — except that ``filters`` may accompany ``service``: the rewrite is
+instructed to copy the place forward, so a price follow-up may legitimately answer with
+the combined intent shape the /ask golden SA service case already treats as correct
+(provider filters plus the price query).
 
 The cache holds two sections: ``rewrites`` (the contextualise payloads, keyed by the
 digest of exactly what the model saw — see :func:`rewrite_payload_key`) and ``intents``
@@ -166,31 +170,42 @@ def _finish_conversation(  # type: ignore[no-untyped-def]
 def _golden_turn(  # type: ignore[no-untyped-def]
     path, row: dict[str, object]
 ) -> GoldenTurn:
-    """One turn row: the message and exactly one expectation kind."""
+    """One turn row: the message and a valid expectation combination — one of
+    ``service``, ``rule_contains`` or ``refusal`` alone, or ``filters`` alone, or
+    ``filters`` alongside ``service`` (the combined shape: the rewrite copies the place
+    forward, so a price follow-up may carry both)."""
     _require(path, row, ("message",), f"turn {row.get('message')!r}")
     message = str(row["message"])
     if not message:
         raise ChatGoldenFormatError(f"{path}: a turn needs a non-empty message")
-    kinds = [name for name in TURN_EXPECTATIONS if name in row]
+    kinds = frozenset(name for name in TURN_EXPECTATIONS if name in row)
+    allowed = (
+        frozenset({"filters"}),
+        frozenset({"service"}),
+        frozenset({"rule_contains"}),
+        frozenset({"refusal"}),
+        frozenset({"filters", "service"}),
+    )
     if not kinds:
         raise ChatGoldenFormatError(f"{path}: turn {message!r} carries no expectation")
-    if len(kinds) > 1:
-        raise ChatGoldenFormatError(f"{path}: turn {message!r} carries several expectations")
-    kind = kinds[0]
-    if "service_state" in row and kind != "service":
-        raise ChatGoldenFormatError(f"{path}: turn {message!r} states a state without a service")
+    if kinds not in allowed:
+        raise ChatGoldenFormatError(
+            f"{path}: turn {message!r} carries the impossible combination {sorted(kinds)}"
+        )
     filters = row.get("filters")
-    if kind == "filters" and (not isinstance(filters, dict) or not filters):
+    if "filters" in kinds and (not isinstance(filters, dict) or not filters):
         raise ChatGoldenFormatError(f"{path}: turn {message!r} has bad filters")
     service = row.get("service")
-    if kind == "service" and (not isinstance(service, str) or not service):
+    if "service" in kinds and (not isinstance(service, str) or not service):
         raise ChatGoldenFormatError(f"{path}: turn {message!r} has a bad service")
     rule = row.get("rule_contains")
-    if kind == "rule_contains" and (not isinstance(rule, str) or not rule):
+    if "rule_contains" in kinds and (not isinstance(rule, str) or not rule):
         raise ChatGoldenFormatError(f"{path}: turn {message!r} has a bad rule_contains")
     refusal = row.get("refusal")
-    if kind == "refusal" and (not isinstance(refusal, str) or not refusal):
+    if "refusal" in kinds and (not isinstance(refusal, str) or not refusal):
         raise ChatGoldenFormatError(f"{path}: turn {message!r} has a bad refusal")
+    if "service_state" in row and "service" not in kinds:
+        raise ChatGoldenFormatError(f"{path}: turn {message!r} states a state without a service")
     state = row.get("service_state")
     if state is not None and not isinstance(state, str):
         raise ChatGoldenFormatError(f"{path}: turn {message!r} has a non-string service_state")
