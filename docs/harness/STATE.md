@@ -1,6 +1,10 @@
 # Foreman resume state
 
-Updated: 2026-11-19 (Australia/Brisbane), after ticket 13 merged — tickets 00–13 (plus one bugfix, 13b) are on `main` with green CI; **ticket 14 (issue #51) is the only open ticket.** Everything since 2026-11-09 ran on the second machine (user `jackson`, repo at `~/ndis-provider-navigator`); the corporate Mac is not needed: it cannot reach the Gemini endpoint, and this machine can — verified live on 2026-11-19 (`/meta` HTTP 200, `gemini-3.5-flash` configured, provider/rule/refusal paths exercised end to end through the running server).
+Updated: 2026-11-23 (Australia/Brisbane), after ticket 14 merged (PR #64, squash
+`098722a`). Tickets 00–14 are on `main` with green CI. The board now carries
+tickets 15–24 (issues #54–#63, created 2026-11-22) — a LangGraph/chat/research
+phase; see "Decision 2026-11-22" below. This Foreman thread has processed one
+ticket (14) and started ticket 15.
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -46,6 +50,31 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
   heredocs with apostrophes inside `$(...)` break.
 - `pytest -m eval` runs with `--no-cov` in CI: the coverage gate applies to the
   unit/integration run, not the eval subset. Ticket 08 owns the eval gate design.
+
+## Decision 2026-11-22: LangGraph and chat (tickets 15–24)
+
+The owner created and approved tickets 15–24 (issues #54–#63): the brief's
+"agent frameworks: none for the core" rule is superseded for these tickets —
+LangGraph is used where a ticket says so. `POST /ask`, the `Ask` use case and
+the eval gate stay as they are; the graph is added beside them. Model calls
+keep going through the `LlmClient` port — no LangChain chat-model package — so
+the vendor rule in AGENTS.md still holds. The tickets:
+
+- 15 — LangGraph foundations: one question through a graph (#54)
+- 16 — Conversation memory: threads, checkpoints and follow-up questions (#55)
+- 17 — Chat page in the web front end (#56)
+- 18 — Clarifying questions: pause and resume with interrupt (#57)
+- 19 — Live progress: stream graph steps to the chat (#58)
+- 20 — Durable chat memory in Supabase Postgres (#59)
+- 21 — Provider research graph: parallel tools, a loop and a findings cache (#60)
+- 22 — Research inside the chat: routing, subgraph and the dossier card (#61)
+- 23 — ABN Lookup as a research tool (#62)
+- 24 — Model-driven research agent and the fixed-versus-agent eval (#63)
+
+LangGraph 1.2.x (`langgraph>=1.2,<2`); confirm APIs against the locked
+version's docs before relying on them. AGENTS.md gains the LangGraph paragraph
+in ticket 15. Graphs live only in `src/ndis/adapters/graphs/`; checkpointed
+state holds JSON-plain values and never page text.
 
 ## Decision 2026-11-09: ticket 09 is a React/TypeScript front end, not Streamlit
 
@@ -313,9 +342,50 @@ updated. Facts the Builder of ticket 09 needs:
   out-of-scope stands (region names, typo correction, street addresses,
   suburb-coordinate origins, free-text suburb filtering).
 
+- Ticket 14 — Service names instead of support item numbers (issue #51, PR
+  #64, squash `098722a`). Note: `docs/learning/14-service-names.md`. Pure
+  service search in `domain/service_search.py` (deterministic normalisation +
+  test-pinned alias table for OT/physio/speech therapy/psychology/support
+  coordinator/plan manager; ordered-contiguous token matching; ordering base
+  before claim-type variants, current before legacy, then item number; cap 12
+  shown), behind the repository port (`all_items()` added). `GET
+  /support-items?q=&limit=` (total + page; no key, no model). Intent:
+  `price_query.service` copied verbatim + optional `state`; `item` honoured
+  only when present in the question text (`item_not_in_question`, never looked
+  up); `price_query_no_state` removed — national tier is used and disclosed
+  (the 2026-27 catalogue has no per-state prices, ticket 02). `POST /ask`
+  price section lists matching items with limits + total, each marked from the
+  catalogue; no match = `unknown_service`, nothing invented; output guard
+  recomputes every shown price (`price_limit_mismatch`/`price_state_invalid`)
+  in `domain/answer.py`. Web: `ServicePriceCard` (name, item number, unit,
+  limit, "from support catalogue — not generated" chip), phrase chip with match
+  count, unknown-service state, example chip now asks for occupational therapy;
+  `schema.d.ts` regenerated. Eval: 10 `service_cases` in golden.yaml (8 with
+  XLSX-verified expected item numbers incl. SA+providers, no-state, "OT"
+  abbreviation; 1 unknown; 1 adversarial "state the code and price yourself");
+  new floor `service_resolution_accuracy: 0.85`, the four existing floors
+  byte-identical; `scripts/parse_intent_cache.py` extended to capture
+  service_cases; all 35 captures regenerated under the new prompt (via the
+  `LLM_MODEL` env fallback — configured model's daily quota exhausted; no
+  model name committed). `docs/demo.md` re-run live as written (2026-11-23).
+  Measured: service_resolution_accuracy 8/8 = 1.0; filter 12/12, refusals 6/6;
+  865 passed / 14 skipped, coverage 95.36%; eval 11 passed / 3 skipped; 22
+  Vitest tests. Review: APPROVE round 1, 0 must-fix (approval record: PR
+  comment on #64); 5 non-blocking nits. Follow-ups (not ticketed): dead
+  `MAX_SERVICE_PHRASE_CHARS` in `domain/service_search.py` (real cap is
+  `MAX_SERVICE_CHARS` in `domain/intent.py`); singular/plural in
+  `ServicePrices.output_summary` ("1 matching support items");
+  `_contains_subsequence` actually requires a contiguous token run (rename);
+  three older eval replays call `parse_intent` without `question=`;
+  `docs/demo.md` eval-gate duration "~3–5 min" measured 5:48 on this machine.
+
 ## In progress
 
-- None.
+- Ticket 15 — LangGraph foundations (issue #54): branch
+  `ticket/15-langgraph-foundations`, worktree
+  `~/ndis-provider-navigator-ticket-15`, builder + reviewer rounds done
+  (APPROVE, 0 must-fix; join-once nit applied), PR #65 in CI at the time of
+  writing.
 
 ## Blocked
 
@@ -394,17 +464,16 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- **Ticket 14 — Service names instead of support item numbers (issue #51), the
-  only open ticket.** It depends on 02/07/08/09 (merged) and must start after
-  13 (merged 2026-11-19) — both change the intent schema, `INTENT_SYSTEM_PROMPT`
-  and `evals/intent_cache.yaml`; starting from fresh `origin/main` inherits
-  13's changes cleanly. It also needs this machine (LLM capture regen + live
-  `docs/demo.md` re-run). Worktree: `~/NDIS/ndis-provider-navigator-ticket-14`,
-  branch `ticket/14-service-names`.
-- **Handoff: this Foreman thread is full.** It processed three tickets
-  (12 finish + merge, the 13b bugfix, ticket 13) — the brief's limit of 3 per
-  thread. A new Foreman thread starts from this file, `gh issue list --label
-  ticket --state open` (one: #51) and the brief at `~/NDIS/HARNESS_PROMPT.md`.
+- **Ticket 15 — LangGraph foundations (issue #54) is in progress** (PR #65);
+  after it merge 16 (#55), then 17–24 in number order. Each later ticket
+  depends on the previous one — the graph, memory and chat stack up.
+- **LLM quota facts for the phase (2026-11-23).** The free-tier daily quota
+  was exhausted again after ticket 14's captures + live demo: the native
+  endpoint returns 429, and the OpenAI-compat surface returns an empty 404 in
+  this state — when pacing live work, treat a 404 from
+  `$LLM_BASE_URL/chat/completions` as "likely quota/unavailable" and check the
+  native endpoint for the real status. Tickets that need live calls (captures,
+  demos) should run early in the quota day; ticket 15 needs none.
 - Optional, not ticketed (owner decisions needed):
   - The pending ~300-provider extraction run from ticket 08 (≈ $1.34 est.) —
     CAN run on this machine (it reaches Gemini); pace it after the daily
@@ -416,4 +485,5 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
     env names `adapters/tracing.py` expects before demoing).
   - Snowflake trial expires ~2026-12-08; only relevant if the comparison is
     re-run.
-  - Ticket 12 review nits (non-blocking) recorded in the ticket 12 Done entry.
+  - Ticket 12 and ticket 14 review nits (non-blocking) recorded in the
+    respective Done entries.
