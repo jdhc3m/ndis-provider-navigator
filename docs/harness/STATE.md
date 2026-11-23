@@ -1,8 +1,10 @@
 # Foreman resume state
 
-Updated: 2026-11-23 (Australia/Brisbane), after ticket 18 (PR #74). Tickets
-00–18 are on `main` with green CI; the board carries tickets 19–24 (issues
-#58–#63) — the LangGraph/chat/research phase ("Decision 2026-11-22" below).
+Updated: 2026-11-24 (Australia/Brisbane). Tickets 00–18 are on `main` with
+green CI; the board carries tickets 19–24 (issues #58–#63, LangGraph/chat/
+research phase) and tickets 25–33 (issues #75–#83, the deployment phase —
+see `docs/deploy.md`, decided with the owner 2026-11-24: Fly.io, fully
+public, \$15/mo provider spend cap, derive-and-ship data).
 Tickets 14 and 15 each consumed a full day; the owner approved process cuts
 ("Decision 2026-11-23: leaner harness process") binding from ticket 17 on.
 Ticket 17 ran builder + one review round + one PR in about a quarter of the
@@ -694,3 +696,21 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
     re-run.
   - Ticket 12 and ticket 14 review nits (non-blocking) recorded in the
     respective Done entries.
+
+## Deployment phase (2026-11-24)
+
+Owner decided the go-live path in conversation: **Fly.io** (over cheap-VPS
+and Mac-tunnel), **fully public** audience (Epic B tickets 29–31 are launch
+blockers), `*.fly.dev` domain for launch, **derive-and-ship** data (the
+scraper and extraction are build-time only; ship the materialized
+~145MB of SQLite/pages artifacts to a Fly volume, exclude
+`data/private/cost/`), **\$15/mo provider spend cap** plus an app-level
+daily guardrail (ticket 29). Full plan + runbook: `docs/deploy.md`.
+Tickets 25–33 are issues #75–#83; ticket 25 (Dockerfile + fly.toml
+scaffold) started same day on `ticket/25-fly-infra`.
+
+Caveats carried over: the Mac's corporate proxy blocks hosted LLM
+endpoints, and `fly` CLI/registry access is unverified from it — deploys
+may need the VPN or another machine (same constraint as ticket 18's live
+probes). The repo is public: nothing from `data/private/` may reach the
+image, the volume push script, or CI logs.
