@@ -112,6 +112,15 @@ export interface paths {
          *     the same checkpoint, so the question's earlier work is never redone. An answer that
          *     names none of the offered options re-asks the same question with a reason; anything
          *     else waiting on nothing is a 409.
+         *
+         *     The nothing-pending check runs under the same lock as the invoke, exactly as the
+         *     turn cap does in ``chat``: ``Command(resume=...)`` on a thread whose turn already
+         *     completed is a silent no-op that returns the previous turn unchanged, so a check
+         *     taken outside the lock would let a second overlapping resume (a double-click, a
+         *     second tab) replay the first one's answer — or, racing a new message, return that
+         *     message's turn as the resume's own. Under the lock the check and the invoke are one
+         *     atomic step: whichever resume gets there first answers, the other finds nothing
+         *     pending and is refused.
          */
         post: operations["chat_resume_chat__thread_id__resume_post"];
         delete?: never;
