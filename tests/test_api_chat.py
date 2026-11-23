@@ -2,8 +2,10 @@
 repositories): the new-thread and follow-up answers, the restored conversation, and the
 three thread-level rejections (malformed id, unknown thread, full thread)."""
 
+import threading
 import uuid
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -173,12 +175,30 @@ def test_the_chat_routes_are_registered_by_name() -> None:
     assert chat_thread.__name__ in names
 
 
-def test_thread_config_validates_the_id_and_builds_the_config() -> None:
+def test_thread_config_validates_the_id_builds_the_config_and_canonicalises() -> None:
     thread_id = str(uuid.uuid4())
     assert _thread_config(thread_id) == {"configurable": {"thread_id": thread_id}}
+    # Any valid spelling addresses the same stored thread: the canonical form is the key.
+    assert _thread_config(thread_id.upper()) == {"configurable": {"thread_id": thread_id}}
     with pytest.raises(Exception) as excinfo:
         _thread_config("not-a-uuid")
     assert getattr(excinfo.value, "status_code", None) == 422
+
+
+def test_an_uppercase_spelled_thread_id_addresses_the_same_thread(repos) -> None:
+    """The issued id is canonical; a client sending the same UUID uppercased still
+    reaches the same stored thread instead of a 404."""
+    providers, catalogue = repos
+    client, _ = make_api(providers, catalogue, "", {FIRST_QUESTION: FIRST_INTENT})
+    thread_id = client.post("/chat", json={"message": FIRST_QUESTION}).json()["thread_id"]
+    response = client.post(
+        "/chat", json={"message": FIRST_QUESTION, "thread_id": thread_id.upper()}
+    )
+    assert response.status_code == 200
+    assert response.json()["thread_id"] == thread_id  # the answer carries the canonical id
+    restored = client.get(f"/chat/{thread_id.upper()}")
+    assert restored.status_code == 200  # the same thread, not a 404
+    assert len(restored.json()["turns"]) == 2
 
 
 def test_the_thread_id_validator_rejects_a_non_uuid() -> None:
@@ -300,7 +320,6 @@ def test_the_real_dependency_wiring_builds_the_chat_graph(
     )
     graph = dependencies.chat_graph(deps)
     assert graph.checkpointer is dependencies.chat_checkpointer()
-    assert "in_memory" == "in_memory"  # GET /meta reports the memory kind (schema test below)
 
 
 class _UnusedClient:
@@ -310,3 +329,52 @@ class _UnusedClient:
 
     def complete(self, request: object) -> object:
         raise AssertionError("wiring test never completes a call")
+
+
+def _race_statuses(racers: list[TestClient], thread_id: str) -> list[int]:
+    """Two POSTs on one thread, started together: the status codes they answered with."""
+    barrier = threading.Barrier(len(racers))
+
+    def post_once(racer: TestClient) -> int:
+        barrier.wait()
+        return racer.post(
+            "/chat", json={"message": "only the approved ones", "thread_id": thread_id}
+        ).status_code
+
+    with ThreadPoolExecutor(max_workers=len(racers)) as pool:
+        return sorted(pool.map(post_once, racers))
+
+
+def _seed_turns(client: TestClient, count: int) -> str:
+    """One thread at ``count`` turns; every turn is one the fake model answers."""
+    thread_id: str | None = None
+    for index in range(count):
+        message = FIRST_QUESTION if index == 0 else "only the approved ones"
+        response = client.post("/chat", json={"message": message, "thread_id": thread_id})
+        assert response.status_code == 200, response.status_code
+        thread_id = response.json()["thread_id"]
+    assert thread_id is not None
+    return thread_id
+
+
+def test_two_concurrent_posts_cannot_push_a_thread_past_the_cap(repos) -> None:
+    """Regression (review round 1): the 409 check and the invoke were a check-then-act
+    pair with no lock, and sync handlers run in FastAPI's threadpool, so two POSTs on a
+    49-turn thread could both pass the check and both append — 51 persisted turns. The
+    pair must be serial: one 200 (turn 50), one 409, and 50 stored turns."""
+    providers, catalogue = repos
+    intents = {FIRST_QUESTION: FIRST_INTENT, NARROWED_QUESTION: NARROWED_INTENT}
+    for _round in range(3):
+        client, _ = make_api(
+            providers,
+            catalogue,
+            f'{{"standalone_question": "{NARROWED_QUESTION}"}}',
+            intents,
+        )
+        thread_id = _seed_turns(client, MAX_TURNS_PER_THREAD - 1)
+        racers = [TestClient(client.app), TestClient(client.app)]
+        statuses = _race_statuses(racers, thread_id)
+        # One turn lands, the other is refused: the cap held under concurrency.
+        assert statuses == [200, 409], statuses
+        turns = client.get(f"/chat/{thread_id}").json()["turns"]
+        assert len(turns) == MAX_TURNS_PER_THREAD, len(turns)

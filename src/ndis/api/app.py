@@ -3,6 +3,7 @@ combined /ask endpoint, the multi-turn /chat endpoints and the /meta facts the w
 labels itself with; when the front end has been built it is served from ``/`` as static
 files."""
 
+import threading
 import uuid
 from typing import Annotated, Any
 
@@ -255,13 +256,22 @@ def ask(
 
 
 def _thread_config(thread_id: str) -> dict[str, Any]:
-    """The run config a thread is addressed by; a non-UUID id is a 422, whatever the
-    client sent — the server only ever issues UUID4 thread ids."""
+    """The run config a thread is addressed by. The canonical spelling is the storage
+    key, so any valid spelling of the same UUID addresses the same thread; a non-UUID is
+    a 422, whatever the client sent — the server only ever issues UUID4 thread ids."""
     try:
-        uuid.UUID(thread_id)
+        canonical = str(uuid.UUID(thread_id))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="thread_id must be a UUID") from exc
-    return {"configurable": {"thread_id": thread_id}}
+    return {"configurable": {"thread_id": canonical}}
+
+
+# Serializes POST /chat end to end (the thread-exists and cap checks plus the invoke).
+# Both checks are read-then-act on state the invoke then changes, and the handler runs
+# in FastAPI's threadpool, so without the lock two concurrent POSTs on one thread can
+# both pass the cap check and append — the 50-turn rule would not hold. Chat turns are
+# sequential by design, so serializing them costs nothing real; GET stays lock-free.
+_chat_turn_lock = threading.Lock()
 
 
 def chat(
@@ -274,31 +284,32 @@ def chat(
     question from the thread's recent turns first, so it costs two — and the answer
     names the standalone question so the page can show how the follow-up was understood.
     The thread lives in the server's RAM only: a restart loses every conversation."""
-    thread_id = payload.thread_id or str(uuid.uuid4())
-    config = _thread_config(thread_id)
-    if payload.thread_id is not None and saver.get_tuple(config) is None:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "reason": THREAD_NOT_FOUND,
-                "message": "that conversation is not in the server's memory; it may have "
-                "been lost in a restart — start a new one",
-            },
-        )
-    turns = thread_turns(graph.get_state(config).values)
-    if thread_is_full(turns):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "reason": THREAD_FULL,
-                "message": f"this conversation holds its maximum of {len(turns)} turns; "
-                "start a new one",
-            },
-        )
-    try:
-        final = graph.invoke({"message": payload.message}, config)
-    except (LlmError, EmbeddingError, BudgetExhausted) as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    config = _thread_config(payload.thread_id or str(uuid.uuid4()))
+    thread_id = config["configurable"]["thread_id"]
+    with _chat_turn_lock:
+        if payload.thread_id is not None and saver.get_tuple(config) is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "reason": THREAD_NOT_FOUND,
+                    "message": "that conversation is not in the server's memory; it may "
+                    "have been lost in a restart — start a new one",
+                },
+            )
+        turns = thread_turns(graph.get_state(config).values)
+        if thread_is_full(turns):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": THREAD_FULL,
+                    "message": f"this conversation holds its maximum of {len(turns)} "
+                    "turns; start a new one",
+                },
+            )
+        try:
+            final = graph.invoke({"message": payload.message}, config)
+        except (LlmError, EmbeddingError, BudgetExhausted) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     turn = final["turns"][-1]
     return ChatOut(
         thread_id=thread_id,
