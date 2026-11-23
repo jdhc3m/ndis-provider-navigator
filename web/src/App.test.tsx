@@ -1,15 +1,16 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from './App'
 import { tabFromHash } from './tabs'
-import { ApiError, type ChatThreadOut, type NavigatorApi } from './api/client'
+import { ApiError, type ChatOut, type ChatThreadOut, type NavigatorApi } from './api/client'
 import {
   ANSWER,
   EMPTY,
   META,
   REPLY_1,
+  REPLY_2,
   REPLY_REFUSAL,
   STANDALONE_QUESTION,
   THREAD,
@@ -35,6 +36,7 @@ const NOT_FOUND = new ApiError(404, {
   message: "that conversation is not in the server's memory (test)",
 })
 const FULL = new ApiError(409, { reason: 'thread_full', message: 'holds 50 turns (test)' })
+const FRESH_THREAD_ID = '0e0b7e40-6f0e-4a52-9c5e-6f4a8f0f1a02'
 
 describe('App', () => {
   beforeEach(() => {
@@ -298,6 +300,61 @@ describe('App', () => {
       expect(
         screen.getByRole('button', { name: CHAT_EXAMPLE_QUESTIONS[0] ?? '' }),
       ).toBeInTheDocument()
+    })
+
+    it('discards a stale reply when a new chat starts while a reply is pending', async () => {
+      const user = userEvent.setup()
+      let resolveStale: (reply: ChatOut) => void = () => undefined
+      // The stale reply belongs to the thread the user is abandoning; the fresh one to
+      // the conversation the next message starts.
+      const stale: ChatOut = { ...REPLY_2, thread_id: THREAD_ID }
+      const fresh: ChatOut = { ...REPLY_1, thread_id: FRESH_THREAD_ID }
+      const chat = vi
+        .fn<NavigatorApi['chat']>()
+        .mockResolvedValueOnce(REPLY_1)
+        .mockImplementationOnce(
+          () =>
+            new Promise<ChatOut>((resolve) => {
+              resolveStale = resolve
+            }),
+        )
+        .mockResolvedValueOnce(fresh)
+      render(<App client={fakeClient({ chat })} />)
+      const composer = screen.getByLabelText<HTMLTextAreaElement>(/your message/i)
+
+      await user.type(composer, QUESTION)
+      await user.keyboard('{Enter}')
+      await screen.findByText('Example Therapy Pty Ltd')
+      expect(window.localStorage.getItem('ndis-provider-navigator-thread')).toBe(REPLY_1.thread_id)
+
+      await user.type(composer, 'and in South Bank?')
+      await user.keyboard('{Enter}')
+      expect(screen.getByText(/working on your reply/i)).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'New chat' }))
+      expect(screen.queryByText('Example Therapy Pty Ltd')).toBeNull()
+      expect(
+        screen.getByRole('button', { name: CHAT_EXAMPLE_QUESTIONS[0] ?? '' }),
+      ).toBeInTheDocument()
+      expect(window.localStorage.getItem('ndis-provider-navigator-thread')).toBeNull()
+
+      resolveStale(stale)
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      // The stale reply belongs to the abandoned conversation and stays discarded.
+      expect(screen.queryByText(/follow-up understood as/i)).toBeNull()
+      expect(screen.queryByText('Example Therapy Pty Ltd')).toBeNull()
+      expect(window.localStorage.getItem('ndis-provider-navigator-thread')).toBeNull()
+
+      await user.type(composer, 'What are the rules for short notice cancellations?')
+      await user.keyboard('{Enter}')
+      expect(await screen.findByText('Example Therapy Pty Ltd')).toBeInTheDocument()
+      expect(chat).toHaveBeenLastCalledWith(
+        'What are the rules for short notice cancellations?',
+        null,
+      )
+      expect(window.localStorage.getItem('ndis-provider-navigator-thread')).toBe(FRESH_THREAD_ID)
     })
 
     it('starts a new conversation from the New chat button', async () => {

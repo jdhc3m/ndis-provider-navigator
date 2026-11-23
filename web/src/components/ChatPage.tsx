@@ -91,10 +91,15 @@ export function ChatPage({ client, meta }: ChatPageProps) {
   const [restoreAttempt, setRestoreAttempt] = useState(0)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
   const logEndRef = useRef<HTMLDivElement | null>(null)
+  // Bumped whenever the conversation is abandoned ("New chat", a lost thread): any
+  // reply or restore that was still in flight belongs to the old conversation and must
+  // not touch its state or the stored thread id.
+  const generationRef = useRef(0)
 
   /** A conversation with nothing behind it: empty server thread, cleared storage, and —
    * when the old thread could not be restored — the notice that explains why. */
   const startFresh = useCallback((notKeptNotice: boolean) => {
+    generationRef.current += 1
     setThreadId(null)
     setTurns([])
     setPending(null)
@@ -110,13 +115,17 @@ export function ChatPage({ client, meta }: ChatPageProps) {
       return
     }
     let cancelled = false
+    const generation = generationRef.current
     client.getThread(initialThreadId).then(
       (thread) => {
         if (cancelled) {
           return
         }
-        setTurns(thread.turns)
         setRestore({ status: 'ready' })
+        if (generationRef.current !== generation) {
+          return
+        }
+        setTurns(thread.turns)
       },
       (error: unknown) => {
         if (cancelled) {
@@ -125,6 +134,9 @@ export function ChatPage({ client, meta }: ChatPageProps) {
         if (threadNotFound(error)) {
           setRestore({ status: 'ready' })
           startFresh(true)
+        } else if (generationRef.current !== generation) {
+          // The restore was abandoned mid-flight; there is nothing left to surface.
+          setRestore({ status: 'ready' })
         } else {
           setRestore({ status: 'error', error })
         }
@@ -149,12 +161,16 @@ export function ChatPage({ client, meta }: ChatPageProps) {
       ) {
         return
       }
+      const generation = generationRef.current
       setDraft('')
       setPending(message)
       setFailed(null)
       setNotKept(false)
       client.chat(message, threadId).then(
         (reply) => {
+          if (generationRef.current !== generation) {
+            return
+          }
           setThreadId(reply.thread_id)
           writeStoredThreadId(reply.thread_id)
           setTurns((previous) => [...previous, turnFromReply(message, reply)])
@@ -162,6 +178,9 @@ export function ChatPage({ client, meta }: ChatPageProps) {
           composerRef.current?.focus()
         },
         (error: unknown) => {
+          if (generationRef.current !== generation) {
+            return
+          }
           setPending(null)
           if (threadNotFound(error)) {
             // The server lost the conversation between turns: show the notice, clear the
