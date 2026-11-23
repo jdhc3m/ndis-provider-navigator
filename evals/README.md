@@ -8,6 +8,13 @@ lowering them. Each suite replays a committed capture or a recorded cache where 
 exists, so a gate run spends no model quota; the model-backed values were captured
 from the configured endpoint (see `GET /meta` and `src/ndis/config.py`).
 
+Fast and slow halves. The suites that replay the full register snapshot
+(`test_ask_golden.py`, `test_ask_graph_parity.py`) carry the `slow` marker: they take
+minutes, so the default `uv run pytest` (which adds `-m 'not slow'`) leaves them out
+during iteration. Run the full gate once before pushing — CI's eval job selects
+everything again because its `-m eval` overrides the default. The fast subset on its
+own is `uv run pytest -m 'eval and not slow' --no-cov`.
+
 CI runs the suites that need nothing but committed files — `test_intent_accuracy.py`
 replays `intent_cache.yaml` through the real parser and pins the intent prompt's
 contract — and the suites that need `data/` (the register snapshot, the rule index,
@@ -29,6 +36,12 @@ refusal into an execution.
 captures cannot see a prompt edit, so the suite pins the intent prompt's load-bearing
 declarations (question-as-data, ignore-embedded-instructions, exact output shape)
 directly, the way `domain/answer.py` pins the caveat constant.
+
+Re-capturing. `scripts/parse_intent_cache.py` rewrites `intent_cache.yaml` from the
+configured model. After a prompt tweak or a reworded golden question, pass
+`--only SUBSTRING` (repeatable) to capture just the matching questions and keep the
+other payloads from the committed cache — a full 35-case capture spends a daily
+quota; a targeted one spends minutes of it.
 
 `er_sample.yaml` is the entity-resolution hand-check sample written by
 `scripts/resolve_entities.py` (50 rows, stratified by `match_status` × `strategy`; ambiguous
