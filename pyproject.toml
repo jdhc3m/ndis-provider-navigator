@@ -57,8 +57,11 @@ files = ["src/ndis/domain", "src/ndis/application"]
 [tool.pytest.ini_options]
 testpaths = ["tests", "evals"]
 pythonpath = ["."]
-addopts = "-ra --strict-markers --cov=ndis.domain --cov=ndis.application --cov-report=term-missing --cov-fail-under=80"
-markers = ["eval: model-backed evaluation requiring a personal API key"]
+addopts = "-ra --strict-markers -m 'not slow' --cov=ndis.domain --cov=ndis.application --cov-report=term-missing --cov-fail-under=80"
+markers = [
+    "eval: model-backed evaluation requiring a personal API key",
+    "slow: register-backed eval suite replaying the full data snapshot; deselected by the default run, selected by the pre-push gate (uv run pytest -m eval --no-cov)",
+]
 
 [tool.coverage.run]
 branch = true

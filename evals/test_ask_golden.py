@@ -34,6 +34,11 @@ from ndis.domain.entities import Remoteness, SupportItem
 from ndis.domain.extraction import TokenBudget
 from ndis.domain.locality import LocalityOutcome
 
+# Replays every golden case against the full register snapshot — minutes, not seconds.
+# Deselected by the default run (see the ``slow`` marker in pyproject); the pre-push
+# gate ``uv run pytest -m eval --no-cov`` and CI select it again.
+pytestmark = pytest.mark.slow
+
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "evals" / "golden.yaml"
 CACHE = ROOT / "evals" / "intent_cache.yaml"

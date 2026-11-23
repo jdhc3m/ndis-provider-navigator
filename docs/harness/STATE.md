@@ -1,10 +1,12 @@
 # Foreman resume state
 
-Updated: 2026-11-23 (Australia/Brisbane), after ticket 14 merged (PR #64, squash
-`098722a`). Tickets 00–14 are on `main` with green CI. The board now carries
-tickets 15–24 (issues #54–#63, created 2026-11-22) — a LangGraph/chat/research
-phase; see "Decision 2026-11-22" below. This Foreman thread has processed one
-ticket (14) and started ticket 15.
+Updated: 2026-11-23 (Australia/Brisbane), after ticket 16 merged (PR #68, squash
+`0818cfb`) and the leaner-process decision below. Tickets 00–16 are on `main` with
+green CI. The board now carries tickets 17–24 (issues #56–#63, created 2026-11-22)
+— a LangGraph/chat/research phase; see "Decision 2026-11-22" below. Tickets 14
+and 15 each consumed a full day; the owner approved process cuts (see "Decision
+2026-11-23: leaner harness process") that bind the loop from ticket 17 on —
+ticket 16 merged before the decision landed and ran on the old process.
 
 A new Foreman reads this file, `gh issue list --label ticket --state open`, and
 `gh pr list`, finishes any open PR first, then continues with the lowest-numbered
@@ -46,10 +48,51 @@ open issue whose dependencies are closed. The full brief lives outside the repo 
   `--body-file`, Reviewer record as a PR comment, lock commit from the
   `uv-lock` artifact, squash-merge, docs PR for the note. Each ticket took two
   review rounds; the Reviewer found a real defect both times.
+  (Superseded for tickets 16+ by the leaner-process decision below.)
 - Write PR/comment bodies to files under `.amp/in/` and pass `--body-file`;
   heredocs with apostrophes inside `$(...)` break.
 - `pytest -m eval` runs with `--no-cov` in CI: the coverage gate applies to the
   unit/integration run, not the eval subset. Ticket 08 owns the eval gate design.
+
+## Decision 2026-11-23: leaner harness process (applies from ticket 16)
+
+Tickets 13–15 each took a full day. Measured where the time went: a third feature
+work, a third tests/eval, a third process the last three tickets did not need
+(the Reviewer returned 0 must-fix in 13–15; a second docs PR per ticket; the
+~12:45 of register-backed evals re-ran on every gate pass; full 35-case capture
+re-spend after each prompt tweak; demo re-run even when the demo output did not
+change). The owner approved the following cuts; they bind the Foreman loop from
+ticket 16 on:
+
+- **One PR per ticket.** Feature, learning note and STATE update go into the
+  same branch and squash-merge together — no separate docs PR. Commit order in
+  the branch: `feat:` (or `fix:`) first, then `docs:` for note + STATE.
+- **One review round by default.** A second round happens only if round one
+  returned must-fix items; nits become STATE follow-ups, not re-review work.
+- **Reviewer depth by ticket type.** Tickets introducing a new class of
+  behaviour — next: 16 (checkpointer), 17 (chat UI), 18 (interrupt) — get the
+  full Reviewer (fresh `/tmp` copy, probes). A mechanical or infra-only ticket
+  with no user-visible change gets a scoped review: read the diff, run the
+  gates, no `/tmp` copy.
+- **Web ceremony only when `web/` changed.** No web change → no screenshots, no
+  `pnpm check`, no demo re-run. Re-run `docs/demo.md` live only when the demo's
+  shown output changes (ticket 14 rewrote the price answer; ticket 15 did not).
+- **Eval split (implemented).** `test_ask_golden` and `test_ask_graph_parity`
+  carry a `slow` marker and the default pytest adds `-m 'not slow'`, so
+  `uv run pytest` (the AGENTS gate) is units + fast evals; run the full gate
+  `uv run pytest -m eval --no-cov` once before push — CI's eval job selects
+  everything again (`-m eval` overrides the default). Fast subset alone:
+  `uv run pytest -m 'eval and not slow' --no-cov`.
+- **Partial captures (implemented).** After a prompt tweak or reworded golden
+  case, capture only what changed:
+  `scripts/parse_intent_cache.py --only SUBSTRING` (repeatable) keeps the other
+  payloads from the committed cache. Full re-capture only when the prompt or the
+  golden set changes wholesale.
+- **Coverage scope stays domain+application.** Graph node closures and the
+  composition root are outside the measured denominator on purpose; do not add
+  them to `source`, and do not write mirror tests for thin wiring — the shape
+  tests (fan-in once, refusal edge, thread safety) and the parity eval are their
+  coverage.
 
 ## Decision 2026-11-22: LangGraph and chat (tickets 15–24)
 
@@ -407,9 +450,48 @@ updated. Facts the Builder of ticket 09 needs:
   one-question run of `scripts/run_ask_graph.py` is pending (the endpoint was
   quota-exhausted on 2026-11-23).
 
+- Ticket 16 — Conversation memory (issue #55, PR #68, squash `0818cfb`). Note:
+  `docs/learning/16-conversation-memory.md`. `POST /chat` + `GET
+  /chat/{thread_id}`; rewrite-then-parse keeps `INTENT_SYSTEM_PROMPT` and its
+  captures untouched (contextualise = the fifth model call site, once per
+  follow-up turn); total rewrite guard in `domain/chat.py` (≤500 chars, falls
+  back to the raw message with a machine reason, disclosed to the client);
+  history enters the prompt as data; refusals not launderable; one shared
+  `InMemorySaver` (restart limit by design, `GET /meta` says
+  `chat_memory: "in_memory"`); ≤ 50 turns under a module-level
+  `threading.Lock` (the review's must-fix — the cap check raced across
+  FastAPI threads; `InMemorySaver` is not internally locked); thread ids
+  server-issued UUID4, client ids validated + canonicalised; page text kept
+  out of checkpoints by compiling the ask subgraph `checkpointer=False`
+  (verified against the locked langgraph source: subgraphs inherit the parent
+  checkpointer through the run config) with a marker-scanning proof test.
+  Eval: 13 conversations / 24 turns in `evals/chat_golden.yaml`; cache =
+  12 rewrite (digest-keyed) + 31 intent payloads; replay zero-model; floors
+  `followup_accuracy` 13/13 = 1.0 and `followup_refusal_recall` 2/2 = 1.0;
+  enforcement logic proven without the cache by a synthetic fixture
+  (`tests/test_chat_golden_logic.py`). Captures via the `LLM_MODEL` env
+  fallback model. Measured: 923 passed / 18 skipped; web schema regenerated,
+  22 Vitest tests green. Review: round 1 REQUEST_CHANGES (the cap race),
+  round 2 APPROVE. Post-review capture findings (both fixed): the replay had
+  wired `provider_limit=5` against the capture's served 20 — providers shown
+  are part of the rewrite digest, so provider-bearing follow-ups missed the
+  cache (fixed by sharing `build_capture_deps` between capture and replay +
+  a regression test pinning `provider_limit == ASK_PROVIDER_LIMIT`); one
+  golden expectation was stricter than the system's own combined
+  filters+price convention (the rewrite correctly carries the place forward)
+  — expectation corrected, floor untouched. Follow-ups (not ticketed): the
+  chat golden replay still executes the register (21–25 min) although the
+  floors are intent-level — ticket 17's first commit makes it intent-level
+  (capture stores per-turn summaries; replay rebuilds history from the cache,
+  zero SQL); a live `POST /chat` check through the running server is pending.
+
 ## In progress
 
-- None — ticket 15 merged; ticket 16 (issue #55) is next.
+- None. Ticket 16 merged (PR #68, squash `0818cfb`); **ticket 17 (issue #56) is
+  next**, the first ticket run under the leaner-process decision of 2026-11-23
+  (one PR per ticket, one review round, full Reviewer because the chat page is
+  a new class of behaviour, plus the chat-eval intent-level replay as its
+  first commit).
 
 ## Blocked
 
@@ -488,10 +570,11 @@ referenced exists. The Maps regex taxonomy lives in the DB `services` table
 
 ## Next
 
-- **Ticket 16 — Conversation memory: threads, checkpoints and follow-up
-  questions (issue #55) is next**, then 17–24 in number order (each depends on
-  the previous). Ticket 16 owns the checkpointed-state restriction recorded in
-  the ticket 15 Done entry.
+- **Ticket 17 — Chat page in the web front end (issue #56) is next**, then
+  18–24 in number order (each depends on the previous). Ticket 16 is merged
+  (Done entry below carries the details); ticket 17 runs under the
+  leaner-process decision of 2026-11-23 and owns the chat-eval intent-level
+  replay (its first commit).
 - **LLM quota facts for the phase (2026-11-23).** The free-tier daily quota
   was exhausted again after ticket 14's captures + live demo: the native
   endpoint returns 429, and the OpenAI-compat surface returns an empty 404 in

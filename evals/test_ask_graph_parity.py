@@ -37,6 +37,11 @@ from ndis.application.extraction import LlmRequest, LlmResult
 from ndis.application.providers import ListProviders, LocalityResolver
 from ndis.domain.extraction import TokenBudget
 
+# Replays every golden case through both paths against the full register snapshot —
+# minutes, not seconds. Deselected by the default run (see the ``slow`` marker in
+# pyproject); the pre-push gate ``uv run pytest -m eval --no-cov`` and CI select it again.
+pytestmark = pytest.mark.slow
+
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "evals" / "intent_cache.yaml"
 DB = Path(os.environ.get("NDIS_DB_PATH") or ROOT / "data" / "ndis.db")
