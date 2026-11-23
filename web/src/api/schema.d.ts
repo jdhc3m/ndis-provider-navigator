@@ -45,6 +45,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat
+         * @description Answer one message in a conversation. A first turn (no ``thread_id``) starts a
+         *     new thread and costs one model call; a follow-up turn is rewritten into a standalone
+         *     question from the thread's recent turns first, so it costs two — and the answer
+         *     names the standalone question so the page can show how the follow-up was understood.
+         *     The thread lives in the server's RAM only: a restart loses every conversation.
+         */
+        post: operations["chat_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/{thread_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Thread
+         * @description The turns of one stored conversation, in order, so a page can restore it.
+         */
+        get: operations["chat_thread_chat__thread_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/meta": {
         parameters: {
             query?: never;
@@ -297,6 +341,62 @@ export interface components {
             top_similarity: number | null;
         };
         /**
+         * ChatIn
+         * @description One message in a conversation. ``thread_id`` continues a thread the server
+         *     created earlier (a UUID it issued on a previous answer); ``null`` starts a new one
+         *     and the answer names it. A client-sent id must be a UUID.
+         */
+        ChatIn: {
+            /** Message */
+            message: string;
+            /** Thread Id */
+            thread_id?: string | null;
+        };
+        /**
+         * ChatOut
+         * @description One turn's result: the thread to keep sending, the standalone question the
+         *     follow-up was understood as (equal to the message on a first turn, or when a bad
+         *     rewrite fell back to it), and the answer in the /ask shape.
+         */
+        ChatOut: {
+            answer: components["schemas"]["AskOut"];
+            /** Rewrite Reason */
+            rewrite_reason: string | null;
+            /** Rewritten */
+            rewritten: boolean;
+            /** Standalone Question */
+            standalone_question: string;
+            /** Thread Id */
+            thread_id: string;
+        };
+        /**
+         * ChatThreadOut
+         * @description A whole stored conversation, for a page restoring it; the turns are in
+         *     conversation order.
+         */
+        ChatThreadOut: {
+            /** Thread Id */
+            thread_id: string;
+            /** Turns */
+            turns: components["schemas"]["ChatTurnOut"][];
+        };
+        /**
+         * ChatTurnOut
+         * @description One stored conversation turn: the user's message, the standalone question it was
+         *     understood as (the rewrite disclosure included), and the answer in the /ask shape.
+         */
+        ChatTurnOut: {
+            answer: components["schemas"]["AskOut"];
+            /** Message */
+            message: string;
+            /** Rewrite Reason */
+            rewrite_reason: string | null;
+            /** Rewritten */
+            rewritten: boolean;
+            /** Standalone Question */
+            standalone_question: string;
+        };
+        /**
          * DistanceOut
          * @description Straight-line kilometres from the origin postcode's centroid, to one decimal, and
          *     whether it was measured from the provider's Maps listing (``exact``) or the centroid of
@@ -356,12 +456,14 @@ export interface components {
         /**
          * MetaOut
          * @description What the page needs to label itself truthfully: the configured model ids (empty
-         *     strings when unset), the data snapshots and sources, and the tracing status. Nothing
-         *     here is hard-coded in the front end.
+         *     strings when unset), the data snapshots and sources, the tracing status, and where
+         *     the chat keeps its memory. Nothing here is hard-coded in the front end.
          */
         MetaOut: {
             /** Catalogue Title */
             catalogue_title: string;
+            /** Chat Memory */
+            chat_memory: string;
             /** Embed Model */
             embed_model: string;
             /** Financial Year */
@@ -678,6 +780,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AskRuleOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_chat_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_thread_chat__thread_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatThreadOut"];
                 };
             };
             /** @description Validation Error */

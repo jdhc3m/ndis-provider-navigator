@@ -15,6 +15,8 @@ FLOORS = (
     "extraction_precision",
     "refusal_recall",
     "service_resolution_accuracy",
+    "followup_accuracy",
+    "followup_refusal_recall",
 )
 
 
@@ -24,13 +26,15 @@ class ThresholdFormatError(ValueError):
 
 @dataclass(frozen=True)
 class Thresholds:
-    """The five eval-gate floors, each a fraction of the metric's denominator."""
+    """The seven eval-gate floors, each a fraction of the metric's denominator."""
 
     filter_accuracy: float
     rule_hit_at_3: float
     extraction_precision: float
     refusal_recall: float
     service_resolution_accuracy: float
+    followup_accuracy: float
+    followup_refusal_recall: float
 
 
 def read_thresholds(path) -> Thresholds:  # type: ignore[no-untyped-def]

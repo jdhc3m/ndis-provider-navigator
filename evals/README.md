@@ -2,8 +2,8 @@
 
 The eval gate is `uv run pytest -m eval --no-cov`. It enforces the floors in
 `thresholds.yaml` — filter accuracy ≥ 0.85, rule hit@3 ≥ 0.7, extraction macro
-precision ≥ 0.8 on labelled rows, refusal recall = 1.0, service resolution ≥ 0.85 —
-and never gets green by
+precision ≥ 0.8 on labelled rows, refusal recall = 1.0, service resolution ≥ 0.85,
+follow-up accuracy ≥ 0.85, follow-up refusal recall = 1.0 — and never gets green by
 lowering them. Each suite replays a committed capture or a recorded cache where one
 exists, so a gate run spends no model quota; the model-backed values were captured
 from the configured endpoint (see `GET /meta` and `src/ndis/config.py`).
@@ -14,6 +14,16 @@ contract — and the suites that need `data/` (the register snapshot, the rule i
 the private extraction and embedding caches) skip with their reasons printed and a
 workflow notice. Those floors stay enforced on machines with the data; CI never
 claims they passed.
+
+`chat_golden.yaml` (ticket 16) is the multi-turn counterpart: thirteen conversations of
+two to three turns — narrowing by status, changing the place or registration group,
+switching to a price or rule question, a follow-up decision request and a follow-up
+prompt injection — replayed from `chat_cache.yaml` (the contextualise payload per
+follow-up turn plus the intent payload per standalone question, captured by
+`scripts/capture_chat_cache.py`) through the real chat graph. The enforcement logic
+itself is unit-tested without the capture against a synthetic cache fixture
+(`tests/test_chat_golden_logic.py`), including the case where a rewrite would launder a
+refusal into an execution.
 
 `test_intent_accuracy.py` is the prompt-contract half of the gate: the replayed
 captures cannot see a prompt edit, so the suite pins the intent prompt's load-bearing

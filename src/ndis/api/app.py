@@ -1,17 +1,24 @@
 """FastAPI application exposing the provider register, price limits, rule answers, the
-combined /ask endpoint and the /meta facts the web page labels itself with; when the
-front end has been built it is served from ``/`` as static files."""
+combined /ask endpoint, the multi-turn /chat endpoints and the /meta facts the web page
+labels itself with; when the front end has been built it is served from ``/`` as static
+files."""
 
-from typing import Annotated
+import threading
+import uuid
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.state import CompiledStateGraph
 
 from ndis.adapters.tracing import langfuse_enabled, tracing_url
 from ndis.api.dependencies import (
     ask_rule_use_case,
     ask_use_case,
+    chat_checkpointer,
+    chat_graph,
     cors_origins,
     get_price_limit_use_case,
     list_providers_use_case,
@@ -25,6 +32,10 @@ from ndis.api.schemas import (
     AskOut,
     AskRuleIn,
     AskRuleOut,
+    ChatIn,
+    ChatOut,
+    ChatThreadOut,
+    ChatTurnOut,
     LocalityCandidateOut,
     LocalityOut,
     MetaOut,
@@ -43,6 +54,7 @@ from ndis.application.catalogue import (
     SearchSupportItems,
     UnknownSupportItemError,
 )
+from ndis.application.chat import THREAD_FULL, THREAD_NOT_FOUND, thread_is_full, thread_turns
 from ndis.application.extraction import BudgetExhausted, LlmError
 from ndis.application.pricing import AskRule, EmbeddingError
 from ndis.application.providers import (
@@ -122,6 +134,8 @@ def create_app() -> FastAPI:
     app.get("/support-items", response_model=SupportItemSearchOut)(search_support_items)
     app.post("/ask-rule", response_model=AskRuleOut)(ask_rule)
     app.post("/ask", response_model=AskOut)(ask)
+    app.post("/chat", response_model=ChatOut)(chat)
+    app.get("/chat/{thread_id}", response_model=ChatThreadOut)(chat_thread)
     app.get("/meta", response_model=MetaOut)(meta)
     # The built front end, mounted last so every API route above wins; absent until
     # `pnpm --dir web build` has run, in which case `/` stays 404.
@@ -241,6 +255,93 @@ def ask(
     return AskOut.from_result(result)
 
 
+def _thread_config(thread_id: str) -> dict[str, Any]:
+    """The run config a thread is addressed by. The canonical spelling is the storage
+    key, so any valid spelling of the same UUID addresses the same thread; a non-UUID is
+    a 422, whatever the client sent — the server only ever issues UUID4 thread ids."""
+    try:
+        canonical = str(uuid.UUID(thread_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="thread_id must be a UUID") from exc
+    return {"configurable": {"thread_id": canonical}}
+
+
+# Serializes POST /chat end to end (the thread-exists and cap checks plus the invoke).
+# Both checks are read-then-act on state the invoke then changes, and the handler runs
+# in FastAPI's threadpool, so without the lock two concurrent POSTs on one thread can
+# both pass the cap check and append — the 50-turn rule would not hold. Chat turns are
+# sequential by design, so serializing them costs nothing real; GET stays lock-free.
+_chat_turn_lock = threading.Lock()
+
+
+def chat(
+    payload: ChatIn,
+    graph: Annotated[CompiledStateGraph, Depends(chat_graph)],
+    saver: Annotated[InMemorySaver, Depends(chat_checkpointer)],
+) -> ChatOut:
+    """Answer one message in a conversation. A first turn (no ``thread_id``) starts a
+    new thread and costs one model call; a follow-up turn is rewritten into a standalone
+    question from the thread's recent turns first, so it costs two — and the answer
+    names the standalone question so the page can show how the follow-up was understood.
+    The thread lives in the server's RAM only: a restart loses every conversation."""
+    config = _thread_config(payload.thread_id or str(uuid.uuid4()))
+    thread_id = config["configurable"]["thread_id"]
+    with _chat_turn_lock:
+        if payload.thread_id is not None and saver.get_tuple(config) is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "reason": THREAD_NOT_FOUND,
+                    "message": "that conversation is not in the server's memory; it may "
+                    "have been lost in a restart — start a new one",
+                },
+            )
+        turns = thread_turns(graph.get_state(config).values)
+        if thread_is_full(turns):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": THREAD_FULL,
+                    "message": f"this conversation holds its maximum of {len(turns)} "
+                    "turns; start a new one",
+                },
+            )
+        try:
+            final = graph.invoke({"message": payload.message}, config)
+        except (LlmError, EmbeddingError, BudgetExhausted) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    turn = final["turns"][-1]
+    return ChatOut(
+        thread_id=thread_id,
+        standalone_question=turn["standalone_question"],
+        rewritten=turn["rewritten"],
+        rewrite_reason=turn["rewrite_reason"],
+        answer=AskOut.model_validate(turn["answer"]),
+    )
+
+
+def chat_thread(
+    thread_id: str,
+    graph: Annotated[CompiledStateGraph, Depends(chat_graph)],
+    saver: Annotated[InMemorySaver, Depends(chat_checkpointer)],
+) -> ChatThreadOut:
+    """The turns of one stored conversation, in order, so a page can restore it."""
+    config = _thread_config(thread_id)
+    if saver.get_tuple(config) is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "reason": THREAD_NOT_FOUND,
+                "message": "that conversation is not in the server's memory; it may have "
+                "been lost in a restart — start a new one",
+            },
+        )
+    turns = thread_turns(graph.get_state(config).values)
+    return ChatThreadOut(
+        thread_id=thread_id, turns=[ChatTurnOut.model_validate(turn) for turn in turns]
+    )
+
+
 def meta() -> MetaOut:
     """The facts the page labels itself with: model ids and data snapshots from the
     configuration and the filesystem, never from the front end's code."""
@@ -254,6 +355,7 @@ def meta() -> MetaOut:
         pricing_document=PRICING_DOCUMENT_TITLE,
         rule_chunk_strategy=rule_chunk_strategy(),
         tracing=TracingOut(configured=langfuse_enabled(), url=tracing_url()),
+        chat_memory="in_memory",
     )
 
 

@@ -11,6 +11,7 @@ export const META: MetaOut = {
   pricing_document: 'NDIS Pricing Arrangements and Price Limits 2025-26 v1.1',
   rule_chunk_strategy: 'heading',
   tracing: { configured: true, url: 'https://traces.example.org' },
+  chat_memory: 'in_memory',
 }
 
 /** `/meta` on a machine with no model key, no data and no tracing. */
@@ -24,4 +25,5 @@ export const META_UNCONFIGURED: MetaOut = {
   pricing_document: 'NDIS Pricing Arrangements and Price Limits 2025-26 v1.1',
   rule_chunk_strategy: 'heading',
   tracing: { configured: false, url: null },
+  chat_memory: 'in_memory',
 }

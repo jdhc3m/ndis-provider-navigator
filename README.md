@@ -17,7 +17,7 @@ React 19 + TypeScript strict + Vite + Tailwind v4 with pnpm.
 ```mermaid
 flowchart TD
     Web["web/ — React + TypeScript single page<br/>HTTP only; typed client generated from the OpenAPI schema"]
-    API["adapters/api — FastAPI<br/>/providers · /price-limits · /support-items<br/>/ask · /ask-rule · /meta"]
+    API["adapters/api — FastAPI<br/>/providers · /price-limits · /support-items<br/>/ask · /ask-rule · /chat · /meta"]
 
     subgraph L["src/ndis — enforced inward: domain ← application ← adapters/api"]
         APP["application — use cases over ports:<br/>Ask (intent → deterministic sections → output guard)<br/>AskRule (retrieve → judge → citation check)<br/>ListProviders (filter → rank by distance → page)<br/>GetPriceLimit · SearchSupportItems · extraction use cases"]
@@ -37,14 +37,15 @@ flowchart TD
     ADP --> PRIV
 ```
 
-Four call sites go to the model — everything else is deterministic code:
+Five call sites go to the model — everything else is deterministic code:
 
 | # | Call site | Where | Deterministic check behind it |
 | --- | --- | --- | --- |
-| 1 | Intent parse (question → JSON intent) | `POST /ask` | Total parser in `domain/intent.py`: an invalid part is dropped whole; `domain/answer.py`'s output guard re-checks the composed answer |
-| 2 | Service extraction (provider website → service claims) | `scripts/extract_services.py` (cache, then served by `/ask`) | Confidence floor `MIN_SERVED_CONFIDENCE` in `domain/extraction.py`; every quote re-verified verbatim against the stored page at answer time |
-| 3 | Rule judge (chunks → grounded answer or refusal) | `POST /ask-rule`, and the rule part of `POST /ask` | Similarity threshold refusal; every citation checked in `domain/pricing.py` to be a verbatim span of a retrieved chunk from the cited page |
+| 1 | Intent parse (question → JSON intent) | `POST /ask`, `POST /chat` | Total parser in `domain/intent.py`: an invalid part is dropped whole; `domain/answer.py`'s output guard re-checks the composed answer |
+| 2 | Service extraction (provider website → service claims) | `scripts/extract_services.py` (cache, then served by `/ask` and `/chat`) | Confidence floor `MIN_SERVED_CONFIDENCE` in `domain/extraction.py`; every quote re-verified verbatim against the stored page at answer time |
+| 3 | Rule judge (chunks → grounded answer or refusal) | `POST /ask-rule`, and the rule part of `POST /ask` and `POST /chat` | Similarity threshold refusal; every citation checked in `domain/pricing.py` to be a verbatim span of a retrieved chunk from the cited page |
 | 4 | Embeddings (rule-index build, per-question retrieval) | `scripts/build_rule_index.py`, `AskRule` | Content-hash disk cache; cosine-similarity gate before any judge call |
+| 5 | Follow-up rewrite (conversation → standalone question) | `POST /chat`, one call per follow-up turn, none on a first turn | Total parser in `domain/chat.py`: only a non-empty string of at most 500 characters is accepted; anything else falls back to the user's raw message with a machine reason |
 
 Import-linter enforces the layering; `web/` reaches the API only over HTTP. Tracing
 (Langfuse) wraps every model call site and is a no-op without keys.
@@ -60,6 +61,26 @@ intent cache through both and requires field-for-field identical answers
 [docs/graphs/ask_graph.md](docs/graphs/ask_graph.md) (regenerate with
 `uv run python scripts/run_ask_graph.py --diagram`; a test fails on drift), and the
 concepts are mapped in [docs/learning/langgraph-map.md](docs/learning/langgraph-map.md).
+
+## Multi-turn conversations
+
+`POST /chat` keeps a conversation: the body is `{"thread_id": string | null, "message"}`
+and the answer is `{thread_id, standalone_question, rewritten, rewrite_reason, answer}`
+with `answer` in the same shape `POST /ask` returns. A first turn (no `thread_id`) costs
+one model call; a follow-up is rewritten into a standalone question from the thread's
+recent turns first, so it costs two — and the answer names that standalone question so
+you can see how the follow-up was understood. A follow-up that asks for a
+recommendation or a funding decision is still refused (`decision_request`), and an
+injection attempt inside a follow-up is still contained: history and message are data
+in the rewrite prompt, and the existing refusals run downstream of the rewritten
+question. `GET /chat/{thread_id}` returns the stored turns so a page can restore a
+conversation; a thread holds at most 50 turns.
+
+**The chat memory lives in the server's RAM on purpose, and the limit is visible:**
+restarting the server loses every conversation (`GET /meta` reports
+`chat_memory: "in_memory"`). The thread id is the only thing a client has to remember,
+and a lost one simply starts a new conversation. Durable memory is ticket 20.
+
 
 ## Data sources and licences
 
@@ -166,7 +187,11 @@ answers with the catalogue's matching items and their limits — the mapping fro
 service name to support items is code, never the model, and the answer marks every row
 as coming from the catalogue. `POST /ask` with
 `"Which provider is best for my autistic child? Recommend one."` must refuse with reason
-`decision_request` — that refusal is the product.
+`decision_request` — that refusal is the product. Multi-turn: `POST /chat` with
+`{"message": "plan managers in Paddington QLD"}` starts a thread, and a second call with
+that `thread_id` and `"only the approved ones"` answers the follow-up in context (the
+answer names the standalone question it was rewritten into; see
+[Multi-turn conversations](#multi-turn-conversations)).
 
 `docs/demo.md` is a five-minute demo script over these endpoints; `docs/recording-checklist.md`
 turns it into a 3-minute screen recording.
@@ -274,7 +299,9 @@ Honest list; nothing here should be assumed from the demo:
   registered-Maps links); no fuzzy/vector name search for "something like".
 - Model routing — one configured model serves every step; no cheap/fast routing or
   fallback selection.
-- Multi-turn conversations — `POST /ask` is one question in, one answer out.
+- Chat memory survives a restart — multi-turn conversations are built (see
+  [above](#multi-turn-conversations)), but the server keeps every thread in its RAM on
+  purpose, so a restart loses them; durable memory is ticket 20.
 - Auth and rate limits — the API is unauthenticated and unthrottled; not for deployment.
 - PAPL version tracking — the rule index is built from PAPL 2025-26 v1.1; a new release
   means re-fetching and rebuilding by hand (`PRICING_PDF_URL` in
