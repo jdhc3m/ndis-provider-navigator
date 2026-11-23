@@ -1,0 +1,25 @@
+app = "ndis-navigator"
+primary_region = "syd"
+
+[env]
+  NDIS_DB_PATH = "/data/ndis.db"
+  REGISTER_CSV_PATH = "/data/public/register.csv"
+  RULE_INDEX_PATH = "/data/rule_index.db"
+  EMBEDDING_CACHE_PATH = "/data/private/embedding_cache.db"
+  EXTRACTION_DIR = "/data/private/extraction"
+  PAGES_DIR = "/data/private/pages"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[[mounts]]
+  source = "ndis_data"
+  destination = "/data"
