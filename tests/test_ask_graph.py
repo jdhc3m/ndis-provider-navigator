@@ -258,6 +258,7 @@ def test_the_final_steps_carry_all_three_parallel_sections(
         "evidence",
         "guard",
     }
+    assert kinds.count("evidence") == 1  # the join runs once, not once per source
     answer = compose_stage(final)
     assert not answer.refused
     assert answer.provider_total == 3
