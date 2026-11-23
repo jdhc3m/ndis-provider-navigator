@@ -174,6 +174,12 @@ pnpm --dir web install
 pnpm --dir web build                            # once, then restart uvicorn — the page is served at /
 ```
 
+The page has two tabs: **Chat** (the default) holds a multi-turn conversation — the
+browser keeps only the conversation's id, the server keeps the turns, and a reload
+restores them from `GET /chat/{thread_id}` (a server restart loses them; the page says
+so). **Search** is the single-question page, unchanged, including its `?q=` link
+parameter.
+
 Then check, in order: `GET /meta` (configured models and data dates), `GET
 /providers?near=4101&max_km=5&limit=5` (ranked by distance), `GET
 /providers?locality=South%20Bank&state=QLD` (suburb resolved to postcode 4101 in code;

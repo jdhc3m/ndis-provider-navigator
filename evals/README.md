@@ -17,20 +17,28 @@ own is `uv run pytest -m 'eval and not slow' --no-cov`.
 
 CI runs the suites that need nothing but committed files — `test_intent_accuracy.py`
 replays `intent_cache.yaml` through the real parser and pins the intent prompt's
-contract — and the suites that need `data/` (the register snapshot, the rule index,
-the private extraction and embedding caches) skip with their reasons printed and a
-workflow notice. Those floors stay enforced on machines with the data; CI never
-claims they passed.
+contract, and `test_chat_golden.py` replays `chat_cache.yaml` through the real chat
+graph (its summaries pin the rewrite prompts, so the register is never queried) — and
+the suites that need `data/` (the register snapshot, the rule index, the private
+extraction and embedding caches) skip with their reasons printed and a workflow notice.
+Those floors stay enforced on machines with the data; CI never claims they passed.
 
 `chat_golden.yaml` (ticket 16) is the multi-turn counterpart: thirteen conversations of
 two to three turns — narrowing by status, changing the place or registration group,
 switching to a price or rule question, a follow-up decision request and a follow-up
-prompt injection — replayed from `chat_cache.yaml` (the contextualise payload per
-follow-up turn plus the intent payload per standalone question, captured by
-`scripts/capture_chat_cache.py`) through the real chat graph. The enforcement logic
-itself is unit-tested without the capture against a synthetic cache fixture
+prompt injection — replayed from `chat_cache.yaml` through the real chat graph. Since
+ticket 17 the cache carries three sections: the contextualise payload per follow-up
+turn (keyed by the digest of what the model saw), the intent payload per standalone
+question, and the turn summary per conversation turn (the standalone question, parsed
+intent and providers shown, exactly as the rewrite prompt carried it). The replay
+rebuilds each follow-up's history exclusively from the cached summaries, so its prompts
+are byte-identical to capture time and its own ask sections run over small seeded
+fixture repositories — the eval queries no register and needs nothing but committed
+files, so it runs in seconds everywhere, including CI. The enforcement logic itself is
+unit-tested without the capture against a synthetic cache fixture
 (`tests/test_chat_golden_logic.py`), including the case where a rewrite would launder a
-refusal into an execution.
+refusal into an execution and the case where the replay's wiring differs from the
+capture's (it must not matter any more).
 
 `test_intent_accuracy.py` is the prompt-contract half of the gate: the replayed
 captures cannot see a prompt edit, so the suite pins the intent prompt's load-bearing

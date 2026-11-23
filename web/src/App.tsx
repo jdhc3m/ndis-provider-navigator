@@ -1,29 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import type { AskOut, MetaOut, NavigatorApi } from './api/client'
-import { EXAMPLE_QUESTIONS } from './examples'
-import { ErrorState } from './components/ErrorState'
+import type { MetaOut, NavigatorApi } from './api/client'
+import { ChatPage } from './components/ChatPage'
 import { Footer } from './components/Footer'
 import { Header } from './components/Header'
-import { HowBuilt } from './components/HowBuilt'
-import { IntentRow } from './components/IntentRow'
-import { LoadingState } from './components/LoadingState'
-import { PriceLimitCard } from './components/PriceLimitCard'
-import { ProvidersColumn } from './components/ProvidersColumn'
-import { QueryForm } from './components/QueryForm'
-import { RefusalBanner } from './components/RefusalBanner'
-import { RuleCard } from './components/RuleCard'
-import { ServicePriceCard } from './components/ServicePriceCard'
-
-type AskState =
-  | { status: 'idle' }
-  | { status: 'loading'; question: string }
-  | { status: 'answered'; answer: AskOut }
-  | { status: 'error'; question: string; error: unknown }
+import { SearchPage } from './components/SearchPage'
+import { tabFromHash, type Tab } from './tabs'
 
 interface AppProps {
   client: NavigatorApi
-  /** A question from the `?q=` link parameter: pre-filled and asked once on load. */
+  /** A question from the `?q=` link parameter: lands on the search tab and asked once
+   * on load there — a deep link into the search page. */
   initialQuestion?: string
 }
 
@@ -31,11 +18,9 @@ export function App({ client, initialQuestion }: AppProps) {
   const startQuestion = initialQuestion?.trim() ?? ''
   const [meta, setMeta] = useState<MetaOut | null>(null)
   const [metaError, setMetaError] = useState<string | null>(null)
-  const [question, setQuestion] = useState(startQuestion)
-  const [state, setState] = useState<AskState>(() =>
-    startQuestion ? { status: 'loading', question: startQuestion } : { status: 'idle' },
+  const [tab, setTab] = useState<Tab>(() =>
+    startQuestion ? 'search' : tabFromHash(window.location.hash),
   )
-  const requestId = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -54,30 +39,15 @@ export function App({ client, initialQuestion }: AppProps) {
     }
   }, [client])
 
-  /** Sends one question; only the latest request may update the result. */
-  const run = useCallback(
-    (text: string) => {
-      const id = ++requestId.current
-      return client.ask(text).then(
-        (answer) => {
-          if (requestId.current === id) setState({ status: 'answered', answer })
-        },
-        (error: unknown) => {
-          if (requestId.current === id) setState({ status: 'error', question: text, error })
-        },
-      )
-    },
-    [client],
-  )
-
-  function ask(text: string) {
-    setState({ status: 'loading', question: text })
-    void run(text)
-  }
-
   useEffect(() => {
-    if (startQuestion) void run(startQuestion)
-  }, [run, startQuestion])
+    const onHashChange = () => {
+      setTab(tabFromHash(window.location.hash))
+    }
+    window.addEventListener('hashchange', onHashChange)
+    return () => {
+      window.removeEventListener('hashchange', onHashChange)
+    }
+  }, [])
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -88,117 +58,66 @@ export function App({ client, initialQuestion }: AppProps) {
         Skip to main content
       </a>
       <Header meta={meta} metaError={metaError} />
+      <nav aria-label="Page sections" className="bg-card">
+        <div className="mx-auto flex max-w-6xl gap-1 px-4 sm:px-6">
+          <TabLink
+            tab="chat"
+            active={tab === 'chat'}
+            onNavigate={() => {
+              setTab('chat')
+            }}
+          >
+            Chat
+          </TabLink>
+          <TabLink
+            tab="search"
+            active={tab === 'search'}
+            onNavigate={() => {
+              setTab('search')
+            }}
+          >
+            Search
+          </TabLink>
+        </div>
+      </nav>
       <main
         id="main"
         className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6"
       >
-        <QueryForm
-          value={question}
-          onChange={setQuestion}
-          onSubmit={() => {
-            ask(question.trim())
-          }}
-          busy={state.status === 'loading'}
-        />
-        {state.status === 'loading' && <LoadingState question={state.question} />}
-        {state.status === 'error' && (
-          <ErrorState
-            error={state.error}
-            onRetry={() => {
-              ask(state.question)
-            }}
-          />
-        )}
-        {state.status === 'answered' && (
-          <Result
-            answer={state.answer}
-            meta={meta}
-            onPickExample={(example) => {
-              setQuestion(example)
-            }}
-            onAsk={(text) => {
-              setQuestion(text)
-              ask(text)
-            }}
-          />
-        )}
+        {/* Both tabs stay mounted so a switch neither loses the search result nor re-asks
+          the `?q=` deep link; the hidden one is out of the tab order and the a11y tree. */}
+        <div hidden={tab !== 'chat'} className="flex flex-col gap-8">
+          <ChatPage client={client} meta={meta} />
+        </div>
+        <div hidden={tab !== 'search'} className="flex flex-col gap-8">
+          <SearchPage client={client} meta={meta} initialQuestion={startQuestion} />
+        </div>
       </main>
       <Footer meta={meta} />
     </div>
   )
 }
 
-interface ResultProps {
-  answer: AskOut
-  meta: MetaOut | null
-  onPickExample: (question: string) => void
-  /** Re-asks a new question (the locality candidate buttons use it). */
-  onAsk: (question: string) => void
+interface TabLinkProps {
+  tab: Tab
+  active: boolean
+  onNavigate: () => void
+  children: string
 }
 
-function Result({ answer, meta, onPickExample, onAsk }: ResultProps) {
-  const servicePrices = answer.service_prices ?? null
-  const hasRightColumn =
-    answer.price !== null ||
-    answer.price_error !== null ||
-    servicePrices !== null ||
-    answer.rule !== null
-  const serviceMatchCount =
-    servicePrices?.total ?? (answer.price_error === 'unknown_service' ? 0 : null)
+function TabLink({ tab, active, onNavigate, children }: TabLinkProps) {
   return (
-    <div className="flex flex-col gap-6">
-      <IntentRow
-        intent={answer.intent}
-        locality={answer.locality ?? null}
-        serviceMatchCount={serviceMatchCount}
-        question={answer.question}
-        onPickCandidate={onAsk}
-      />
-      {answer.refused ? (
-        <RefusalBanner answer={answer} />
-      ) : (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[3fr_2fr]">
-          <ProvidersColumn
-            answer={answer}
-            onPickExample={onPickExample}
-            examples={EXAMPLE_QUESTIONS}
-          />
-          <aside aria-label="Pricing" className="flex flex-col gap-6">
-            {answer.price && <PriceLimitCard price={answer.price} />}
-            {servicePrices && <ServicePriceCard prices={servicePrices} />}
-            {answer.price_error === 'unknown_service' && (
-              <p
-                role="status"
-                className="rounded-lg border-l-4 border-warning bg-warning-tint p-4 text-sm text-warning"
-              >
-                <span className="font-bold">No catalogue match: </span>
-                no support item in the loaded catalogue matches{' '}
-                <span className="font-bold">
-                  &ldquo;{answer.intent?.price_query?.service ?? 'that service'}&rdquo;
-                </span>
-                , so no price is shown. Check the spelling, or search the catalogue with an item
-                number.
-              </p>
-            )}
-            {answer.price_error && answer.price_error !== 'unknown_service' && (
-              <p
-                role="status"
-                className="rounded-lg border-l-4 border-warning bg-warning-tint p-4 text-sm text-warning"
-              >
-                <span className="font-bold">Price limit not found: </span>
-                <span className="font-mono">{answer.price_error}</span>
-              </p>
-            )}
-            {answer.rule && <RuleCard rule={answer.rule} meta={meta} />}
-            {!hasRightColumn && (
-              <p className="rounded-lg border border-border bg-card p-5 text-sm text-muted-foreground">
-                This question did not ask about a price limit or a pricing rule.
-              </p>
-            )}
-          </aside>
-        </div>
-      )}
-      <HowBuilt steps={answer.steps} meta={meta} />
-    </div>
+    <a
+      href={`#/${tab}`}
+      aria-current={active ? 'page' : undefined}
+      onClick={onNavigate}
+      className={`tap-target transition-colors-fast inline-flex cursor-pointer items-center border-b-2 px-4 text-sm font-bold ${
+        active
+          ? 'border-accent text-accent'
+          : 'border-transparent text-muted-foreground hover:border-border hover:text-foreground'
+      }`}
+    >
+      {children}
+    </a>
   )
 }

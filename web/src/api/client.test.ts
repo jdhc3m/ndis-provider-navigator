@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { ApiError, NETWORK_ERROR_STATUS, createClient } from './client'
-import { ANSWER, META } from './fixtures'
+import { ANSWER, META, REPLY_1, REPLY_2, THREAD, THREAD_NOT_FOUND_DETAIL } from './fixtures'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -65,6 +65,56 @@ describe('createClient', () => {
     await expect(client.meta()).rejects.toMatchObject({
       status: NETWORK_ERROR_STATUS,
       detail: 'Failed to fetch',
+    })
+  })
+
+  it('POSTs /chat with the thread id only when continuing, and GETs the thread by id', async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(REPLY_1))
+      .mockResolvedValueOnce(jsonResponse(REPLY_2))
+      .mockResolvedValueOnce(jsonResponse(THREAD))
+    const client = createClient('http://api.test', fetchImpl)
+
+    await expect(
+      client.chat('Which providers in postcode 4101 offer speech pathology?', null),
+    ).resolves.toEqual(REPLY_1)
+    await expect(client.chat('and in South Bank?', REPLY_1.thread_id)).resolves.toEqual(REPLY_2)
+    await expect(client.getThread(REPLY_1.thread_id)).resolves.toEqual(THREAD)
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, 'http://api.test/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Which providers in postcode 4101 offer speech pathology?' }),
+    })
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, 'http://api.test/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'and in South Bank?',
+        thread_id: REPLY_1.thread_id,
+      }),
+    })
+    expect(fetchImpl).toHaveBeenNthCalledWith(3, `http://api.test/chat/${REPLY_1.thread_id}`, {
+      method: 'GET',
+      headers: {},
+      body: null,
+    })
+  })
+
+  it('exposes the machine reason of a structured chat detail', async () => {
+    const client = createClient(
+      '',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(jsonResponse({ detail: { ...THREAD_NOT_FOUND_DETAIL } }, 404)),
+    )
+    const error = await client.getThread('not-in-memory').catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({
+      status: 404,
+      reason: 'thread_not_found',
+      detail: THREAD_NOT_FOUND_DETAIL.message,
     })
   })
 })
